@@ -1,0 +1,26 @@
+# macOS and IDE state
+.DS_Store
+.idea/
+.vscode/
+
+# Local secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Dependency and build caches
+node_modules/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+dist/
+build/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.swp
+*~
