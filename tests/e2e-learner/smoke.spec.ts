@@ -1,6 +1,8 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 
+import { expectNoBrowserFailures, observeBrowserFailures } from "../browser-diagnostics";
+
 const run = {
   workflow_run_id: "workflow_run_browser_0001",
   lifecycle: "running",
@@ -75,12 +77,58 @@ const workspace = {
 };
 
 test.beforeEach(async ({ page }) => {
+  observeBrowserFailures(page);
   await page.setViewportSize({ width: 1440, height: 900 });
+  await page.addInitScript(() => {
+    const markExtensionMutation = () => {
+      document.documentElement?.setAttribute("data-browser-extension-probe", "installed");
+      document.body?.setAttribute("data-browser-extension-probe", "installed");
+    };
+    new MutationObserver(markExtensionMutation).observe(document, {
+      childList: true,
+      subtree: true,
+    });
+    markExtensionMutation();
+  });
   await page.addInitScript(() => {
     if (sessionStorage.getItem("binnagent:e2e-initialized")) return;
     localStorage.clear();
     sessionStorage.setItem("binnagent:e2e-initialized", "true");
   });
+});
+
+test.afterEach(async ({ page }) => {
+  expectNoBrowserFailures(page);
+});
+
+test("expired local resume pointer returns to onboarding without a red browser error", async ({
+  page,
+}) => {
+  await page.route(
+    "**/api/learner/v1/runs/workflow_run_expired/resume-workspace",
+    async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ available: false, workspace: null }),
+      });
+    },
+  );
+
+  await page.goto("/");
+  await page.evaluate(() => {
+    localStorage.setItem(
+      "binnagent:learner-resume:v1",
+      JSON.stringify({ schemaVersion: 1, workflowRunId: "workflow_run_expired" }),
+    );
+  });
+  await page.reload();
+
+  await expect(page.getByRole("button", { name: "开始独立校准" })).toBeEnabled();
+  await expect(page.locator(".global-error")).toHaveCount(0);
+  await expect
+    .poll(() => page.evaluate(() => localStorage.getItem("binnagent:learner-resume:v1")))
+    .toBeNull();
 });
 
 test("learner entry is desktop-focused and accessible", async ({ page }) => {
@@ -110,6 +158,19 @@ test("first experience opens the reading and output workspace", async ({ page })
       body: JSON.stringify({ ...workspace, task: persistedTask }),
     });
   });
+  await page.route(
+    "**/api/learner/v1/runs/workflow_run_browser_0001/resume-workspace",
+    async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          available: true,
+          workspace: { ...workspace, task: persistedTask },
+        }),
+      });
+    },
+  );
   await page.route("**/api/learner/v1/tasks/task_browser_0001/annotations", async (route) => {
     const quote = workspace.material.paragraphs[0].text.slice(2, 24);
     const responseTask = {

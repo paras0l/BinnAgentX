@@ -13,6 +13,16 @@ from binnagent_api.vertical_slice import tables
 pytestmark = pytest.mark.integration
 
 
+@pytest.mark.asyncio
+async def test_resume_workspace_treats_an_expired_browser_pointer_as_absent() -> None:
+    transport = httpx2.ASGITransport(app=create_app())
+    async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/learner/v1/runs/workflow_run_expired/resume-workspace")
+
+    assert response.status_code == 200, response.text
+    assert response.json() == {"available": False, "workspace": None}
+
+
 @pytest_asyncio.fixture(autouse=True)
 async def clean_vertical_slice_tables() -> AsyncIterator[None]:
     await _clean()
@@ -134,6 +144,11 @@ async def test_complete_cross_task_run_with_conservative_matching_and_replay() -
         assert "correct_answer" not in workspace.text
         assert "public_explanation" not in workspace.text
         assert '"hints"' not in workspace.text
+
+        resumed = await client.get(f"/learner/v1/runs/{run_id}/resume-workspace")
+        assert resumed.status_code == 200, resumed.text
+        assert resumed.json()["available"] is True
+        assert resumed.json()["workspace"] == workspace_payload
 
         first_task = (await client.get(f"/learner/v1/tasks/{run['current_task_id']}")).json()
         first_attempt = await _save_independent_attempt(

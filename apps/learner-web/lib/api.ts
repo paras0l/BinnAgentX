@@ -6,6 +6,7 @@ import {
 import type {
   AnnotationKind,
   LearnerProfileInput,
+  LearnerResumeWorkspaceView,
   LearnerRunView,
   LearnerTaskView,
   LearnerWorkspaceView,
@@ -76,6 +77,10 @@ export function createRun(learnerProfile: LearnerProfileInput): Promise<LearnerR
 
 export function getWorkspace(workflowRunId: string): Promise<LearnerWorkspaceView> {
   return request(`/v1/runs/${workflowRunId}/workspace`);
+}
+
+export function getResumeWorkspace(workflowRunId: string): Promise<LearnerResumeWorkspaceView> {
+  return request(`/v1/runs/${workflowRunId}/resume-workspace`);
 }
 
 export async function sha256Text(value: string): Promise<string> {

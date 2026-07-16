@@ -271,3 +271,8 @@ class LearnerWorkspaceView(BaseModel):
     run: LearnerRunView
     task: LearnerTaskView | None
     material: LearnerReadingMaterialView | LearnerExpressionMaterialView | None
+
+
+class LearnerResumeWorkspaceView(BaseModel):
+    available: bool
+    workspace: LearnerWorkspaceView | None

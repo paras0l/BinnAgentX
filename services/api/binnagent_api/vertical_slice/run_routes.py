@@ -42,7 +42,7 @@ from binnagent_api.vertical_slice import tables
 from binnagent_api.vertical_slice.content_catalog import LocalContentCatalog
 from binnagent_api.vertical_slice.repository import VerticalSliceRepository
 from binnagent_api.vertical_slice.routes import learner_task_view
-from binnagent_api.vertical_slice.run_repository import VerticalSliceRunRepository
+from binnagent_api.vertical_slice.run_repository import RunNotFoundError, VerticalSliceRunRepository
 from binnagent_api.vertical_slice.schemas import (
     AdvanceRunRequest,
     CalibrationFallbackRequest,
@@ -55,6 +55,7 @@ from binnagent_api.vertical_slice.schemas import (
     LearnerQuestionOptionView,
     LearnerReadingMaterialView,
     LearnerReadingQuestionView,
+    LearnerResumeWorkspaceView,
     LearnerRunView,
     LearnerWorkspaceView,
     MatchDecisionView,
@@ -72,6 +73,27 @@ RunIdempotencyKey = Annotated[
     str,
     Header(alias="Idempotency-Key", min_length=8, max_length=128, pattern=r"^[A-Za-z0-9_.:-]+$"),
 ]
+
+
+async def _workspace_view(
+    connection: AsyncConnection,
+    run: VerticalSliceRun,
+) -> LearnerWorkspaceView:
+    current = run.current_task
+    if current is None:
+        return LearnerWorkspaceView(run=_run_view(run), task=None, material=None)
+    task = await task_repository.load(connection, current.task_id)
+    if task.workflow_run_id != run.workflow_run_id:
+        raise DomainError(
+            PublicErrorCode.SESSION_CONFLICT,
+            "workspace_task_run_mismatch",
+            run.version,
+        )
+    return LearnerWorkspaceView(
+        run=_run_view(run),
+        task=learner_task_view(task),
+        material=_material_view(task),
+    )
 
 
 @learner_run_router.post("", response_model=LearnerRunView, status_code=201)
@@ -118,21 +140,23 @@ async def get_run(workflow_run_id: str) -> LearnerRunView:
 async def get_run_workspace(workflow_run_id: str) -> LearnerWorkspaceView:
     async with get_engine().connect() as connection:
         run = await run_repository.load(connection, workflow_run_id)
-        current = run.current_task
-        if current is None:
-            return LearnerWorkspaceView(run=_run_view(run), task=None, material=None)
-        task = await task_repository.load(connection, current.task_id)
-        if task.workflow_run_id != run.workflow_run_id:
-            raise DomainError(
-                PublicErrorCode.SESSION_CONFLICT,
-                "workspace_task_run_mismatch",
-                run.version,
-            )
-        material = _material_view(task)
-        return LearnerWorkspaceView(
-            run=_run_view(run),
-            task=learner_task_view(task),
-            material=material,
+        return await _workspace_view(connection, run)
+
+
+@learner_run_router.get(
+    "/{workflow_run_id}/resume-workspace",
+    response_model=LearnerResumeWorkspaceView,
+)
+async def get_resume_workspace(workflow_run_id: str) -> LearnerResumeWorkspaceView:
+    """Resolve a disposable browser resume pointer without turning expiry into an HTTP error."""
+    async with get_engine().connect() as connection:
+        try:
+            run = await run_repository.load(connection, workflow_run_id)
+        except RunNotFoundError:
+            return LearnerResumeWorkspaceView(available=False, workspace=None)
+        return LearnerResumeWorkspaceView(
+            available=True,
+            workspace=await _workspace_view(connection, run),
         )
 
 

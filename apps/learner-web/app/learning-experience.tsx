@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState, useTransition } from "react";
 
-import { createRun, getWorkspace, LearnerApiError } from "../lib/api";
+import { createRun, getResumeWorkspace, getWorkspace, LearnerApiError } from "../lib/api";
 import type { LearnerProfileInput, LearnerTaskView, LearnerWorkspaceView } from "../lib/contracts";
 import { clearResumeRunId, loadResumeRunId, saveResumeRunId } from "../lib/draft-storage";
 import { LearningWorkspace } from "./learning-workspace";
@@ -43,9 +43,14 @@ export function LearningExperience() {
         active = false;
       };
     }
-    void getWorkspace(workflowRunId)
+    void getResumeWorkspace(workflowRunId)
       .then((value) => {
-        if (active) setWorkspace(value);
+        if (!active) return;
+        if (value.available && value.workspace) {
+          setWorkspace(value.workspace);
+        } else {
+          clearResumeRunId();
+        }
       })
       .catch((reason: unknown) => {
         if (!active) return;

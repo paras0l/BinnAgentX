@@ -152,6 +152,11 @@ export interface LearnerWorkspaceView {
   material: ReadingMaterialView | ExpressionMaterialView | null;
 }
 
+export interface LearnerResumeWorkspaceView {
+  available: boolean;
+  workspace: LearnerWorkspaceView | null;
+}
+
 export interface TextSelection {
   paragraphId: string;
   start: number;

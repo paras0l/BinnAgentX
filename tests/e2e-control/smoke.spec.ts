@@ -1,6 +1,27 @@
 import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 
+import { expectNoBrowserFailures, observeBrowserFailures } from "../browser-diagnostics";
+
+test.beforeEach(async ({ page }) => {
+  observeBrowserFailures(page);
+  await page.addInitScript(() => {
+    const markExtensionMutation = () => {
+      document.documentElement?.setAttribute("data-browser-extension-probe", "installed");
+      document.body?.setAttribute("data-browser-extension-probe", "installed");
+    };
+    new MutationObserver(markExtensionMutation).observe(document, {
+      childList: true,
+      subtree: true,
+    });
+    markExtensionMutation();
+  });
+});
+
+test.afterEach(async ({ page }) => {
+  expectNoBrowserFailures(page);
+});
+
 test("control shell makes the boundary explicit", async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.goto("/");
