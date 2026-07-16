@@ -85,6 +85,21 @@ class AttemptView(BaseModel):
     created_at: datetime
 
 
+class AnnotationSpanView(BaseModel):
+    paragraph_id: str
+    start: int
+    end: int
+    text_quote: str
+
+
+class AnnotationView(BaseModel):
+    annotation_id: str
+    kind: AnnotationKind
+    span: AnnotationSpanView
+    user_explanation: str
+    created_at: datetime
+
+
 class LearnerTaskView(BaseModel):
     task_id: str
     workflow_run_id: str
@@ -94,6 +109,7 @@ class LearnerTaskView(BaseModel):
     highest_hint_level: int
     current_content_version_id: str
     annotation_count: int
+    annotations: list[AnnotationView]
     attempts: list[AttemptView]
     intervention_count: int
     revision_count: int

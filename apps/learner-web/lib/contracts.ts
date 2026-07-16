@@ -24,6 +24,19 @@ export interface AttemptView {
   created_at: string;
 }
 
+export interface AnnotationView {
+  annotation_id: string;
+  kind: AnnotationKind;
+  span: {
+    paragraph_id: string;
+    start: number;
+    end: number;
+    text_quote: string;
+  };
+  user_explanation: string;
+  created_at: string;
+}
+
 export interface LearnerTaskView {
   task_id: string;
   workflow_run_id: string;
@@ -33,6 +46,7 @@ export interface LearnerTaskView {
   highest_hint_level: number;
   current_content_version_id: string;
   annotation_count: number;
+  annotations: AnnotationView[];
   attempts: AttemptView[];
   intervention_count: number;
   revision_count: number;

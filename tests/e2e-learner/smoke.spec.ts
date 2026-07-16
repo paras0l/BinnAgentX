@@ -38,6 +38,7 @@ const workspace = {
     highest_hint_level: 0,
     current_content_version_id: "calibration_reading_a_v1",
     annotation_count: 0,
+    annotations: [],
     attempts: [],
     intervention_count: 0,
     revision_count: 0,
@@ -102,6 +103,32 @@ test("first experience opens the reading and output workspace", async ({ page })
       body: JSON.stringify(workspace),
     });
   });
+  await page.route("**/api/learner/v1/tasks/task_browser_0001/annotations", async (route) => {
+    const quote = workspace.material.paragraphs[0].text.slice(2, 24);
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ...workspace.task,
+        version: 2,
+        annotation_count: 1,
+        annotations: [
+          {
+            annotation_id: "annotation_browser_0001",
+            kind: "uncertain",
+            span: {
+              paragraph_id: "calibration_a_p1",
+              start: 2,
+              end: 24,
+              text_quote: quote,
+            },
+            user_explanation: "我还没理清这个长句的主干和修饰关系。",
+            created_at: "2026-07-16T12:00:00Z",
+          },
+        ],
+      }),
+    });
+  });
   await page.goto("/");
   await page.getByRole("button", { name: "开始独立校准" }).click();
 
@@ -118,7 +145,8 @@ test("first experience opens the reading and output workspace", async ({ page })
 
   const paragraph = page.locator('[data-paragraph-id="calibration_a_p1"]');
   await paragraph.evaluate((element) => {
-    const textNode = element.firstChild;
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    const textNode = walker.nextNode();
     if (!textNode) throw new Error("Expected paragraph text node");
     const range = document.createRange();
     range.setStart(textNode, 2);
@@ -133,6 +161,12 @@ test("first experience opens the reading and output workspace", async ({ page })
   await page.getByRole("button", { name: "这句看不懂" }).click();
   await expect(page.getByRole("group", { name: "看不懂的原因" })).toBeVisible();
   await expect(page.getByRole("button", { name: "长句", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "长句", exact: true }).click();
+  await page.getByRole("button", { name: "保存这条判断" }).click();
+
+  await expect(page.getByText("1 条 · 原文中的痕迹也已保留")).toBeVisible();
+  await expect(page.getByText("我还没理清这个长句的主干和修饰关系。")).toBeVisible();
+  await expect(page.getByRole("button", { name: /看不懂.*标记/ })).toBeVisible();
 
   const results = await new AxeBuilder({ page }).analyze();
   expect(results.violations).toEqual([]);

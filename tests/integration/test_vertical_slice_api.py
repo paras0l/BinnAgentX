@@ -301,6 +301,22 @@ async def test_stale_write_returns_only_public_conflict_details() -> None:
             },
         )
         assert annotation.status_code == 200
+        annotation_payload = annotation.json()
+        assert annotation_payload["annotation_count"] == 1
+        assert annotation_payload["annotations"] == [
+            {
+                "annotation_id": annotation_payload["annotations"][0]["annotation_id"],
+                "kind": "evidence",
+                "span": {
+                    "paragraph_id": "matched_01_p2",
+                    "start": 403,
+                    "end": 403 + len(quote),
+                    "text_quote": quote,
+                },
+                "user_explanation": "It supports the claim.",
+                "created_at": annotation_payload["annotations"][0]["created_at"],
+            }
+        ]
 
         replacement = await client.post(
             f"/learner/v1/tasks/{payload['task_id']}/material-seen",
@@ -310,6 +326,7 @@ async def test_stale_write_returns_only_public_conflict_details() -> None:
         assert replacement.status_code == 200
         assert replacement.json()["current_content_version_id"] == "matched_reading_02_v1"
         assert replacement.json()["annotation_count"] == 0
+        assert replacement.json()["annotations"] == []
 
         stale = await client.post(
             f"/learner/v1/tasks/{payload['task_id']}/attempts",

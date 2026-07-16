@@ -29,6 +29,8 @@ from binnagent_api.vertical_slice.content_catalog import LocalContentCatalog
 from binnagent_api.vertical_slice.repository import VerticalSliceRepository
 from binnagent_api.vertical_slice.schemas import (
     AnnotationRequest,
+    AnnotationSpanView,
+    AnnotationView,
     AttemptRequest,
     AttemptView,
     ControlReplayView,
@@ -346,6 +348,7 @@ async def _control_view(connection: Any, task: LearningTask) -> ControlReplayVie
 
 
 def learner_task_view(task: LearningTask, replayed: bool = False) -> LearnerTaskView:
+    current_annotations = task.current_annotations
     return LearnerTaskView(
         task_id=task.task_id,
         workflow_run_id=task.workflow_run_id,
@@ -354,7 +357,22 @@ def learner_task_view(task: LearningTask, replayed: bool = False) -> LearnerTask
         version=task.version,
         highest_hint_level=task.highest_hint_level,
         current_content_version_id=task.current_material.content_version_id,
-        annotation_count=len(task.current_annotations),
+        annotation_count=len(current_annotations),
+        annotations=[
+            AnnotationView(
+                annotation_id=item.annotation_id,
+                kind=item.kind.value,
+                span=AnnotationSpanView(
+                    paragraph_id=item.span.paragraph_id,
+                    start=item.span.start,
+                    end=item.span.end,
+                    text_quote=item.span.text_quote,
+                ),
+                user_explanation=item.user_explanation,
+                created_at=item.created_at,
+            )
+            for item in current_annotations
+        ],
         attempts=[
             AttemptView(
                 attempt_version_id=item.attempt_version_id,

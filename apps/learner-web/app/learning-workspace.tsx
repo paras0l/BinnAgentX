@@ -17,6 +17,7 @@ import {
 } from "../lib/api";
 import type {
   AnnotationKind,
+  AnnotationView,
   ExpressionMaterialView,
   LearnerTaskView,
   LearnerWorkspaceView,
@@ -123,6 +124,7 @@ function ActiveTaskWorkspace({
   const [progressMessage, setProgressMessage] = useState<string | null>(null);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showThinkingGuide, setShowThinkingGuide] = useState(false);
+  const [showSavedAnnotations, setShowSavedAnnotations] = useState(task.annotation_count > 0);
   const [isComposing, setIsComposing] = useState(false);
   const [isPending, startTransition] = useTransition();
   const materialRef = useRef<HTMLElement>(null);
@@ -234,6 +236,7 @@ function ActiveTaskWorkspace({
           annotationExplanation,
         );
         onTaskChange(updated);
+        setShowSavedAnnotations(true);
         setSelection(null);
         setSelectionAnchor(null);
         setAnnotationExplanation("");
@@ -363,6 +366,16 @@ function ActiveTaskWorkspace({
       ];
 
   const allowedAnnotations = isReading ? (material as ReadingMaterialView).allowed_annotations : [];
+  const savedAnnotations = task.annotations ?? [];
+
+  const reviewAnnotation = (annotationId: string) => {
+    setShowSavedAnnotations(true);
+    window.requestAnimationFrame(() => {
+      const record = document.getElementById(`saved-annotation-${annotationId}`);
+      record?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      record?.focus({ preventScroll: true });
+    });
+  };
 
   return (
     <main className="workspace-shell" onKeyDown={onWorkspaceKeyDown}>
@@ -414,8 +427,10 @@ function ActiveTaskWorkspace({
             <ReadingPane
               material={material}
               materialRef={materialRef}
+              annotations={savedAnnotations}
               onSelectText={selectText}
               onPromptUncertain={promptUncertainSelection}
+              onReviewAnnotation={reviewAnnotation}
             />
           )}
 
@@ -522,6 +537,12 @@ function ActiveTaskWorkspace({
                 ) : null}
               </ul>
             </section>
+
+            <SavedAnnotations
+              annotations={savedAnnotations}
+              expanded={showSavedAnnotations}
+              onToggle={() => setShowSavedAnnotations((current) => !current)}
+            />
 
             <section className="thinking-scaffold" aria-labelledby="thinking-scaffold-title">
               <button
@@ -672,11 +693,20 @@ function ActiveTaskWorkspace({
 interface ReadingPaneProps {
   material: ReadingMaterialView;
   materialRef: React.RefObject<HTMLElement | null>;
+  annotations: AnnotationView[];
   onSelectText: () => void;
   onPromptUncertain: () => void;
+  onReviewAnnotation: (annotationId: string) => void;
 }
 
-function ReadingPane({ material, materialRef, onSelectText, onPromptUncertain }: ReadingPaneProps) {
+function ReadingPane({
+  material,
+  materialRef,
+  annotations,
+  onSelectText,
+  onPromptUncertain,
+  onReviewAnnotation,
+}: ReadingPaneProps) {
   return (
     <article
       className="material-pane"
@@ -699,11 +729,146 @@ function ReadingPane({ material, materialRef, onSelectText, onPromptUncertain }:
       <div className="reading-copy">
         {material.paragraphs.map((paragraph) => (
           <p key={paragraph.paragraph_id} data-paragraph-id={paragraph.paragraph_id}>
-            {paragraph.text}
+            <AnnotatedParagraph
+              paragraphId={paragraph.paragraph_id}
+              text={paragraph.text}
+              annotations={annotations}
+              onReviewAnnotation={onReviewAnnotation}
+            />
           </p>
         ))}
       </div>
     </article>
+  );
+}
+
+interface ParagraphSegment {
+  start: number;
+  end: number;
+  annotations: AnnotationView[];
+}
+
+function paragraphSegments(
+  paragraphId: string,
+  text: string,
+  annotations: AnnotationView[],
+): ParagraphSegment[] {
+  const paragraphAnnotations = annotations.filter(
+    (annotation) =>
+      annotation.span.paragraph_id === paragraphId &&
+      annotation.span.start >= 0 &&
+      annotation.span.end <= text.length &&
+      annotation.span.start < annotation.span.end,
+  );
+  if (paragraphAnnotations.length === 0) {
+    return [{ start: 0, end: text.length, annotations: [] }];
+  }
+
+  const boundaries = Array.from(
+    new Set([
+      0,
+      text.length,
+      ...paragraphAnnotations.flatMap((annotation) => [annotation.span.start, annotation.span.end]),
+    ]),
+  ).sort((left, right) => left - right);
+
+  return boundaries.slice(0, -1).map((start, index) => {
+    const end = boundaries[index + 1] ?? text.length;
+    return {
+      start,
+      end,
+      annotations: paragraphAnnotations.filter(
+        (annotation) => annotation.span.start <= start && annotation.span.end >= end,
+      ),
+    };
+  });
+}
+
+interface AnnotatedParagraphProps {
+  paragraphId: string;
+  text: string;
+  annotations: AnnotationView[];
+  onReviewAnnotation: (annotationId: string) => void;
+}
+
+function AnnotatedParagraph({
+  paragraphId,
+  text,
+  annotations,
+  onReviewAnnotation,
+}: AnnotatedParagraphProps) {
+  return paragraphSegments(paragraphId, text, annotations).map((segment) => {
+    const value = text.slice(segment.start, segment.end);
+    const [primary] = segment.annotations;
+    if (!primary) {
+      return <span key={`${segment.start}-${segment.end}`}>{value}</span>;
+    }
+    const labels = segment.annotations.map((annotation) => ANNOTATION_LABELS[annotation.kind]);
+    return (
+      <button
+        key={`${segment.start}-${segment.end}`}
+        type="button"
+        className={`inline-annotation annotation-kind-${primary.kind}`}
+        aria-label={`${labels.join("、")}标记：${value}`}
+        title={`${labels.join("、")} · 点击查看你的解释`}
+        onClick={() => onReviewAnnotation(primary.annotation_id)}
+      >
+        {value}
+      </button>
+    );
+  });
+}
+
+interface SavedAnnotationsProps {
+  annotations: AnnotationView[];
+  expanded: boolean;
+  onToggle: () => void;
+}
+
+function SavedAnnotations({ annotations, expanded, onToggle }: SavedAnnotationsProps) {
+  return (
+    <section className="saved-annotations" aria-labelledby="saved-annotations-title">
+      <button
+        type="button"
+        className="saved-annotations-toggle"
+        aria-expanded={expanded}
+        aria-controls="saved-annotations-list"
+        onClick={onToggle}
+      >
+        <span>
+          <strong id="saved-annotations-title">已保存标记</strong>
+          <small>
+            {annotations.length > 0
+              ? `${annotations.length} 条 · 原文中的痕迹也已保留`
+              : "保存后会在原文和这里保留记录"}
+          </small>
+        </span>
+        <span aria-hidden="true">{expanded ? "收起" : "查看"}</span>
+      </button>
+      {expanded ? (
+        <div id="saved-annotations-list" className="saved-annotations-list">
+          {annotations.length > 0 ? (
+            annotations.map((annotation) => (
+              <article
+                key={annotation.annotation_id}
+                id={`saved-annotation-${annotation.annotation_id}`}
+                className={`saved-annotation-card annotation-kind-${annotation.kind}`}
+                tabIndex={-1}
+              >
+                <div>
+                  <span>{ANNOTATION_LABELS[annotation.kind]}</span>
+                  <small>第 {annotation.span.paragraph_id.split("_p").at(-1)} 段</small>
+                </div>
+                <blockquote>“{annotation.span.text_quote}”</blockquote>
+                <p>{annotation.user_explanation}</p>
+              </article>
+            ))
+          ) : (
+            <p className="empty-annotations">还没有记录。选中原文，写下它的作用或你的卡点。</p>
+          )}
+        </div>
+      ) : null}
+    </section>
   );
 }
 
