@@ -273,7 +273,7 @@ function OnboardingPanel({ isPending, onStart }: OnboardingPanelProps) {
             我做过完整的考研英语试卷
           </label>
 
-          <button className="primary-button" type="submit" disabled={isPending}>
+          <button className="primary-button strong-action" type="submit" disabled={isPending}>
             {isPending ? "正在建立训练…" : "开始独立校准"}
           </button>
         </form>

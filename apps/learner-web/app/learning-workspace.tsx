@@ -29,9 +29,22 @@ const ANNOTATION_LABELS: Record<AnnotationKind, string> = {
   claim: "作者观点",
   evidence: "论证证据",
   logic: "逻辑关系",
-  uncertain: "我不确定",
+  uncertain: "看不懂 / 不确定",
   reusable_expression: "可迁移表达",
 };
+
+const UNCERTAINTY_REASONS = [
+  ["词义", "我不确定这个词或词组在这里的意思。"],
+  ["长句", "我还没理清这个长句的主干和修饰关系。"],
+  ["指代", "我不确定代词或指代对象。"],
+  ["逻辑", "我不确定前后句是什么逻辑关系。"],
+  ["背景", "我缺少理解这句话所需的背景。"],
+] as const;
+
+interface SelectionAnchor {
+  left: number;
+  top: number;
+}
 
 const STAGE_LABELS = {
   calibration_a: "校准 A",
@@ -104,14 +117,18 @@ function ActiveTaskWorkspace({
     stored ? "local" : "clean",
   );
   const [selection, setSelection] = useState<TextSelection | null>(null);
+  const [selectionAnchor, setSelectionAnchor] = useState<SelectionAnchor | null>(null);
   const [annotationKind, setAnnotationKind] = useState<AnnotationKind>("evidence");
   const [annotationExplanation, setAnnotationExplanation] = useState("");
   const [progressMessage, setProgressMessage] = useState<string | null>(null);
   const [showShortcuts, setShowShortcuts] = useState(false);
+  const [showThinkingGuide, setShowThinkingGuide] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
   const [isPending, startTransition] = useTransition();
   const materialRef = useRef<HTMLElement>(null);
+  const responsePaneRef = useRef<HTMLElement>(null);
   const responseRef = useRef<HTMLTextAreaElement>(null);
+  const annotationExplanationRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     if (saveState !== "pending") return;
@@ -173,13 +190,33 @@ function ActiveTaskWorkspace({
     prefix.selectNodeContents(startParagraph);
     prefix.setEnd(range.startContainer, range.startOffset);
     const start = prefix.toString().length;
+    const selectionRect = range.getBoundingClientRect();
     setSelection({
       paragraphId: startParagraph.dataset.paragraphId ?? "",
       start,
       end: start + textQuote.length,
       textQuote,
     });
-    setProgressMessage("已选中文本。请选择它在你思考中的作用，并写下自己的判断。");
+    setSelectionAnchor({
+      left: Math.min(Math.max(16, selectionRect.left), Math.max(16, window.innerWidth - 520)),
+      top: Math.min(Math.max(16, selectionRect.bottom + 10), Math.max(16, window.innerHeight - 72)),
+    });
+    setProgressMessage("已选中文本。就近选择它的作用；完整说明已移到右侧顶部。");
+    window.requestAnimationFrame(() => {
+      responsePaneRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+    });
+  };
+
+  const chooseAnnotationKind = (kind: AnnotationKind) => {
+    setAnnotationKind(kind);
+    responsePaneRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+    window.requestAnimationFrame(() => annotationExplanationRef.current?.focus());
+  };
+
+  const promptUncertainSelection = () => {
+    setAnnotationKind("uncertain");
+    setProgressMessage("先在左侧选中看不懂的最小原文，再点选区旁的“这句看不懂”。");
+    materialRef.current?.focus();
   };
 
   const submitAnnotation = () => {
@@ -198,6 +235,7 @@ function ActiveTaskWorkspace({
         );
         onTaskChange(updated);
         setSelection(null);
+        setSelectionAnchor(null);
         setAnnotationExplanation("");
         window.getSelection()?.removeAllRanges();
         setProgressMessage("本次已做到：你把自己的判断绑定到了精确原文，而不是只做高亮。");
@@ -289,7 +327,7 @@ function ActiveTaskWorkspace({
     } else if (event.altKey && event.key.toLowerCase() === "u" && !isTyping) {
       event.preventDefault();
       selectText();
-      setAnnotationKind("uncertain");
+      chooseAnnotationKind("uncertain");
     } else if (event.key === "?" && !isTyping) {
       setShowShortcuts((current) => !current);
     }
@@ -301,6 +339,30 @@ function ActiveTaskWorkspace({
     local: "草稿已保存在此电脑",
     memory: "浏览器禁止本地保存，草稿仅保留在当前页面",
   }[saveState];
+
+  const requiredSteps = isReading
+    ? [
+        { label: "选择一个判断", complete: Boolean(choice) || hasAttempt },
+        {
+          label: "用自己的话解释证据关系",
+          complete: Boolean(text.trim()) || hasAttempt,
+        },
+        ...(task.task_type === "matched_reading"
+          ? [{ label: "保存至少 1 条带解释的原文标记", complete: task.annotation_count > 0 }]
+          : []),
+      ]
+    : [
+        {
+          label: `亲自写出 ${material.content_type === "micro_expression" ? `${material.output_requirement.word_min}–${material.output_requirement.word_max}` : "要求范围内的"} 个英文词`,
+          complete:
+            hasAttempt ||
+            (material.content_type === "micro_expression" &&
+              wordCount >= material.output_requirement.word_min &&
+              wordCount <= material.output_requirement.word_max),
+        },
+      ];
+
+  const allowedAnnotations = isReading ? (material as ReadingMaterialView).allowed_annotations : [];
 
   return (
     <main className="workspace-shell" onKeyDown={onWorkspaceKeyDown}>
@@ -349,10 +411,136 @@ function ActiveTaskWorkspace({
           {material.content_type === "micro_expression" ? (
             <ExpressionBrief material={material} materialRef={materialRef} />
           ) : (
-            <ReadingPane material={material} materialRef={materialRef} onSelectText={selectText} />
+            <ReadingPane
+              material={material}
+              materialRef={materialRef}
+              onSelectText={selectText}
+              onPromptUncertain={promptUncertainSelection}
+            />
           )}
 
-          <section className="response-pane" aria-labelledby="response-title">
+          <section className="response-pane" ref={responsePaneRef} aria-labelledby="response-title">
+            {selection && isReading ? (
+              <section className="annotation-composer" aria-labelledby="annotation-title">
+                <div className="annotation-composer-heading">
+                  <div>
+                    <p className="step-label">正在标记选中的原文</p>
+                    <h3 id="annotation-title">“{selection.textQuote}”</h3>
+                  </div>
+                  <button
+                    type="button"
+                    className="icon-button"
+                    aria-label="取消本次标记"
+                    onClick={() => {
+                      setSelection(null);
+                      setSelectionAnchor(null);
+                      window.getSelection()?.removeAllRanges();
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+                <div className="annotation-types" role="group" aria-label="标记类型">
+                  {allowedAnnotations.map((kind) => (
+                    <button
+                      key={kind}
+                      type="button"
+                      className={annotationKind === kind ? "selected" : ""}
+                      onClick={() => chooseAnnotationKind(kind)}
+                    >
+                      {ANNOTATION_LABELS[kind]}
+                    </button>
+                  ))}
+                </div>
+                {annotationKind === "uncertain" ? (
+                  <div className="uncertainty-reasons" role="group" aria-label="看不懂的原因">
+                    <span>卡在哪里？</span>
+                    {UNCERTAINTY_REASONS.map(([label, explanation]) => (
+                      <button
+                        key={label}
+                        type="button"
+                        onClick={() => {
+                          if (!annotationExplanation.trim()) setAnnotationExplanation(explanation);
+                          window.requestAnimationFrame(() =>
+                            annotationExplanationRef.current?.focus(),
+                          );
+                        }}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+                <label>
+                  <span>
+                    {annotationKind === "uncertain" ? "具体哪里没懂？" : "为什么这样标？"}
+                  </span>
+                  <textarea
+                    ref={annotationExplanationRef}
+                    value={annotationExplanation}
+                    onChange={(event) => setAnnotationExplanation(event.target.value)}
+                    placeholder={
+                      annotationKind === "uncertain"
+                        ? "选一个卡点作为开头，再补充具体词、结构或关系。"
+                        : "写下你的判断。标记数量不算进步，解释才让思考可见。"
+                    }
+                  />
+                </label>
+                <button
+                  className="secondary-button"
+                  type="button"
+                  onClick={submitAnnotation}
+                  disabled={isPending}
+                >
+                  保存这条判断
+                </button>
+              </section>
+            ) : null}
+
+            <section className="task-checklist" aria-labelledby="task-checklist-title">
+              <div>
+                <p className="step-label">完成本步还需要</p>
+                <h2 id="task-checklist-title">
+                  {requiredSteps.filter((step) => !step.complete).length > 0
+                    ? `${requiredSteps.filter((step) => !step.complete).length} 项必做动作`
+                    : "必做动作已完成"}
+                </h2>
+              </div>
+              <ul>
+                {requiredSteps.map((step) => (
+                  <li key={step.label} className={step.complete ? "complete" : "pending"}>
+                    <span aria-hidden="true">{step.complete ? "✓" : "○"}</span>
+                    {step.label}
+                  </li>
+                ))}
+                {isReading ? (
+                  <li className="optional">
+                    <span aria-hidden="true">?</span>
+                    看不懂时，选中原文并标出卡点
+                    <small>遇到困难时</small>
+                  </li>
+                ) : null}
+              </ul>
+            </section>
+
+            <section className="thinking-scaffold" aria-labelledby="thinking-scaffold-title">
+              <button
+                type="button"
+                className="thinking-toggle"
+                aria-expanded={showThinkingGuide}
+                aria-controls="thinking-guide"
+                onClick={() => setShowThinkingGuide((current) => !current)}
+              >
+                <span aria-hidden="true">↗</span>
+                <span>
+                  <strong id="thinking-scaffold-title">不知道怎么想？打开思考起点</strong>
+                  <small>只给起步动作，不给当前题答案</small>
+                </span>
+                <span aria-hidden="true">{showThinkingGuide ? "收起" : "展开"}</span>
+              </button>
+              {showThinkingGuide ? <ThinkingGuide isReading={isReading} /> : null}
+            </section>
+
             {material.content_type === "micro_expression" ? (
               <ExpressionResponseHeader material={material} wordCount={wordCount} />
             ) : (
@@ -406,41 +594,6 @@ function ActiveTaskWorkspace({
               />
             </label>
 
-            {selection && isReading ? (
-              <section className="annotation-composer" aria-labelledby="annotation-title">
-                <p className="step-label">精确语义标记</p>
-                <h3 id="annotation-title">“{selection.textQuote}”</h3>
-                <div className="annotation-types" role="group" aria-label="标记类型">
-                  {(material as ReadingMaterialView).allowed_annotations.map((kind) => (
-                    <button
-                      key={kind}
-                      type="button"
-                      className={annotationKind === kind ? "selected" : ""}
-                      onClick={() => setAnnotationKind(kind)}
-                    >
-                      {ANNOTATION_LABELS[kind]}
-                    </button>
-                  ))}
-                </div>
-                <label>
-                  <span>为什么这样标？</span>
-                  <textarea
-                    value={annotationExplanation}
-                    onChange={(event) => setAnnotationExplanation(event.target.value)}
-                    placeholder="写下你的判断。标记数量不算进步，解释才让思考可见。"
-                  />
-                </label>
-                <button
-                  className="secondary-button"
-                  type="button"
-                  onClick={submitAnnotation}
-                  disabled={isPending}
-                >
-                  保存这条判断
-                </button>
-              </section>
-            ) : null}
-
             <div className="action-footer">
               <p className="progress-message" aria-live="polite">
                 {progressMessage ??
@@ -460,6 +613,35 @@ function ActiveTaskWorkspace({
           </section>
         </div>
       )}
+
+      {selection && selectionAnchor && isReading ? (
+        <div
+          className="selection-toolbar"
+          role="toolbar"
+          aria-label="选区语义工具"
+          style={{ left: selectionAnchor.left, top: selectionAnchor.top }}
+        >
+          {(
+            [
+              ["evidence", "这是证据"],
+              ["claim", "这是观点"],
+              ["logic", "逻辑关系"],
+              ["uncertain", "这句看不懂"],
+            ] as const
+          ).map(([kind, label]) =>
+            allowedAnnotations.includes(kind) ? (
+              <button
+                key={kind}
+                type="button"
+                className={kind === "uncertain" ? "uncertain-action" : ""}
+                onClick={() => chooseAnnotationKind(kind)}
+              >
+                {label}
+              </button>
+            ) : null,
+          )}
+        </div>
+      ) : null}
 
       <footer className="workspace-footer">
         <span>当前标记：{task.annotation_count} 条</span>
@@ -491,9 +673,10 @@ interface ReadingPaneProps {
   material: ReadingMaterialView;
   materialRef: React.RefObject<HTMLElement | null>;
   onSelectText: () => void;
+  onPromptUncertain: () => void;
 }
 
-function ReadingPane({ material, materialRef, onSelectText }: ReadingPaneProps) {
+function ReadingPane({ material, materialRef, onSelectText, onPromptUncertain }: ReadingPaneProps) {
   return (
     <article
       className="material-pane"
@@ -506,7 +689,12 @@ function ReadingPane({ material, materialRef, onSelectText }: ReadingPaneProps) 
       <div className="material-heading">
         <p className="step-label">项目自写开发材料 · 难度待校准</p>
         <h2 id="material-title">{material.title}</h2>
-        <p>鼠标选择一段原文后，右侧会出现语义标记入口。</p>
+        <div className="reading-instruction">
+          <p>选中原文后，标记工具会直接出现在选区旁边。</p>
+          <button type="button" onClick={onPromptUncertain}>
+            看不懂？先选原文，再标出卡点
+          </button>
+        </div>
       </div>
       <div className="reading-copy">
         {material.paragraphs.map((paragraph) => (
@@ -516,6 +704,40 @@ function ReadingPane({ material, materialRef, onSelectText }: ReadingPaneProps) 
         ))}
       </div>
     </article>
+  );
+}
+
+function ThinkingGuide({ isReading }: { isReading: boolean }) {
+  return (
+    <div id="thinking-guide" className="thinking-guide">
+      <p className="guide-boundary">方法示例，不对应当前题目；不会给出当前答案。</p>
+      {isReading ? (
+        <>
+          <ol>
+            <li>先问：题目问的是原因、结果、态度，还是两者关系？</li>
+            <li>回原文找发生变化后的结果句，再用自己的话缩写。</li>
+            <li>逐项排除：是否偷换对象、扩大范围，或加入原文没有的信息？</li>
+          </ol>
+          <p className="method-example">
+            <strong>无关题目的方法示例：</strong>
+            如果短文说“调整排队规则后，等待时间下降”，问题问规则的效果，就先抓“等待时间下降”，不要把“调整规则”本身当成效果。
+          </p>
+        </>
+      ) : (
+        <>
+          <ol>
+            <li>先写一个你真正认同的好处，不追求漂亮句。</li>
+            <li>再补一个限制：这个帮助在什么情况下会替代目标技能？</li>
+            <li>最后给出顺序：先亲自尝试，再在卡住后使用工具。</li>
+          </ol>
+          <p className="method-example">
+            <strong>无关题目的方法示例：</strong>
+            写计算器时，可以按“提高核对效率 → 不能替代基本运算 →
+            先估算再验证”的顺序搭出骨架，再换成自己的英文。
+          </p>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -646,7 +868,7 @@ function WrapUpWorkspace({ workspace, onWorkspaceChange, onError }: LearningWork
           暂不评价难度
         </button>
         <button
-          className="primary-button"
+          className="primary-button strong-action"
           type="button"
           onClick={() => finish(false)}
           disabled={isPending}

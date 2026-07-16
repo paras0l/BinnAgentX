@@ -108,7 +108,31 @@ test("first experience opens the reading and output workspace", async ({ page })
   await expect(page.getByRole("heading", { name: "先留下你的判断，再请求帮助" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "A Quiet Hour at the Library" })).toBeVisible();
   await expect(page.getByLabel(/^我的解释/)).toBeVisible();
+  await expect(page.getByRole("heading", { name: "2 项必做动作" })).toBeVisible();
+  await expect(page.getByText("看不懂时，选中原文并标出卡点")).toBeVisible();
+  await expect(page.getByRole("button", { name: /不知道怎么想/ })).toBeVisible();
   await expect(page.getByText(/正确答案|完整解析/)).toHaveCount(0);
+
+  await page.getByRole("button", { name: /不知道怎么想/ }).click();
+  await expect(page.getByText("方法示例，不对应当前题目；不会给出当前答案。")).toBeVisible();
+
+  const paragraph = page.locator('[data-paragraph-id="calibration_a_p1"]');
+  await paragraph.evaluate((element) => {
+    const textNode = element.firstChild;
+    if (!textNode) throw new Error("Expected paragraph text node");
+    const range = document.createRange();
+    range.setStart(textNode, 2);
+    range.setEnd(textNode, 24);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  });
+  await paragraph.dispatchEvent("mouseup");
+
+  await expect(page.getByRole("toolbar", { name: "选区语义工具" })).toBeVisible();
+  await page.getByRole("button", { name: "这句看不懂" }).click();
+  await expect(page.getByRole("group", { name: "看不懂的原因" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "长句", exact: true })).toBeVisible();
 
   const results = await new AxeBuilder({ page }).analyze();
   expect(results.violations).toEqual([]);
