@@ -1,9 +1,14 @@
 from typing import Annotated
 
-from fastapi import Depends, FastAPI
+from binnagent_domain.public_errors import PublicErrorCode
+from binnagent_domain.vertical_slice.errors import DomainError
+from fastapi import Depends, FastAPI, Request, status
+from fastapi.responses import JSONResponse
 
 from binnagent_api.auth import ControlIdentity, require_control_identity
 from binnagent_api.settings import get_settings
+from binnagent_api.vertical_slice.repository import TaskNotFoundError
+from binnagent_api.vertical_slice.routes import control_router, learner_router
 
 
 def create_learner_app() -> FastAPI:
@@ -23,6 +28,8 @@ def create_learner_app() -> FastAPI:
             "progress_evidence_policy": "delayed_independent_required_for_stable_claims",
         }
 
+    learner.include_router(learner_router)
+    _register_error_handlers(learner)
     return learner
 
 
@@ -50,4 +57,31 @@ def create_control_app() -> FastAPI:
             },
         }
 
+    control.include_router(control_router)
+    _register_error_handlers(control)
     return control
+
+
+def _register_error_handlers(app: FastAPI) -> None:
+    @app.exception_handler(DomainError)
+    async def domain_error(_: Request, exc: DomainError) -> JSONResponse:
+        status_code = (
+            status.HTTP_409_CONFLICT
+            if exc.code is PublicErrorCode.SESSION_CONFLICT
+            else status.HTTP_422_UNPROCESSABLE_CONTENT
+        )
+        return JSONResponse(
+            status_code=status_code,
+            content={
+                "code": exc.code.value,
+                "reason": exc.reason,
+                "current_version": exc.current_version,
+            },
+        )
+
+    @app.exception_handler(TaskNotFoundError)
+    async def task_not_found(_: Request, exc: TaskNotFoundError) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={"code": "TASK_NOT_FOUND", "task_id": exc.task_id},
+        )

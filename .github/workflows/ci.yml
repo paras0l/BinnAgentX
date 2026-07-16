@@ -63,6 +63,7 @@ jobs:
       - run: uv run alembic -c services/api/alembic.ini upgrade head
       - run: uv run alembic -c services/api/alembic.ini downgrade base
       - run: uv run alembic -c services/api/alembic.ini upgrade head
+      - run: uv run pytest tests/integration
 
   desktop-smoke:
     runs-on: ubuntu-latest

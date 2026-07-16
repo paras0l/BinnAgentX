@@ -55,6 +55,9 @@ plugins = ["pydantic.mypy"]
 [tool.pytest.ini_options]
 addopts = "--strict-config --strict-markers -q"
 testpaths = ["tests"]
+markers = [
+  "integration: requires the local PostgreSQL service and migrated schema",
+]
 
 [tool.ruff]
 target-version = "py313"

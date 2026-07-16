@@ -1,0 +1,432 @@
+import json
+from datetime import UTC, datetime
+from hashlib import sha256
+from typing import Annotated, Any
+from uuid import uuid4
+
+import sqlalchemy as sa
+from binnagent_domain.vertical_slice.aggregate import LearningTask, Transition
+from binnagent_domain.vertical_slice.commands import (
+    AddAnnotation,
+    CompleteTask,
+    CreateTask,
+    PauseTask,
+    RecordIntervention,
+    RecordRevision,
+    ReplaceMaterial,
+    ResumeTask,
+    SaveAttempt,
+)
+from binnagent_domain.vertical_slice.models import (
+    ActorType,
+    LearnerProfileSnapshot,
+    TextSpan,
+)
+from fastapi import APIRouter, Depends, Header
+
+from binnagent_api.auth import ControlIdentity, require_control_identity
+from binnagent_api.database import get_engine
+from binnagent_api.vertical_slice import tables
+from binnagent_api.vertical_slice.content_catalog import LocalContentCatalog
+from binnagent_api.vertical_slice.repository import VerticalSliceRepository
+from binnagent_api.vertical_slice.schemas import (
+    AnnotationRequest,
+    AttemptRequest,
+    AttemptView,
+    ControlReplayView,
+    CreateTaskRequest,
+    InterventionRequest,
+    LearnerTaskView,
+    RevisionRequest,
+    VersionedCommandRequest,
+)
+
+learner_router = APIRouter(prefix="/v1", tags=["vertical-slice"])
+control_router = APIRouter(prefix="/v1", tags=["vertical-slice-control"])
+repository = VerticalSliceRepository()
+content_catalog = LocalContentCatalog()
+IdempotencyKey = Annotated[
+    str,
+    Header(alias="Idempotency-Key", min_length=8, max_length=128, pattern=r"^[A-Za-z0-9_.:-]+$"),
+]
+
+
+@learner_router.post("/tasks", response_model=LearnerTaskView, status_code=201)
+async def create_task(body: CreateTaskRequest, idempotency_key: IdempotencyKey) -> LearnerTaskView:
+    async with get_engine().begin() as connection:
+        replay = await _find_replay(connection, idempotency_key, body, "create_task")
+        if replay is not None:
+            return _learner_view(replay, True)
+        now = datetime.now(UTC)
+        transition = LearningTask.create(
+            CreateTask(
+                task_id=_id("task"),
+                workflow_run_id=_id("workflow_run"),
+                task_type=body.task_type,
+                learner_profile=_profile(body, now),
+                material=content_catalog.first_for(body.task_type),
+                assignment_id=_id("assignment"),
+                now=now,
+            )
+        )
+        task, replayed = await repository.create(
+            connection,
+            transition,
+            idempotency_key=idempotency_key,
+            request_hash=_request_hash(body),
+            command_name="create_task",
+            actor=ActorType.LEARNER,
+        )
+    return _learner_view(task, replayed)
+
+
+@learner_router.get("/tasks/{task_id}", response_model=LearnerTaskView)
+async def get_task(task_id: str) -> LearnerTaskView:
+    async with get_engine().connect() as connection:
+        task = await repository.load(connection, task_id)
+    return _learner_view(task)
+
+
+@learner_router.post("/tasks/{task_id}/annotations", response_model=LearnerTaskView)
+async def add_annotation(
+    task_id: str, body: AnnotationRequest, idempotency_key: IdempotencyKey
+) -> LearnerTaskView:
+    async with get_engine().begin() as connection:
+        replay = await _find_replay(connection, idempotency_key, body, "add_annotation")
+        if replay is not None:
+            return _learner_view(replay, True)
+        previous = await repository.load(connection, task_id)
+        span = TextSpan(**body.span.model_dump())
+        content_catalog.validate_span(previous.current_material.content_version_id, span)
+        transition = previous.add_annotation(
+            AddAnnotation(
+                expected_version=body.expected_version,
+                annotation_id=_id("annotation"),
+                kind=body.kind,
+                span=span,
+                user_explanation=body.user_explanation,
+                now=datetime.now(UTC),
+            )
+        )
+        task, replayed = await _save(
+            connection,
+            previous,
+            transition,
+            idempotency_key,
+            body,
+            "add_annotation",
+        )
+    return _learner_view(task, replayed)
+
+
+@learner_router.post("/tasks/{task_id}/attempts", response_model=LearnerTaskView)
+async def save_attempt(
+    task_id: str, body: AttemptRequest, idempotency_key: IdempotencyKey
+) -> LearnerTaskView:
+    async with get_engine().begin() as connection:
+        replay = await _find_replay(connection, idempotency_key, body, "save_attempt")
+        if replay is not None:
+            return _learner_view(replay, True)
+        previous = await repository.load(connection, task_id)
+        transition = previous.save_attempt(
+            SaveAttempt(
+                expected_version=body.expected_version,
+                attempt_version_id=_id("attempt_version"),
+                text=body.text,
+                independence=body.independence,
+                now=datetime.now(UTC),
+            )
+        )
+        task, replayed = await _save(
+            connection, previous, transition, idempotency_key, body, "save_attempt"
+        )
+    return _learner_view(task, replayed)
+
+
+@learner_router.post("/tasks/{task_id}/revisions", response_model=LearnerTaskView)
+async def record_revision(
+    task_id: str, body: RevisionRequest, idempotency_key: IdempotencyKey
+) -> LearnerTaskView:
+    async with get_engine().begin() as connection:
+        replay = await _find_replay(connection, idempotency_key, body, "record_revision")
+        if replay is not None:
+            return _learner_view(replay, True)
+        previous = await repository.load(connection, task_id)
+        transition = previous.record_revision(
+            RecordRevision(
+                expected_version=body.expected_version,
+                revision_event_id=_id("revision_event"),
+                from_attempt_version_id=body.from_attempt_version_id,
+                to_attempt_version_id=body.to_attempt_version_id,
+                intervention_id=body.intervention_id,
+                result_status=body.result_status,
+                now=datetime.now(UTC),
+            )
+        )
+        task, replayed = await _save(
+            connection, previous, transition, idempotency_key, body, "record_revision"
+        )
+    return _learner_view(task, replayed)
+
+
+@learner_router.post("/tasks/{task_id}/material-seen", response_model=LearnerTaskView)
+async def report_material_seen(
+    task_id: str, body: VersionedCommandRequest, idempotency_key: IdempotencyKey
+) -> LearnerTaskView:
+    async with get_engine().begin() as connection:
+        replay = await _find_replay(connection, idempotency_key, body, "report_material_seen")
+        if replay is not None:
+            return _learner_view(replay, True)
+        previous = await repository.load(connection, task_id)
+        transition = previous.replace_material(
+            ReplaceMaterial(
+                expected_version=body.expected_version,
+                assignment_id=_id("assignment"),
+                replacement=content_catalog.replacement_for(
+                    previous.task_type,
+                    previous.current_material.content_version_id,
+                ),
+                reason_code="material_seen",
+                now=datetime.now(UTC),
+            )
+        )
+        task, replayed = await _save(
+            connection,
+            previous,
+            transition,
+            idempotency_key,
+            body,
+            "report_material_seen",
+        )
+    return _learner_view(task, replayed)
+
+
+@learner_router.post("/tasks/{task_id}/pause", response_model=LearnerTaskView)
+async def pause_task(
+    task_id: str, body: VersionedCommandRequest, idempotency_key: IdempotencyKey
+) -> LearnerTaskView:
+    async with get_engine().begin() as connection:
+        replay = await _find_replay(connection, idempotency_key, body, "pause_task")
+        if replay is not None:
+            return _learner_view(replay, True)
+        previous = await repository.load(connection, task_id)
+        transition = previous.pause(PauseTask(body.expected_version, datetime.now(UTC)))
+        task, replayed = await _save(
+            connection, previous, transition, idempotency_key, body, "pause_task"
+        )
+    return _learner_view(task, replayed)
+
+
+@learner_router.post("/tasks/{task_id}/resume", response_model=LearnerTaskView)
+async def resume_task(
+    task_id: str, body: VersionedCommandRequest, idempotency_key: IdempotencyKey
+) -> LearnerTaskView:
+    async with get_engine().begin() as connection:
+        replay = await _find_replay(connection, idempotency_key, body, "resume_task")
+        if replay is not None:
+            return _learner_view(replay, True)
+        previous = await repository.load(connection, task_id)
+        current_material = content_catalog.current(previous.current_material.content_version_id)
+        transition = previous.resume(
+            ResumeTask(
+                body.expected_version,
+                current_material.rights_status.value,
+                datetime.now(UTC),
+            )
+        )
+        task, replayed = await _save(
+            connection, previous, transition, idempotency_key, body, "resume_task"
+        )
+    return _learner_view(task, replayed)
+
+
+@learner_router.post("/tasks/{task_id}/complete", response_model=LearnerTaskView)
+async def complete_task(
+    task_id: str, body: VersionedCommandRequest, idempotency_key: IdempotencyKey
+) -> LearnerTaskView:
+    async with get_engine().begin() as connection:
+        replay = await _find_replay(connection, idempotency_key, body, "complete_task")
+        if replay is not None:
+            return _learner_view(replay, True)
+        previous = await repository.load(connection, task_id)
+        transition = previous.complete(CompleteTask(body.expected_version, datetime.now(UTC)))
+        task, replayed = await _save(
+            connection, previous, transition, idempotency_key, body, "complete_task"
+        )
+    return _learner_view(task, replayed)
+
+
+@control_router.post("/tasks/{task_id}/interventions", response_model=ControlReplayView)
+async def record_intervention(
+    task_id: str,
+    body: InterventionRequest,
+    idempotency_key: IdempotencyKey,
+    identity: Annotated[ControlIdentity, Depends(require_control_identity)],
+) -> ControlReplayView:
+    del identity
+    async with get_engine().begin() as connection:
+        replay = await _find_replay(connection, idempotency_key, body, body.reason_code)
+        if replay is not None:
+            return await _control_view(connection, replay)
+        previous = await repository.load(connection, task_id)
+        transition = previous.record_intervention(
+            RecordIntervention(
+                expected_version=body.expected_version,
+                intervention_id=_id("intervention"),
+                input_attempt_version_id=body.input_attempt_version_id,
+                hint_level=body.hint_level,
+                intervention_type=body.intervention_type,
+                model_adapter=body.model_adapter,
+                prompt_version=body.prompt_version,
+                result_status=body.result_status,
+                now=datetime.now(UTC),
+            )
+        )
+        task, replayed = await repository.save(
+            connection,
+            previous,
+            transition,
+            idempotency_key=idempotency_key,
+            request_hash=_request_hash(body),
+            command_name=body.reason_code,
+            actor=ActorType.DEVELOPER_REVIEWER,
+        )
+        del replayed
+        return await _control_view(connection, task)
+
+
+@control_router.get("/tasks/{task_id}/replay", response_model=ControlReplayView)
+async def get_control_replay(
+    task_id: str,
+    _: Annotated[ControlIdentity, Depends(require_control_identity)],
+) -> ControlReplayView:
+    async with get_engine().connect() as connection:
+        task = await repository.load(connection, task_id)
+        return await _control_view(connection, task)
+
+
+async def _save(
+    connection: Any,
+    previous: LearningTask,
+    transition: Transition,
+    idempotency_key: str,
+    body: Any,
+    command_name: str,
+) -> tuple[LearningTask, bool]:
+    return await repository.save(
+        connection,
+        previous,
+        transition,
+        idempotency_key=idempotency_key,
+        request_hash=_request_hash(body),
+        command_name=command_name,
+        actor=ActorType.LEARNER,
+    )
+
+
+async def _find_replay(
+    connection: Any,
+    idempotency_key: str,
+    body: Any,
+    command_name: str,
+) -> LearningTask | None:
+    return await repository.find_replay(
+        connection,
+        idempotency_key=idempotency_key,
+        request_hash=_request_hash(body),
+        command_name=command_name,
+    )
+
+
+async def _control_view(connection: Any, task: LearningTask) -> ControlReplayView:
+    rows = (
+        (
+            await connection.execute(
+                sa.select(tables.domain_events)
+                .where(tables.domain_events.c.aggregate_id == task.task_id)
+                .order_by(
+                    tables.domain_events.c.aggregate_version,
+                    tables.domain_events.c.occurred_at,
+                )
+            )
+        )
+        .mappings()
+        .all()
+    )
+    return ControlReplayView(
+        task_id=task.task_id,
+        workflow_run_id=task.workflow_run_id,
+        state=task.state.value,
+        version=task.version,
+        evidence_counts={
+            "annotations": len(task.annotations),
+            "attempts": len(task.attempts),
+            "interventions": len(task.interventions),
+            "revisions": len(task.revisions),
+        },
+        event_chain=[
+            {
+                "event_id": row["event_id"],
+                "event_type": row["event_type"],
+                "aggregate_version": row["aggregate_version"],
+                "payload": row["payload"],
+                "occurred_at": row["occurred_at"],
+            }
+            for row in rows
+        ],
+    )
+
+
+def _profile(body: CreateTaskRequest, now: datetime) -> LearnerProfileSnapshot:
+    value = body.learner_profile
+    return LearnerProfileSnapshot(
+        learner_snapshot_id=_id("learner_snapshot"),
+        exam_track=value.exam_track,
+        target_score=value.target_score,
+        weekly_minutes=value.weekly_minutes,
+        self_reported_level=value.self_reported_level,
+        prior_exam_seen=value.prior_exam_seen,
+        session_minutes=value.session_minutes,
+        feedback_density=value.feedback_density,
+        timed=value.timed,
+        evidence_count=value.evidence_count,
+        confidence_band=value.confidence_band,
+        created_at=now,
+    )
+
+
+def _learner_view(task: LearningTask, replayed: bool = False) -> LearnerTaskView:
+    return LearnerTaskView(
+        task_id=task.task_id,
+        workflow_run_id=task.workflow_run_id,
+        task_type=task.task_type.value,
+        state=task.state.value,
+        version=task.version,
+        highest_hint_level=task.highest_hint_level,
+        current_content_version_id=task.current_material.content_version_id,
+        annotation_count=len(task.current_annotations),
+        attempts=[
+            AttemptView(
+                attempt_version_id=item.attempt_version_id,
+                version=item.version,
+                text=item.text,
+                content_hash=item.content_hash,
+                independence=item.independence.value,
+                created_at=item.created_at,
+            )
+            for item in task.current_attempts
+        ],
+        intervention_count=len(task.interventions),
+        revision_count=len(task.revisions),
+        completion_gaps=list(task.completion_gaps()),
+        replayed=replayed,
+    )
+
+
+def _request_hash(body: Any) -> str:
+    value = json.dumps(body.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
+    return sha256(value.encode("utf-8")).hexdigest()
+
+
+def _id(prefix: str) -> str:
+    return f"{prefix}_{uuid4().hex}"
