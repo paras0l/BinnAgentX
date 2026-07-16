@@ -12,12 +12,23 @@
 
 # Dependency and build caches
 node_modules/
+.next/
+.turbo/
+.pnpm-store/
 __pycache__/
 *.py[cod]
 .pytest_cache/
 .mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
 dist/
 build/
+coverage/
+playwright-report/
+test-results/
+openwiki/
 
 # Logs and temporary files
 *.log

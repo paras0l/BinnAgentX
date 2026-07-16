@@ -1,0 +1,81 @@
+name: Engineering baseline
+
+on:
+  pull_request:
+  push:
+    branches: [main, "codex/**"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: engineering-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version-file: .python-version
+          enable-cache: true
+      - run: pnpm install --frozen-lockfile
+      - run: uv sync --frozen
+      - run: pnpm check
+      - run: pnpm build
+
+  migrations:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: binnagent
+          POSTGRES_USER: binnagent
+          POSTGRES_PASSWORD: binnagent_dev_only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U binnagent -d binnagent"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      BINNAGENT_ENV: test
+      BINNAGENT_DATABASE_URL: postgresql+asyncpg://binnagent:binnagent_dev_only@127.0.0.1:5432/binnagent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version-file: .python-version
+          enable-cache: true
+      - run: uv sync --frozen
+      - run: uv run alembic -c services/api/alembic.ini upgrade head
+      - run: uv run alembic -c services/api/alembic.ini downgrade base
+      - run: uv run alembic -c services/api/alembic.ini upgrade head
+
+  desktop-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.9.0
+          run_install: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:e2e

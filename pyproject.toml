@@ -1,0 +1,68 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "binnagent-spike"
+version = "0.1.0"
+description = "Engineering skeleton for the BinnAgent exam-English technical Spike"
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+  "alembic>=1.16,<2",
+  "asyncpg>=0.30,<1",
+  "fastapi>=0.116,<1",
+  "jsonschema>=4.24,<5",
+  "opentelemetry-api>=1.35,<2",
+  "opentelemetry-sdk>=1.35,<2",
+  "pydantic>=2.11,<3",
+  "pydantic-settings>=2.10,<3",
+  "sqlalchemy[asyncio]>=2.0.41,<2.1",
+  "structlog>=25.4,<26",
+  "uvicorn[standard]>=0.35,<1",
+]
+
+[project.scripts]
+binnagent-api = "binnagent_api.main:run"
+binnagent-worker = "binnagent_worker.main:run"
+
+[dependency-groups]
+dev = [
+  "httpx2>=2.7,<3",
+  "hypothesis>=6.135,<7",
+  "mypy>=1.16,<2",
+  "pytest>=8.4,<9",
+  "pytest-asyncio>=1.0,<2",
+  "ruff>=0.12,<1",
+  "types-jsonschema>=4.24,<5",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = [
+  "python/binnagent_domain",
+  "python/binnagent_workflow",
+  "python/binnagent_evaluation",
+  "services/api/binnagent_api",
+  "services/worker/binnagent_worker",
+]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+warn_unreachable = true
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+addopts = "--strict-config --strict-markers -q"
+testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"

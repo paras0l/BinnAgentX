@@ -1,0 +1,34 @@
+{
+  "name": "binnagent-exam-english",
+  "version": "0.1.0",
+  "private": true,
+  "packageManager": "pnpm@11.9.0",
+  "engines": {
+    "node": ">=24.14.0 <25",
+    "pnpm": "11.9.0"
+  },
+  "scripts": {
+    "build": "pnpm --recursive --if-present build",
+    "check": "pnpm format:check && pnpm lint && pnpm typecheck && pnpm test:unit && pnpm test:contract",
+    "db:migrate": "uv run alembic -c services/api/alembic.ini upgrade head",
+    "db:up": "docker compose up -d postgres",
+    "dev:control": "pnpm --filter @binnagent/control-cockpit dev",
+    "dev:learner": "pnpm --filter @binnagent/learner-web dev",
+    "dev:reset": "uv run python scripts/reset_development.py",
+    "format": "prettier --write . && uv run ruff format",
+    "format:check": "prettier --check . && uv run ruff format --check",
+    "lint": "pnpm --recursive --if-present lint && uv run ruff check",
+    "test:contract": "uv run pytest tests/contract",
+    "test:e2e": "playwright test",
+    "test:unit": "pnpm --recursive --if-present test && uv run pytest tests/unit",
+    "typecheck": "pnpm --recursive --if-present typecheck && uv run mypy python services tests",
+    "api": "uv run binnagent-api",
+    "worker": "uv run binnagent-worker"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "4.12.1",
+    "@playwright/test": "1.61.1",
+    "prettier": "3.9.5",
+    "typescript": "5.9.3"
+  }
+}

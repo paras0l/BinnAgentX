@@ -1,0 +1,135 @@
+:root {
+  --control-ink: #e9eef3;
+  --control-muted: #9eacb9;
+  --control-panel: #18232d;
+  --control-line: #2b3a46;
+  --control-accent: #77d4b2;
+}
+
+html {
+  background: #0d151c;
+  color: var(--control-ink);
+}
+
+.control-shell {
+  width: min(1500px, calc(100% - 56px));
+  min-height: 100vh;
+  margin: 0 auto;
+  padding: 28px 0 42px;
+}
+
+.control-header,
+.boundary-banner,
+.identity-block,
+footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.control-header {
+  min-height: 82px;
+  border-bottom: 1px solid var(--control-line);
+}
+
+.control-header p,
+.boundary-banner p {
+  margin: 0 0 6px;
+  color: var(--control-accent);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.13em;
+}
+
+.control-header h1,
+.boundary-banner h2,
+.view-grid h2 {
+  margin: 0;
+}
+
+.control-header h1 {
+  font-size: 24px;
+}
+
+.identity-block {
+  gap: 14px;
+  color: var(--control-muted);
+  font-size: 13px;
+}
+
+.identity-block strong {
+  border: 1px solid var(--control-line);
+  border-radius: 8px;
+  padding: 9px 12px;
+  color: var(--control-ink);
+  background: var(--control-panel);
+}
+
+.boundary-banner {
+  margin: 28px 0;
+  padding: 30px 34px;
+  border: 1px solid #315444;
+  border-radius: 14px;
+  background: #11261f;
+}
+
+.boundary-banner h2 {
+  font-size: 26px;
+}
+
+.boundary-banner > span {
+  border-radius: 999px;
+  padding: 8px 13px;
+  color: #b9f3dc;
+  background: #244c3d;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.view-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.view-grid article {
+  min-height: 280px;
+  padding: 28px;
+  border: 1px solid var(--control-line);
+  border-radius: 12px;
+  background: var(--control-panel);
+}
+
+.view-index {
+  color: var(--control-accent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+
+.view-grid h2 {
+  margin-top: 48px;
+  font-size: 20px;
+}
+
+.view-grid p {
+  min-height: 50px;
+  color: var(--control-muted);
+  line-height: 1.6;
+}
+
+.view-grid button {
+  margin-top: 28px;
+  border: 1px solid var(--control-line);
+  border-radius: 8px;
+  padding: 9px 12px;
+  color: var(--control-muted);
+  background: #111a22;
+  cursor: not-allowed;
+}
+
+footer {
+  margin-top: 24px;
+  padding: 20px 4px;
+  color: var(--control-muted);
+  font-size: 13px;
+}
