@@ -173,6 +173,9 @@ async def test_h2_revision_is_idempotent_auditable_and_user_authored() -> None:
                 "intervention_type": "priority_feedback",
                 "model_adapter": "deterministic_fixture",
                 "prompt_version": "prompt_priority_feedback_v1",
+                "delivered_content": (
+                    "Clarify the recommendation sequence before polishing expression."
+                ),
                 "result_status": "delivered",
                 "reason_code": "priority_feedback_delivered",
             },
@@ -358,3 +361,122 @@ async def test_stale_write_returns_only_public_conflict_details() -> None:
         assert invalidation_count == 1
         assert assignment_count == 2
         assert preserved_annotation_count == 1
+
+
+@pytest.mark.asyncio
+async def test_h1_is_gated_auditable_and_requires_linked_learner_v2() -> None:
+    transport = httpx2.ASGITransport(app=create_app())
+    async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
+        task = await _seed_task(
+            TaskType.CALIBRATION_READING,
+            exam_track=ExamTrack.ENGLISH_1,
+            self_reported_level=SelfReportedLevel.DEVELOPING,
+        )
+        task_id = task["task_id"]
+
+        too_early = await client.post(
+            f"/learner/v1/tasks/{task_id}/hints/h1",
+            headers={"Idempotency-Key": "h1-before-v1-0001"},
+            json={
+                "expected_version": task["version"],
+                "input_attempt_version_id": "attempt_version_missing",
+            },
+        )
+        assert too_early.status_code == 422
+        assert too_early.json()["reason"] == "learner_attempt_required_before_intervention"
+
+        v1 = await client.post(
+            f"/learner/v1/tasks/{task_id}/attempts",
+            headers={"Idempotency-Key": "h1-v1-0001"},
+            json={
+                "expected_version": task["version"],
+                "text": "选择 A。\nThe rule created more rooms.",
+                "independence": "independent",
+            },
+        )
+        assert v1.status_code == 200
+        v1_payload = v1.json()
+        v1_id = v1_payload["attempts"][0]["attempt_version_id"]
+
+        h1_body = {
+            "expected_version": v1_payload["version"],
+            "input_attempt_version_id": v1_id,
+        }
+        hint = await client.post(
+            f"/learner/v1/tasks/{task_id}/hints/h1",
+            headers={"Idempotency-Key": "h1-delivery-0001"},
+            json=h1_body,
+        )
+        assert hint.status_code == 200
+        hint_payload = hint.json()
+        intervention = hint_payload["interventions"][0]
+        assert intervention["hint_level"] == 1
+        assert intervention["reason_code"] == "learner_requested_h1"
+        assert intervention["delivered_content"] == (
+            "Look for the result reported after the two-week trial."
+        )
+        assert (
+            intervention["content_hash"]
+            == sha256(intervention["delivered_content"].encode()).hexdigest()
+        )
+        assert "existing rooms became" not in hint.text
+        assert hint_payload["completion_gaps"] == ["learner_output_after_intervention"]
+
+        replay = await client.post(
+            f"/learner/v1/tasks/{task_id}/hints/h1",
+            headers={"Idempotency-Key": "h1-delivery-0001"},
+            json=h1_body,
+        )
+        assert replay.status_code == 200
+        assert replay.json()["replayed"] is True
+        assert len(replay.json()["interventions"]) == 1
+
+        unchanged = await client.post(
+            f"/learner/v1/tasks/{task_id}/attempts",
+            headers={"Idempotency-Key": "h1-v2-unchanged-0001"},
+            json={
+                "expected_version": hint_payload["version"],
+                "text": v1_payload["attempts"][0]["text"],
+                "independence": "hinted_low",
+            },
+        )
+        assert unchanged.status_code == 422
+        assert unchanged.json()["reason"] == "revision_must_change_output"
+
+        v2 = await client.post(
+            f"/learner/v1/tasks/{task_id}/attempts",
+            headers={"Idempotency-Key": "h1-v2-0001"},
+            json={
+                "expected_version": hint_payload["version"],
+                "text": "选择 B。\nThe reported result was broader access without new rooms.",
+                "independence": "hinted_low",
+            },
+        )
+        assert v2.status_code == 200
+        v2_payload = v2.json()
+        assert v2_payload["completion_gaps"] == ["learner_revision_after_intervention"]
+
+        revision = await client.post(
+            f"/learner/v1/tasks/{task_id}/revisions",
+            headers={"Idempotency-Key": "h1-revision-0001"},
+            json={
+                "expected_version": v2_payload["version"],
+                "from_attempt_version_id": v1_id,
+                "to_attempt_version_id": v2_payload["attempts"][1]["attempt_version_id"],
+                "intervention_id": intervention["intervention_id"],
+                "result_status": "needs_review",
+            },
+        )
+        assert revision.status_code == 200
+        revision_payload = revision.json()
+        assert revision_payload["completion_gaps"] == []
+        assert revision_payload["revisions"][0]["result_status"] == "needs_review"
+
+        completed = await client.post(
+            f"/learner/v1/tasks/{task_id}/complete",
+            headers={"Idempotency-Key": "h1-complete-0001"},
+            json={"expected_version": revision_payload["version"]},
+        )
+        assert completed.status_code == 200
+        assert completed.json()["state"] == "completed"
+        assert completed.json()["highest_hint_level"] == 1

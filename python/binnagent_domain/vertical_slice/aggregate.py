@@ -153,6 +153,12 @@ class LearningTask:
         required_independence = self._required_independence()
         if command.independence is not required_independence:
             self._invalid(f"attempt_must_be_{required_independence.value}")
+        if (
+            required_independence is not AttemptIndependence.INDEPENDENT
+            and self.current_attempts
+            and self.current_attempts[-1].text == text
+        ):
+            self._invalid("revision_must_change_output")
         attempt = Attempt(
             attempt_version_id=command.attempt_version_id,
             task_id=self.task_id,
@@ -201,6 +207,11 @@ class LearningTask:
             self._invalid("intervention_id_already_exists")
         if self._has_unanswered_intervention():
             self._invalid("learner_output_required_after_intervention")
+        delivered_content = command.delivered_content.strip()
+        if not delivered_content or len(delivered_content) > 4000:
+            self._invalid("invalid_intervention_content")
+        if not command.reason_code or len(command.reason_code) > 64:
+            self._invalid("invalid_intervention_reason")
         intervention = AiIntervention(
             intervention_id=command.intervention_id,
             task_id=self.task_id,
@@ -209,6 +220,9 @@ class LearningTask:
             intervention_type=command.intervention_type,
             model_adapter=command.model_adapter,
             prompt_version=command.prompt_version,
+            reason_code=command.reason_code,
+            delivered_content=delivered_content,
+            content_hash=_hash(delivered_content),
             result_status=command.result_status,
             created_at=command.now,
         )
@@ -249,6 +263,8 @@ class LearningTask:
                         "result_status": intervention.result_status.value,
                         "model_adapter": intervention.model_adapter,
                         "prompt_version": intervention.prompt_version,
+                        "reason_code": intervention.reason_code,
+                        "content_hash": intervention.content_hash,
                     },
                 ),
             ),
@@ -428,6 +444,12 @@ class LearningTask:
             )
             if not any(item.version > source.version for item in current_attempts):
                 gaps.append("learner_output_after_intervention")
+                break
+            if not any(
+                revision.intervention_id == intervention.intervention_id
+                for revision in self.revisions
+            ):
+                gaps.append("learner_revision_after_intervention")
                 break
         if self.task_type is TaskType.MICRO_EXPRESSION:
             delivered_feedback = [

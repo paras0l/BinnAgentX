@@ -59,6 +59,18 @@ class LocalContentCatalog:
         manifest_path = Path(get_settings().content_manifest)
         return self._read_json(manifest_path.parent / str(entry.get("file", "")))
 
+    def approved_reading_hint(self, content_version_id: str, hint_level: int) -> str:
+        """Return one rights-checked, versioned hint without exposing the answer payload."""
+        if hint_level not in {1, 2, 3, 4}:
+            self._not_eligible("unsupported_hint_level")
+        item = self.learner_item(content_version_id)
+        question = item.get("main_question")
+        hints = question.get("hints") if isinstance(question, dict) else None
+        hint = hints.get(f"h{hint_level}") if isinstance(hints, dict) else None
+        if not isinstance(hint, str) or not hint.strip():
+            self._not_eligible("approved_hint_unavailable")
+        return hint.strip()
+
     def paired_expression_for(self, matched_content_version_id: str) -> MaterialRef:
         preferred = (
             "micro_expression_02_v1"

@@ -60,6 +60,7 @@ class InterventionRequest(BaseModel):
     intervention_type: InterventionType
     model_adapter: Annotated[str, Field(pattern=r"^[a-z][a-z0-9_-]{1,63}$")]
     prompt_version: Identifier
+    delivered_content: Annotated[str, Field(min_length=1, max_length=4000)]
     result_status: InterventionResult
     reason_code: Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]{2,63}$")]
 
@@ -74,6 +75,10 @@ class RevisionRequest(BaseModel):
 
 class VersionedCommandRequest(BaseModel):
     expected_version: Annotated[int, Field(ge=1)]
+
+
+class HintRequest(VersionedCommandRequest):
+    input_attempt_version_id: Identifier
 
 
 class AttemptView(BaseModel):
@@ -100,6 +105,27 @@ class AnnotationView(BaseModel):
     created_at: datetime
 
 
+class InterventionView(BaseModel):
+    intervention_id: str
+    input_attempt_version_id: str
+    hint_level: int
+    intervention_type: str
+    reason_code: str
+    delivered_content: str
+    content_hash: str
+    result_status: str
+    created_at: datetime
+
+
+class RevisionView(BaseModel):
+    revision_event_id: str
+    from_attempt_version_id: str
+    to_attempt_version_id: str
+    intervention_id: str | None
+    result_status: str
+    created_at: datetime
+
+
 class LearnerTaskView(BaseModel):
     task_id: str
     workflow_run_id: str
@@ -111,6 +137,8 @@ class LearnerTaskView(BaseModel):
     annotation_count: int
     annotations: list[AnnotationView]
     attempts: list[AttemptView]
+    interventions: list[InterventionView]
+    revisions: list[RevisionView]
     intervention_count: int
     revision_count: int
     completion_gaps: list[str]

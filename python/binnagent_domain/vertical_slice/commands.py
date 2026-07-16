@@ -53,6 +53,8 @@ class RecordIntervention:
     intervention_type: InterventionType
     model_adapter: str
     prompt_version: str
+    reason_code: str
+    delivered_content: str
     result_status: InterventionResult
     now: datetime
 

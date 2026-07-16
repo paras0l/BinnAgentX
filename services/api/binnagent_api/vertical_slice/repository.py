@@ -381,6 +381,9 @@ class VerticalSliceRepository:
                     intervention_type=item.intervention_type.value,
                     model_adapter=item.model_adapter,
                     prompt_version=item.prompt_version,
+                    reason_code=item.reason_code,
+                    delivered_content=item.delivered_content,
+                    content_hash=item.content_hash,
                     result_status=item.result_status.value,
                     created_at=item.created_at,
                 )
@@ -626,6 +629,9 @@ def _intervention(row: sa.RowMapping) -> AiIntervention:
         intervention_type=InterventionType(row["intervention_type"]),
         model_adapter=row["model_adapter"],
         prompt_version=row["prompt_version"],
+        reason_code=row["reason_code"],
+        delivered_content=row["delivered_content"],
+        content_hash=row["content_hash"],
         result_status=InterventionResult(row["result_status"]),
         created_at=row["created_at"],
     )

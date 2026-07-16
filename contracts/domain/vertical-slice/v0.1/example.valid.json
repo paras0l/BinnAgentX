@@ -84,6 +84,9 @@
       "intervention_type": "priority_feedback",
       "model_adapter": "deterministic_fixture",
       "prompt_version": "prompt_priority_feedback_v1",
+      "reason_code": "priority_feedback_delivered",
+      "delivered_content": "Clarify the sequence before polishing expression.",
+      "content_hash": "d7e22af34b2c7cf8345375685e98639da79507dcc9f0311ce132bcb44ffb1d63",
       "result_status": "delivered",
       "created_at": "2026-07-15T12:12:00Z"
     }

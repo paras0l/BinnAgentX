@@ -159,6 +159,9 @@ class AiIntervention:
     intervention_type: InterventionType
     model_adapter: str
     prompt_version: str
+    reason_code: str
+    delivered_content: str
+    content_hash: str
     result_status: InterventionResult
     created_at: datetime
 

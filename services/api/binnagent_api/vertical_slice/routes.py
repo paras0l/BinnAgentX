@@ -5,6 +5,7 @@ from typing import Annotated, Any
 from uuid import uuid4
 
 import sqlalchemy as sa
+from binnagent_domain.public_errors import PublicErrorCode
 from binnagent_domain.vertical_slice.aggregate import LearningTask, Transition
 from binnagent_domain.vertical_slice.commands import (
     AddAnnotation,
@@ -16,8 +17,12 @@ from binnagent_domain.vertical_slice.commands import (
     ResumeTask,
     SaveAttempt,
 )
+from binnagent_domain.vertical_slice.errors import DomainError
 from binnagent_domain.vertical_slice.models import (
     ActorType,
+    InterventionResult,
+    InterventionType,
+    TaskType,
     TextSpan,
 )
 from fastapi import APIRouter, Depends, Header
@@ -34,9 +39,12 @@ from binnagent_api.vertical_slice.schemas import (
     AttemptRequest,
     AttemptView,
     ControlReplayView,
+    HintRequest,
     InterventionRequest,
+    InterventionView,
     LearnerTaskView,
     RevisionRequest,
+    RevisionView,
     VersionedCommandRequest,
 )
 
@@ -109,6 +117,61 @@ async def save_attempt(
         )
         task, replayed = await _save(
             connection, previous, transition, idempotency_key, body, "save_attempt"
+        )
+    return learner_task_view(task, replayed)
+
+
+@learner_router.post("/tasks/{task_id}/hints/h1", response_model=LearnerTaskView)
+async def request_h1_hint(
+    task_id: str, body: HintRequest, idempotency_key: IdempotencyKey
+) -> LearnerTaskView:
+    async with get_engine().begin() as connection:
+        replay = await _find_replay(connection, idempotency_key, body, "learner_requested_h1")
+        if replay is not None:
+            return learner_task_view(replay, True)
+        previous = await repository.load(connection, task_id)
+        if previous.task_type is TaskType.MICRO_EXPRESSION:
+            raise DomainError(PublicErrorCode.SAVE_NOT_CONFIRMED, "reading_h1_only")
+        if not previous.current_attempts:
+            raise DomainError(
+                PublicErrorCode.SAVE_NOT_CONFIRMED,
+                "learner_attempt_required_before_intervention",
+            )
+        current_attempt_ids = {item.attempt_version_id for item in previous.current_attempts}
+        if any(
+            item.input_attempt_version_id in current_attempt_ids and item.hint_level == 1
+            for item in previous.interventions
+        ):
+            raise DomainError(
+                PublicErrorCode.SAVE_NOT_CONFIRMED,
+                "h1_already_delivered_for_current_material",
+            )
+        delivered_content = content_catalog.approved_reading_hint(
+            previous.current_material.content_version_id, 1
+        )
+        transition = previous.record_intervention(
+            RecordIntervention(
+                expected_version=body.expected_version,
+                intervention_id=_id("intervention"),
+                input_attempt_version_id=body.input_attempt_version_id,
+                hint_level=1,
+                intervention_type=InterventionType.TASK_RESTATEMENT,
+                model_adapter="approved_content_fixture",
+                prompt_version="prompt_reading_h1_v1",
+                reason_code="learner_requested_h1",
+                delivered_content=delivered_content,
+                result_status=InterventionResult.DELIVERED,
+                now=datetime.now(UTC),
+            )
+        )
+        task, replayed = await repository.save(
+            connection,
+            previous,
+            transition,
+            idempotency_key=idempotency_key,
+            request_hash=_request_hash(body),
+            command_name="learner_requested_h1",
+            actor=ActorType.SYSTEM,
         )
     return learner_task_view(task, replayed)
 
@@ -248,6 +311,8 @@ async def record_intervention(
                 intervention_type=body.intervention_type,
                 model_adapter=body.model_adapter,
                 prompt_version=body.prompt_version,
+                reason_code=body.reason_code,
+                delivered_content=body.delivered_content,
                 result_status=body.result_status,
                 now=datetime.now(UTC),
             )
@@ -349,6 +414,17 @@ async def _control_view(connection: Any, task: LearningTask) -> ControlReplayVie
 
 def learner_task_view(task: LearningTask, replayed: bool = False) -> LearnerTaskView:
     current_annotations = task.current_annotations
+    current_attempts = task.current_attempts
+    current_attempt_ids = {item.attempt_version_id for item in current_attempts}
+    current_interventions = [
+        item for item in task.interventions if item.input_attempt_version_id in current_attempt_ids
+    ]
+    current_revisions = [
+        item
+        for item in task.revisions
+        if item.from_attempt_version_id in current_attempt_ids
+        and item.to_attempt_version_id in current_attempt_ids
+    ]
     return LearnerTaskView(
         task_id=task.task_id,
         workflow_run_id=task.workflow_run_id,
@@ -382,7 +458,32 @@ def learner_task_view(task: LearningTask, replayed: bool = False) -> LearnerTask
                 independence=item.independence.value,
                 created_at=item.created_at,
             )
-            for item in task.current_attempts
+            for item in current_attempts
+        ],
+        interventions=[
+            InterventionView(
+                intervention_id=item.intervention_id,
+                input_attempt_version_id=item.input_attempt_version_id,
+                hint_level=item.hint_level,
+                intervention_type=item.intervention_type.value,
+                reason_code=item.reason_code,
+                delivered_content=item.delivered_content,
+                content_hash=item.content_hash,
+                result_status=item.result_status.value,
+                created_at=item.created_at,
+            )
+            for item in current_interventions
+        ],
+        revisions=[
+            RevisionView(
+                revision_event_id=item.revision_event_id,
+                from_attempt_version_id=item.from_attempt_version_id,
+                to_attempt_version_id=item.to_attempt_version_id,
+                intervention_id=item.intervention_id,
+                result_status=item.result_status.value,
+                created_at=item.created_at,
+            )
+            for item in current_revisions
         ],
         intervention_count=len(task.interventions),
         revision_count=len(task.revisions),

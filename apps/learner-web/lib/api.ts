@@ -118,6 +118,30 @@ export function saveAttempt(task: LearnerTaskView, text: string): Promise<Learne
   });
 }
 
+export function requestH1Hint(task: LearnerTaskView): Promise<LearnerTaskView> {
+  const latestAttempt = task.attempts.at(-1);
+  if (!latestAttempt) return Promise.reject(new Error("V1 is required before H1"));
+  return command(`/v1/tasks/${task.task_id}/hints/h1`, "request_h1", {
+    expected_version: task.version,
+    input_attempt_version_id: latestAttempt.attempt_version_id,
+  });
+}
+
+export function saveRevision(
+  task: LearnerTaskView,
+  fromAttemptVersionId: string,
+  toAttemptVersionId: string,
+  interventionId: string,
+): Promise<LearnerTaskView> {
+  return command(`/v1/tasks/${task.task_id}/revisions`, "save_revision", {
+    expected_version: task.version,
+    from_attempt_version_id: fromAttemptVersionId,
+    to_attempt_version_id: toAttemptVersionId,
+    intervention_id: interventionId,
+    result_status: "needs_review",
+  });
+}
+
 export function completeTask(task: LearnerTaskView): Promise<LearnerTaskView> {
   return command(`/v1/tasks/${task.task_id}/complete`, "complete_task", {
     expected_version: task.version,

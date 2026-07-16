@@ -37,6 +37,27 @@ export interface AnnotationView {
   created_at: string;
 }
 
+export interface InterventionView {
+  intervention_id: string;
+  input_attempt_version_id: string;
+  hint_level: number;
+  intervention_type: string;
+  reason_code: string;
+  delivered_content: string;
+  content_hash: string;
+  result_status: string;
+  created_at: string;
+}
+
+export interface RevisionView {
+  revision_event_id: string;
+  from_attempt_version_id: string;
+  to_attempt_version_id: string;
+  intervention_id: string | null;
+  result_status: string;
+  created_at: string;
+}
+
 export interface LearnerTaskView {
   task_id: string;
   workflow_run_id: string;
@@ -48,6 +69,8 @@ export interface LearnerTaskView {
   annotation_count: number;
   annotations: AnnotationView[];
   attempts: AttemptView[];
+  interventions: InterventionView[];
+  revisions: RevisionView[];
   intervention_count: number;
   revision_count: number;
   completion_gaps: string[];

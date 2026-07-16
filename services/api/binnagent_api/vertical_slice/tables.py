@@ -153,6 +153,9 @@ ai_interventions = sa.Table(
     sa.Column("intervention_type", sa.String(32), nullable=False),
     sa.Column("model_adapter", sa.String(64), nullable=False),
     sa.Column("prompt_version", sa.String(128), nullable=False),
+    sa.Column("reason_code", sa.String(64), nullable=False),
+    sa.Column("delivered_content", sa.Text(), nullable=False),
+    sa.Column("content_hash", sa.String(64), nullable=False),
     sa.Column("result_status", sa.String(32), nullable=False),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
 )

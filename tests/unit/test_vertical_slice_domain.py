@@ -149,6 +149,8 @@ def test_h2_feedback_requires_learner_v2_and_preserves_v1() -> None:
             intervention_type=InterventionType.PRIORITY_FEEDBACK,
             model_adapter="deterministic_fixture",
             prompt_version="prompt_priority_feedback_v1",
+            reason_code="priority_feedback_delivered",
+            delivered_content="Clarify the sequence before polishing expression.",
             result_status=InterventionResult.DELIVERED,
             now=NOW + timedelta(minutes=2),
         )
@@ -194,6 +196,8 @@ def test_intervention_cannot_precede_learner_output() -> None:
                 intervention_type=InterventionType.TASK_RESTATEMENT,
                 model_adapter="deterministic_fixture",
                 prompt_version="prompt_task_restatement_v1",
+                reason_code="learner_requested_h1",
+                delivered_content="Recheck what the question asks you to compare.",
                 result_status=InterventionResult.DELIVERED,
                 now=NOW,
             )
@@ -298,6 +302,8 @@ def test_every_hint_level_requires_a_correctly_attributed_new_output(
             intervention_type=InterventionType.LOCAL_HINT,
             model_adapter="deterministic_fixture",
             prompt_version="prompt_local_hint_v1",
+            reason_code="local_hint_delivered",
+            delivered_content="Check the relationship between the two clauses.",
             result_status=InterventionResult.DELIVERED,
             now=NOW + timedelta(minutes=2),
         )

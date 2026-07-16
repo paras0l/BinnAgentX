@@ -10,18 +10,23 @@ import {
   LearnerApiError,
   pauseTask,
   recordDifficulty,
+  requestH1Hint,
   reserveNextTask,
   resumeTask,
   saveAnnotation,
   saveAttempt,
+  saveRevision,
 } from "../lib/api";
 import type {
   AnnotationKind,
   AnnotationView,
+  AttemptView,
   ExpressionMaterialView,
+  InterventionView,
   LearnerTaskView,
   LearnerWorkspaceView,
   ReadingMaterialView,
+  RevisionView,
   TextSelection,
 } from "../lib/contracts";
 import { clearDraft, loadDraft, saveDraft } from "../lib/draft-storage";
@@ -77,6 +82,15 @@ function messageFor(error: unknown): string {
     : "当前操作没有完成。输入仍保留在本页和本地草稿中。";
 }
 
+function attemptDraft(attempt: AttemptView | undefined, isReading: boolean) {
+  if (!attempt) return { choice: "", text: "" };
+  if (!isReading) return { choice: "", text: attempt.text };
+  const match = /^选择 ([A-Z])。\n([\s\S]*)$/u.exec(attempt.text);
+  return match
+    ? { choice: match[1] ?? "", text: match[2] ?? "" }
+    : { choice: "", text: attempt.text };
+}
+
 export function LearningWorkspace(props: LearningWorkspaceProps) {
   const { workspace } = props;
   if (workspace.run.stage === "wrap_up") return <WrapUpWorkspace {...props} />;
@@ -111,9 +125,20 @@ function ActiveTaskWorkspace({
   onError,
 }: ActiveTaskWorkspaceProps) {
   const { material, task } = workspace;
+  const isReading = material.content_type !== "micro_expression";
+  const restoredAttempt = attemptDraft(task.attempts.at(-1), isReading);
   const [stored] = useState(() => loadDraft(workspace));
-  const [choice, setChoice] = useState(stored?.choice ?? "");
-  const [text, setText] = useState(stored?.text ?? task.attempts.at(-1)?.text ?? "");
+  const initialLatestAttempt = task.attempts.at(-1);
+  const initialLatestIntervention = task.interventions.at(-1);
+  const canRestoreLocalDraft =
+    !initialLatestAttempt ||
+    initialLatestAttempt.attempt_version_id === initialLatestIntervention?.input_attempt_version_id;
+  const [choice, setChoice] = useState(
+    canRestoreLocalDraft ? (stored?.choice ?? restoredAttempt.choice) : restoredAttempt.choice,
+  );
+  const [text, setText] = useState(
+    canRestoreLocalDraft ? (stored?.text ?? restoredAttempt.text) : restoredAttempt.text,
+  );
   const [saveState, setSaveState] = useState<"clean" | "pending" | "local" | "memory">(
     stored ? "local" : "clean",
   );
@@ -161,8 +186,25 @@ function ActiveTaskWorkspace({
   };
 
   const stageIndex = STAGE_ORDER.indexOf(workspace.run.stage as (typeof STAGE_ORDER)[number]);
-  const isReading = material.content_type !== "micro_expression";
   const hasAttempt = task.attempts.length > 0;
+  const latestAttempt = task.attempts.at(-1);
+  const latestIntervention = task.interventions.at(-1);
+  const hasUnansweredIntervention = Boolean(
+    latestAttempt &&
+    latestIntervention &&
+    latestAttempt.attempt_version_id === latestIntervention.input_attempt_version_id,
+  );
+  const linkedRevision = latestIntervention
+    ? task.revisions.find(
+        (revision) => revision.intervention_id === latestIntervention.intervention_id,
+      )
+    : undefined;
+  const needsRevisionLink = Boolean(
+    latestAttempt &&
+    latestIntervention &&
+    latestAttempt.attempt_version_id !== latestIntervention.input_attempt_version_id &&
+    !linkedRevision,
+  );
   const wordCount = text.trim() ? text.trim().split(/\s+/u).length : 0;
 
   const selectText = () => {
@@ -248,13 +290,13 @@ function ActiveTaskWorkspace({
     });
   };
 
-  const submitTask = () => {
-    if (!hasAttempt && isReading && (!choice || !text.trim())) {
+  const outputIsValid = () => {
+    if (isReading && (!choice || !text.trim())) {
       setProgressMessage("先选择一个判断，并用自己的话解释原文怎样支持它。");
       responseRef.current?.focus();
-      return;
+      return false;
     }
-    if (!hasAttempt && !isReading) {
+    if (!isReading) {
       const requirement =
         material.content_type === "micro_expression" ? material.output_requirement : null;
       if (!requirement || wordCount < requirement.word_min || wordCount > requirement.word_max) {
@@ -262,12 +304,23 @@ function ActiveTaskWorkspace({
           `请先完成 ${requirement?.word_min ?? 35}–${requirement?.word_max ?? 90} 个英文词。当前约 ${wordCount} 词。`,
         );
         responseRef.current?.focus();
-        return;
+        return false;
       }
     }
-    if (!hasAttempt && task.task_type === "matched_reading" && task.annotation_count === 0) {
+    if (task.task_type === "matched_reading" && task.annotation_count === 0) {
       setProgressMessage("匹配阅读至少需要一个带解释的语义标记，再提交完整判断。");
       materialRef.current?.focus();
+      return false;
+    }
+    return true;
+  };
+
+  const submitTask = () => {
+    if (!outputIsValid()) return;
+    const attemptText = isReading ? `选择 ${choice}。\n${text.trim()}` : text.trim();
+    if (hasUnansweredIntervention && latestAttempt?.text === attemptText) {
+      setProgressMessage("H1 已经指出新的检查方向。请亲自修改判断或解释后，再保存 V2。");
+      responseRef.current?.focus();
       return;
     }
     onError(null);
@@ -275,10 +328,45 @@ function ActiveTaskWorkspace({
       let currentTask = task;
       try {
         if (currentTask.attempts.length === 0) {
-          const attemptText = isReading ? `选择 ${choice}。\n${text.trim()}` : text.trim();
           currentTask = await saveAttempt(currentTask, attemptText);
           onTaskChange(currentTask);
+          persistNow();
           setSaveState("clean");
+          setProgressMessage(
+            isReading
+              ? "V1 已保存。你可以保持独立直接完成，也可以领取一次 H1 后亲自写 V2。"
+              : "V1 已保存。当前仍是 H0 独立输出，可以直接完成本步。",
+          );
+          return;
+        }
+        if (hasUnansweredIntervention && latestIntervention) {
+          currentTask = await saveAttempt(currentTask, attemptText);
+          onTaskChange(currentTask);
+          const v2 = currentTask.attempts.at(-1);
+          if (!v2) throw new Error("V2 save was not confirmed");
+          currentTask = await saveRevision(
+            currentTask,
+            latestIntervention.input_attempt_version_id,
+            v2.attempt_version_id,
+            latestIntervention.intervention_id,
+          );
+          onTaskChange(currentTask);
+          clearDraft(task.task_id);
+          setSaveState("clean");
+          setProgressMessage("V2 与 H1 的引用已保存。请先查看前后版本，再确认完成本步。");
+          return;
+        }
+        if (needsRevisionLink && latestIntervention && latestAttempt) {
+          currentTask = await saveRevision(
+            currentTask,
+            latestIntervention.input_attempt_version_id,
+            latestAttempt.attempt_version_id,
+            latestIntervention.intervention_id,
+          );
+          onTaskChange(currentTask);
+          clearDraft(task.task_id);
+          setProgressMessage("V1、H1 和 V2 的引用已经补齐，请确认后完成本步。");
+          return;
         }
         if (currentTask.state !== "completed") {
           currentTask = await completeTask(currentTask);
@@ -287,6 +375,32 @@ function ActiveTaskWorkspace({
         await advanceRun(workspace.run);
         clearDraft(task.task_id);
         onWorkspaceChange(await getWorkspace(workspace.run.workflow_run_id));
+      } catch (error) {
+        onError(messageFor(error));
+      }
+    });
+  };
+
+  const requestMinimalHint = () => {
+    if (!latestAttempt || latestIntervention) return;
+    onError(null);
+    startTransition(async () => {
+      try {
+        const updated = await requestH1Hint(task);
+        const v1 = attemptDraft(latestAttempt, isReading);
+        setChoice(v1.choice);
+        setText(v1.text);
+        saveDraft({
+          schemaVersion: 1,
+          taskId: task.task_id,
+          contentVersionId: task.current_content_version_id,
+          choice: v1.choice,
+          text: v1.text,
+          updatedAt: new Date().toISOString(),
+        });
+        onTaskChange(updated);
+        setProgressMessage("H1 只指出一个检查方向。现在请回到自己的判断，亲自形成 V2。");
+        window.requestAnimationFrame(() => responseRef.current?.focus());
       } catch (error) {
         onError(messageFor(error));
       }
@@ -353,6 +467,19 @@ function ActiveTaskWorkspace({
         ...(task.task_type === "matched_reading"
           ? [{ label: "保存至少 1 条带解释的原文标记", complete: task.annotation_count > 0 }]
           : []),
+        { label: "保存第一次判断 V1", complete: hasAttempt },
+        ...(latestIntervention
+          ? [
+              {
+                label: "根据 H1 亲自形成 V2",
+                complete: Boolean(
+                  latestAttempt &&
+                  latestAttempt.attempt_version_id !== latestIntervention.input_attempt_version_id,
+                ),
+              },
+              { label: "保存 V1 → H1 → V2 引用", complete: Boolean(linkedRevision) },
+            ]
+          : []),
       ]
     : [
         {
@@ -363,6 +490,7 @@ function ActiveTaskWorkspace({
               wordCount >= material.output_requirement.word_min &&
               wordCount <= material.output_requirement.word_max),
         },
+        { label: "保存第一次作品 V1", complete: hasAttempt },
       ];
 
   const allowedAnnotations = isReading ? (material as ReadingMaterialView).allowed_annotations : [];
@@ -538,6 +666,14 @@ function ActiveTaskWorkspace({
               </ul>
             </section>
 
+            {hasAttempt ? (
+              <AttemptTimeline
+                attempts={task.attempts}
+                interventions={task.interventions}
+                revisions={task.revisions}
+              />
+            ) : null}
+
             <SavedAnnotations
               annotations={savedAnnotations}
               expanded={showSavedAnnotations}
@@ -568,7 +704,10 @@ function ActiveTaskWorkspace({
               <>
                 <p className="step-label">本步任务</p>
                 <h2 id="response-title">{material.question.prompt}</h2>
-                <fieldset className="option-list" disabled={hasAttempt || isPending}>
+                <fieldset
+                  className="option-list"
+                  disabled={(hasAttempt && !hasUnansweredIntervention) || isPending}
+                >
                   <legend className="sr-only">选择一个答案</legend>
                   {material.question.options.map((option) => (
                     <label key={option.option_id}>
@@ -591,7 +730,11 @@ function ActiveTaskWorkspace({
 
             <label className="response-editor">
               <span>
-                {isReading ? "我的解释" : "我的作品"}
+                {isReading
+                  ? hasUnansweredIntervention || task.attempts.length > 1
+                    ? "我的解释 · V2"
+                    : "我的解释 · V1"
+                  : "我的作品"}
                 <small>
                   {isReading ? "先说清判断与证据的关系" : `当前约 ${wordCount} 个英文词`}
                 </small>
@@ -599,7 +742,7 @@ function ActiveTaskWorkspace({
               <textarea
                 ref={responseRef}
                 value={text}
-                readOnly={hasAttempt}
+                readOnly={hasAttempt && !hasUnansweredIntervention}
                 disabled={isPending}
                 placeholder={
                   isReading
@@ -615,6 +758,24 @@ function ActiveTaskWorkspace({
               />
             </label>
 
+            {isReading && hasAttempt && !latestIntervention ? (
+              <section className="h1-offer" aria-labelledby="h1-offer-title">
+                <div>
+                  <p className="step-label">可选最小帮助</p>
+                  <h3 id="h1-offer-title">只指出一个检查方向，然后由你写 V2</h3>
+                  <p>H1 不标答案句、不提供翻译，也不会替你改写。使用后本步必须再次输出。</p>
+                </div>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={requestMinimalHint}
+                  disabled={isPending}
+                >
+                  领取 H1
+                </button>
+              </section>
+            ) : null}
+
             <div className="action-footer">
               <p className="progress-message" aria-live="polite">
                 {progressMessage ??
@@ -628,7 +789,17 @@ function ActiveTaskWorkspace({
                 onClick={submitTask}
                 disabled={isPending}
               >
-                {isPending ? "正在确认保存…" : "提交本步并继续"}
+                {isPending
+                  ? "正在确认保存…"
+                  : !hasAttempt
+                    ? "保存 V1（不结束本步）"
+                    : hasUnansweredIntervention
+                      ? "保存 V2 并建立引用"
+                      : needsRevisionLink
+                        ? "补齐 V2 引用"
+                        : latestIntervention
+                          ? "确认 V1 / V2 后完成"
+                          : "不看提示，直接完成本步"}
               </button>
             </div>
           </section>
@@ -687,6 +858,57 @@ function ActiveTaskWorkspace({
         </aside>
       ) : null}
     </main>
+  );
+}
+
+interface AttemptTimelineProps {
+  attempts: AttemptView[];
+  interventions: InterventionView[];
+  revisions: RevisionView[];
+}
+
+function AttemptTimeline({ attempts, interventions, revisions }: AttemptTimelineProps) {
+  const latestIntervention = interventions.at(-1);
+  const linkedRevision = latestIntervention
+    ? revisions.find((revision) => revision.intervention_id === latestIntervention.intervention_id)
+    : undefined;
+  return (
+    <section className="attempt-timeline" aria-labelledby="attempt-timeline-title">
+      <div className="attempt-timeline-heading">
+        <div>
+          <p className="step-label">版本与帮助证据</p>
+          <h3 id="attempt-timeline-title">
+            {attempts.length > 1 ? "V1 与 V2 都已保留" : "V1 已保存，尚未结束本步"}
+          </h3>
+        </div>
+        <span>最高 H{latestIntervention?.hint_level ?? 0}</span>
+      </div>
+      <div className="attempt-versions">
+        {attempts.map((attempt, index) => (
+          <article key={attempt.attempt_version_id}>
+            <strong>V{index + 1}</strong>
+            <span>{attempt.independence === "independent" ? "独立输出" : "提示后输出"}</span>
+            <p>{attempt.text}</p>
+          </article>
+        ))}
+      </div>
+      {latestIntervention ? (
+        <aside className="delivered-hint" aria-label={`已领取 H${latestIntervention.hint_level}`}>
+          <div>
+            <strong>H{latestIntervention.hint_level} · 只检查一个方向</strong>
+            <span>已引用 V1，不提供当前答案</span>
+          </div>
+          <p>{latestIntervention.delivered_content}</p>
+        </aside>
+      ) : (
+        <p className="no-hint-evidence">当前仍是 H0；不领取帮助可以直接完成本步。</p>
+      )}
+      {linkedRevision ? (
+        <p className="revision-link-confirmed">V1 → H1 → V2 引用已保存；是否改善仍待验证。</p>
+      ) : latestIntervention && attempts.length > 1 ? (
+        <p className="revision-link-pending">V2 已保存，正在等待引用确认。</p>
+      ) : null}
+    </section>
   );
 }
 

@@ -197,6 +197,9 @@
         "intervention_type",
         "model_adapter",
         "prompt_version",
+        "reason_code",
+        "delivered_content",
+        "content_hash",
         "result_status",
         "created_at"
       ],
@@ -208,6 +211,9 @@
         "intervention_type": { "enum": ["task_restatement", "local_hint", "candidate_comparison", "minimal_example", "priority_feedback"] },
         "model_adapter": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{1,63}$" },
         "prompt_version": { "$ref": "#/$defs/id" },
+        "reason_code": { "type": "string", "pattern": "^[a-z][a-z0-9_]{2,63}$" },
+        "delivered_content": { "type": "string", "minLength": 1, "maxLength": 4000 },
+        "content_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
         "result_status": { "enum": ["delivered", "rejected", "fallback", "review_pending"] },
         "created_at": { "$ref": "#/$defs/timestamp" }
       },
