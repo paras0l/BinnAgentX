@@ -1,0 +1,261 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:binnagent:domain:vertical-slice-state:0.1.0",
+  "title": "BinnAgent Vertical Slice State v0.1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "learner_profile_snapshot",
+    "material_ref",
+    "task",
+    "annotations",
+    "attempts",
+    "ai_interventions",
+    "revision_events",
+    "workflow_run",
+    "audit_events"
+  ],
+  "properties": {
+    "schema_version": { "const": "0.1.0" },
+    "learner_profile_snapshot": { "$ref": "#/$defs/learner_profile_snapshot" },
+    "material_ref": { "$ref": "#/$defs/material_ref" },
+    "task": { "$ref": "#/$defs/task" },
+    "annotations": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/annotation" }
+    },
+    "attempts": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/attempt" }
+    },
+    "ai_interventions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/ai_intervention" }
+    },
+    "revision_events": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/revision_event" }
+    },
+    "workflow_run": { "$ref": "#/$defs/workflow_run" },
+    "audit_events": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/audit_event" }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{7,127}$"
+    },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2})$"
+    },
+    "learner_profile_snapshot": {
+      "type": "object",
+      "required": [
+        "learner_snapshot_id",
+        "exam_track",
+        "target_score",
+        "weekly_minutes",
+        "language_background",
+        "explicit_preferences",
+        "evidence_count",
+        "confidence_band",
+        "created_at"
+      ],
+      "properties": {
+        "learner_snapshot_id": { "$ref": "#/$defs/id" },
+        "exam_track": { "enum": ["english_1", "english_2"] },
+        "target_score": { "type": "integer", "minimum": 0, "maximum": 100 },
+        "weekly_minutes": { "type": "integer", "minimum": 30, "maximum": 10080 },
+        "language_background": {
+          "type": "object",
+          "required": ["self_reported_level", "prior_exam_seen"],
+          "properties": {
+            "self_reported_level": { "enum": ["weak", "developing", "steady", "unknown"] },
+            "prior_exam_seen": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        },
+        "explicit_preferences": {
+          "type": "object",
+          "required": ["session_minutes", "feedback_density", "timed"],
+          "properties": {
+            "session_minutes": { "type": "integer", "minimum": 10, "maximum": 180 },
+            "feedback_density": { "enum": ["minimal", "standard", "detailed"] },
+            "timed": { "type": "boolean" }
+          },
+          "additionalProperties": false
+        },
+        "evidence_count": { "type": "integer", "minimum": 0 },
+        "confidence_band": { "enum": ["low", "medium", "high"] },
+        "created_at": { "$ref": "#/$defs/timestamp" }
+      },
+      "additionalProperties": false
+    },
+    "material_ref": {
+      "type": "object",
+      "required": ["content_id", "content_version_id", "content_hash", "rights_status", "difficulty_status"],
+      "properties": {
+        "content_id": { "$ref": "#/$defs/id" },
+        "content_version_id": { "$ref": "#/$defs/id" },
+        "content_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "rights_status": { "enum": ["eligible_dev", "eligible_pilot", "eligible_release"] },
+        "difficulty_status": { "enum": ["uncalibrated", "pilot_estimate", "calibrated"] }
+      },
+      "additionalProperties": false
+    },
+    "task": {
+      "type": "object",
+      "required": [
+        "task_id",
+        "task_type",
+        "state",
+        "learner_snapshot_id",
+        "content_version_id",
+        "highest_hint_level",
+        "version",
+        "created_at",
+        "updated_at"
+      ],
+      "properties": {
+        "task_id": { "$ref": "#/$defs/id" },
+        "task_type": { "enum": ["calibration_reading", "matched_reading", "micro_expression"] },
+        "state": {
+          "enum": [
+            "reading",
+            "drafting",
+            "submitting",
+            "saved",
+            "hinted",
+            "revision_required",
+            "review_pending",
+            "paused",
+            "completed",
+            "recoverable_error"
+          ]
+        },
+        "learner_snapshot_id": { "$ref": "#/$defs/id" },
+        "content_version_id": { "$ref": "#/$defs/id" },
+        "highest_hint_level": { "type": "integer", "minimum": 0, "maximum": 4 },
+        "version": { "type": "integer", "minimum": 1 },
+        "created_at": { "$ref": "#/$defs/timestamp" },
+        "updated_at": { "$ref": "#/$defs/timestamp" }
+      },
+      "additionalProperties": false
+    },
+    "span": {
+      "type": "object",
+      "required": ["paragraph_id", "start", "end", "text_quote", "text_hash"],
+      "properties": {
+        "paragraph_id": { "$ref": "#/$defs/id" },
+        "start": { "type": "integer", "minimum": 0 },
+        "end": { "type": "integer", "minimum": 1 },
+        "text_quote": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "text_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      },
+      "additionalProperties": false
+    },
+    "annotation": {
+      "type": "object",
+      "required": ["annotation_id", "task_id", "content_version_id", "kind", "span", "user_explanation", "created_at"],
+      "properties": {
+        "annotation_id": { "$ref": "#/$defs/id" },
+        "task_id": { "$ref": "#/$defs/id" },
+        "content_version_id": { "$ref": "#/$defs/id" },
+        "kind": { "enum": ["claim", "evidence", "logic", "uncertain", "reusable_expression"] },
+        "span": { "$ref": "#/$defs/span" },
+        "user_explanation": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "created_at": { "$ref": "#/$defs/timestamp" }
+      },
+      "additionalProperties": false
+    },
+    "attempt": {
+      "type": "object",
+      "required": ["attempt_version_id", "task_id", "author", "version", "text", "content_hash", "independence", "created_at"],
+      "properties": {
+        "attempt_version_id": { "$ref": "#/$defs/id" },
+        "task_id": { "$ref": "#/$defs/id" },
+        "author": { "const": "learner" },
+        "version": { "type": "integer", "minimum": 1 },
+        "text": { "type": "string", "minLength": 1, "maxLength": 20000 },
+        "content_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "independence": { "enum": ["independent", "hinted_low", "hinted_high"] },
+        "created_at": { "$ref": "#/$defs/timestamp" }
+      },
+      "additionalProperties": false
+    },
+    "ai_intervention": {
+      "type": "object",
+      "required": [
+        "intervention_id",
+        "task_id",
+        "input_attempt_version_id",
+        "hint_level",
+        "intervention_type",
+        "model_adapter",
+        "prompt_version",
+        "result_status",
+        "created_at"
+      ],
+      "properties": {
+        "intervention_id": { "$ref": "#/$defs/id" },
+        "task_id": { "$ref": "#/$defs/id" },
+        "input_attempt_version_id": { "$ref": "#/$defs/id" },
+        "hint_level": { "type": "integer", "minimum": 1, "maximum": 4 },
+        "intervention_type": { "enum": ["task_restatement", "local_hint", "candidate_comparison", "minimal_example", "priority_feedback"] },
+        "model_adapter": { "type": "string", "pattern": "^[a-z][a-z0-9_-]{1,63}$" },
+        "prompt_version": { "$ref": "#/$defs/id" },
+        "result_status": { "enum": ["delivered", "rejected", "fallback", "review_pending"] },
+        "created_at": { "$ref": "#/$defs/timestamp" }
+      },
+      "additionalProperties": false
+    },
+    "revision_event": {
+      "type": "object",
+      "required": ["revision_event_id", "task_id", "from_attempt_version_id", "to_attempt_version_id", "actor", "result_status", "created_at"],
+      "properties": {
+        "revision_event_id": { "$ref": "#/$defs/id" },
+        "task_id": { "$ref": "#/$defs/id" },
+        "from_attempt_version_id": { "$ref": "#/$defs/id" },
+        "to_attempt_version_id": { "$ref": "#/$defs/id" },
+        "intervention_id": { "$ref": "#/$defs/id" },
+        "actor": { "const": "learner" },
+        "result_status": { "enum": ["candidate_improved", "unchanged", "needs_review"] },
+        "created_at": { "$ref": "#/$defs/timestamp" }
+      },
+      "additionalProperties": false
+    },
+    "workflow_run": {
+      "type": "object",
+      "required": ["workflow_run_id", "workflow_version", "state", "checkpoint_id", "model_call_count", "cost_usd", "created_at", "updated_at"],
+      "properties": {
+        "workflow_run_id": { "$ref": "#/$defs/id" },
+        "workflow_version": { "$ref": "#/$defs/id" },
+        "state": { "enum": ["running", "paused", "review_pending", "completed", "failed_recoverable", "failed_terminal"] },
+        "checkpoint_id": { "$ref": "#/$defs/id" },
+        "model_call_count": { "type": "integer", "minimum": 0, "maximum": 3 },
+        "cost_usd": { "type": "number", "minimum": 0, "maximum": 0.2 },
+        "created_at": { "$ref": "#/$defs/timestamp" },
+        "updated_at": { "$ref": "#/$defs/timestamp" }
+      },
+      "additionalProperties": false
+    },
+    "audit_event": {
+      "type": "object",
+      "required": ["audit_event_id", "workflow_run_id", "actor_type", "action", "reason_code", "target_version", "created_at"],
+      "properties": {
+        "audit_event_id": { "$ref": "#/$defs/id" },
+        "workflow_run_id": { "$ref": "#/$defs/id" },
+        "actor_type": { "enum": ["learner", "system", "model", "developer_reviewer"] },
+        "action": { "type": "string", "pattern": "^[a-z][a-z0-9_]{2,63}$" },
+        "reason_code": { "type": "string", "pattern": "^[a-z][a-z0-9_]{2,63}$" },
+        "target_version": { "type": "integer", "minimum": 1 },
+        "created_at": { "$ref": "#/$defs/timestamp" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

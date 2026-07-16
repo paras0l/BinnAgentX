@@ -1,0 +1,106 @@
+{
+  "schema_version": "1.0.0",
+  "content_id": "calibration_reading_b",
+  "content_version_id": "calibration_reading_b_v1",
+  "title": "When a Checklist Should Stay Short",
+  "content_type": "calibration_reading",
+  "content_hash": "6b20a6a1fc7e04dc5c5d8190caed7c775612fd213388452a481d812778bc6794",
+  "rights": {
+    "source_type": "project_authored",
+    "source_reference": "BinnAgent Sprint 0 authored fixture, 2026-07-15",
+    "rights_holder": "BinnAgent project",
+    "allowed_uses": ["development", "internal_test"],
+    "territory": "worldwide",
+    "valid_from": "2026-07-15",
+    "valid_until_reason": "No fixed end date for project-authored development fixture",
+    "derivative_allowed": true,
+    "attribution_required": false,
+    "rights_status": "eligible_dev",
+    "reviewed_by": "developer_reviewer",
+    "reviewed_at": "2026-07-15T12:00:00Z"
+  },
+  "difficulty": {
+    "difficulty_status": "uncalibrated",
+    "exam_tracks": ["english_1", "english_2"],
+    "topic_familiarity": "high",
+    "word_count": 282,
+    "paragraph_count": 3,
+    "vocabulary_load": "moderate",
+    "syntax_load": "moderate",
+    "discourse_relations": ["claim_evidence", "contrast", "concession", "cause_effect"],
+    "evidence_distance": "cross_paragraph",
+    "estimated_minutes": 8,
+    "max_hint_level": 4,
+    "estimate_source": "developer hypothesis; no learner calibration"
+  },
+  "review": {
+    "status": "developer_reviewed",
+    "reviewer_role": "developer_reviewer",
+    "reviewed_at": "2026-07-15T12:00:00Z",
+    "limitations": ["No teacher gold review", "No target-learner difficulty calibration"]
+  },
+  "paragraphs": [
+    {
+      "paragraph_id": "calibration_b_p1",
+      "text": "Checklists are often praised because they protect people from forgetting small but important steps. When a task is repeated under pressure, a short list can free attention for decisions that cannot be planned in advance. For that reason, a student team created a checklist for every group presentation. The first version had six items: confirm the goal, divide the speaking time, test the slides, name the evidence, prepare one question, and decide who would close."
+    },
+    {
+      "paragraph_id": "calibration_b_p2",
+      "text": "Success encouraged the team to add more instructions. Soon the list contained thirty-seven items, including advice about colors, gestures, transitions, file names, and possible audience reactions. Although the expanded list looked more complete, students began treating completion as the goal. They spent so much time checking boxes that they discussed the central argument less carefully. A tool designed to support judgment had started to replace it."
+    },
+    {
+      "paragraph_id": "calibration_b_p3",
+      "text": "The team therefore returned to eight essential checks and moved optional advice into a separate guide. Presentations improved, not because every choice became uniform, but because the short list protected the few steps that could ruin an otherwise thoughtful talk. The lesson is not that detailed guidance is useless. Detail is valuable when people need to learn a method or diagnose a failure. Yet at the moment of performance, guidance should preserve attention rather than consume it. A checklist works best when it supports the main task without pretending to be the task itself. This distinction also made revision easier. After a weak presentation, students could ask whether they had missed an essential check or needed to consult the longer guide. The two resources served different moments instead of competing for attention at the same time. Each had a clear purpose."
+    }
+  ],
+  "allowed_annotations": ["claim", "evidence", "logic", "uncertain", "reusable_expression"],
+  "main_question": {
+    "question_id": "calibration_b_q1",
+    "prompt": "Why did the team shorten its presentation checklist? Choose an answer and justify it with the author's reasoning.",
+    "answer_type": "single_choice_with_explanation",
+    "options": [
+      { "option_id": "A", "text": "The longer checklist prevented students from giving identical presentations." },
+      { "option_id": "B", "text": "Optional advice was proven to be incorrect in every situation." },
+      { "option_id": "C", "text": "Checking too many details was taking attention away from the central argument." },
+      { "option_id": "D", "text": "The team wanted students to stop preparing before presentations." }
+    ],
+    "correct_answer": "C",
+    "minimum_evidence": {
+      "paragraph_id": "calibration_b_p2",
+      "start": 294,
+      "end": 389,
+      "text_quote": "They spent so much time checking boxes that they discussed the central argument less carefully.",
+      "text_hash": "9b41227727b5cb7e63c6802b10a0673296976a38b2f36ac4828f85671cc1f5ba"
+    },
+    "acceptable_alternative_evidence": [
+      {
+        "paragraph_id": "calibration_b_p3",
+        "start": 395,
+        "end": 487,
+        "text_quote": "Yet at the moment of performance, guidance should preserve attention rather than consume it.",
+        "text_hash": "5dc91a40e83a63cfeb92aacbee926d6dd3ff96ef749cf54844d747d53836dcaf"
+      }
+    ],
+    "common_error_candidates": ["Treating the author's concession about useful detail as the main conclusion", "Assuming shorter guidance means no preparation"],
+    "hints": {
+      "h1": "Find what students did less carefully after the list expanded.",
+      "h2": "The key contrast is between completing the list and thinking about the presentation's main idea.",
+      "h3": "Read the sentence beginning with 'They spent so much time'.",
+      "h4": "The correct option says that excessive checking consumed attention needed for the central argument."
+    },
+    "public_explanation": "Option C captures the causal chain: the long list shifted attention toward box-checking and away from the central argument. The author still accepts detailed guidance in learning and diagnosis, so the passage does not reject preparation or optional advice altogether.",
+    "reveal_gate": "after_independent_output"
+  },
+  "parallel_reconstruction": {
+    "task_id": "calibration_b_parallel_01",
+    "prompt": "Write two or three English sentences explaining when a study plan can become so detailed that it interferes with studying.",
+    "success_criteria": ["Names the intended benefit of planning", "Explains how excessive detail can consume attention or time"]
+  },
+  "transferable_expressions": [
+    {
+      "expression": "A tool designed to support judgment had started to replace it.",
+      "appropriate_when": "A procedure becomes a substitute for the thinking it was meant to assist",
+      "avoid_when": "The tool merely saves time without weakening human judgment"
+    }
+  ]
+}

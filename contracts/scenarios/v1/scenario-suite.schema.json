@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:binnagent:scenarios:suite:1.0.0",
+  "title": "BinnAgent Fixed Scenario Suite v1",
+  "type": "object",
+  "required": ["schema_version", "suite_id", "purpose", "content_pack_version", "scenarios"],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "suite_id": { "const": "vertical_slice_scenarios_v1" },
+    "purpose": { "const": "engineering_regression_only" },
+    "content_pack_version": { "const": "v1" },
+    "scenarios": {
+      "type": "array",
+      "minItems": 25,
+      "maxItems": 25,
+      "items": {
+        "type": "object",
+        "required": [
+          "scenario_id",
+          "category",
+          "title",
+          "preconditions",
+          "input",
+          "expected_domain_facts",
+          "expected_events",
+          "public_error",
+          "expected_audit",
+          "forbidden_side_effects"
+        ],
+        "properties": {
+          "scenario_id": { "type": "string", "pattern": "^scenario_[0-9]{2}_[a-z0-9_]+$" },
+          "category": { "enum": ["normal", "boundary", "failure", "security"] },
+          "title": { "type": "string", "minLength": 4, "maxLength": 160 },
+          "preconditions": { "$ref": "#/$defs/string_list" },
+          "input": {
+            "type": "object",
+            "required": ["actor", "command", "fixture_refs"],
+            "properties": {
+              "actor": { "enum": ["learner", "system", "worker", "model_fixture", "control_operator", "attacker"] },
+              "command": { "type": "string", "minLength": 3, "maxLength": 120 },
+              "fixture_refs": { "type": "array", "items": { "type": "string", "minLength": 3, "maxLength": 160 } },
+              "parameters": { "type": "object" }
+            },
+            "additionalProperties": false
+          },
+          "expected_domain_facts": { "$ref": "#/$defs/string_list" },
+          "expected_events": { "$ref": "#/$defs/string_list" },
+          "public_error": {
+            "type": ["string", "null"],
+            "pattern": "^[A-Z][A-Z0-9_]{2,63}$"
+          },
+          "expected_audit": { "$ref": "#/$defs/string_list" },
+          "forbidden_side_effects": { "$ref": "#/$defs/string_list" }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "string_list": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 3, "maxLength": 300 }
+    }
+  }
+}

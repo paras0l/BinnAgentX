@@ -1,0 +1,124 @@
+{
+  "schema_version": "0.1.0",
+  "learner_profile_snapshot": {
+    "learner_snapshot_id": "learner_snapshot_0001",
+    "exam_track": "english_1",
+    "target_score": 70,
+    "weekly_minutes": 420,
+    "language_background": {
+      "self_reported_level": "developing",
+      "prior_exam_seen": false
+    },
+    "explicit_preferences": {
+      "session_minutes": 45,
+      "feedback_density": "minimal",
+      "timed": false
+    },
+    "evidence_count": 2,
+    "confidence_band": "low",
+    "created_at": "2026-07-15T12:00:00Z"
+  },
+  "material_ref": {
+    "content_id": "matched_reading_01",
+    "content_version_id": "matched_reading_01_v1",
+    "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "rights_status": "eligible_dev",
+    "difficulty_status": "uncalibrated"
+  },
+  "task": {
+    "task_id": "matched_task_0001",
+    "task_type": "micro_expression",
+    "state": "completed",
+    "learner_snapshot_id": "learner_snapshot_0001",
+    "content_version_id": "matched_reading_01_v1",
+    "highest_hint_level": 2,
+    "version": 5,
+    "created_at": "2026-07-15T12:01:00Z",
+    "updated_at": "2026-07-15T12:20:00Z"
+  },
+  "annotations": [
+    {
+      "annotation_id": "annotation_0001",
+      "task_id": "matched_task_0001",
+      "content_version_id": "matched_reading_01_v1",
+      "kind": "evidence",
+      "span": {
+        "paragraph_id": "paragraph_0002",
+        "start": 0,
+        "end": 22,
+        "text_quote": "Useful effort can reveal",
+        "text_hash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "user_explanation": "This sentence supports the claim that removing every difficulty may reduce learning.",
+      "created_at": "2026-07-15T12:06:00Z"
+    }
+  ],
+  "attempts": [
+    {
+      "attempt_version_id": "attempt_version_0001",
+      "task_id": "matched_task_0001",
+      "author": "learner",
+      "version": 1,
+      "text": "Some effort is useful in learning because it shows what I do not understand.",
+      "content_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "independence": "independent",
+      "created_at": "2026-07-15T12:10:00Z"
+    },
+    {
+      "attempt_version_id": "attempt_version_0002",
+      "task_id": "matched_task_0001",
+      "author": "learner",
+      "version": 2,
+      "text": "Some effort is useful in learning because it reveals what I do not yet understand and encourages me to revise my reasoning.",
+      "content_hash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "independence": "hinted_low",
+      "created_at": "2026-07-15T12:16:00Z"
+    }
+  ],
+  "ai_interventions": [
+    {
+      "intervention_id": "intervention_0001",
+      "task_id": "matched_task_0001",
+      "input_attempt_version_id": "attempt_version_0001",
+      "hint_level": 2,
+      "intervention_type": "priority_feedback",
+      "model_adapter": "deterministic_fixture",
+      "prompt_version": "prompt_priority_feedback_v1",
+      "result_status": "delivered",
+      "created_at": "2026-07-15T12:12:00Z"
+    }
+  ],
+  "revision_events": [
+    {
+      "revision_event_id": "revision_event_0001",
+      "task_id": "matched_task_0001",
+      "from_attempt_version_id": "attempt_version_0001",
+      "to_attempt_version_id": "attempt_version_0002",
+      "intervention_id": "intervention_0001",
+      "actor": "learner",
+      "result_status": "candidate_improved",
+      "created_at": "2026-07-15T12:16:00Z"
+    }
+  ],
+  "workflow_run": {
+    "workflow_run_id": "workflow_run_0001",
+    "workflow_version": "workflow_read_write_v1",
+    "state": "completed",
+    "checkpoint_id": "checkpoint_0005",
+    "model_call_count": 1,
+    "cost_usd": 0.01,
+    "created_at": "2026-07-15T12:01:00Z",
+    "updated_at": "2026-07-15T12:20:00Z"
+  },
+  "audit_events": [
+    {
+      "audit_event_id": "audit_event_0001",
+      "workflow_run_id": "workflow_run_0001",
+      "actor_type": "system",
+      "action": "task_completed",
+      "reason_code": "required_evidence_saved",
+      "target_version": 5,
+      "created_at": "2026-07-15T12:20:00Z"
+    }
+  ]
+}

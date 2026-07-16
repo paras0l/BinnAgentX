@@ -1,0 +1,60 @@
+{
+  "schema_version": "1.0.0",
+  "content_id": "micro_expression_01",
+  "content_version_id": "micro_expression_01_v1",
+  "title": "Helpful Support Without Skill Replacement",
+  "content_type": "micro_expression",
+  "content_hash": "574eca3cb793aa004b1e0af0f122b64a10cba9ab6c6e5f9ecf184a40ca56bae3",
+  "rights": {
+    "source_type": "project_authored",
+    "source_reference": "BinnAgent Sprint 0 authored fixture, 2026-07-15",
+    "rights_holder": "BinnAgent project",
+    "allowed_uses": ["development", "internal_test"],
+    "territory": "worldwide",
+    "valid_from": "2026-07-15",
+    "valid_until_reason": "No fixed end date for project-authored development fixture",
+    "derivative_allowed": true,
+    "attribution_required": false,
+    "rights_status": "eligible_dev",
+    "reviewed_by": "developer_reviewer",
+    "reviewed_at": "2026-07-15T12:00:00Z"
+  },
+  "difficulty": {
+    "difficulty_status": "uncalibrated",
+    "exam_tracks": ["english_1", "english_2"],
+    "topic_familiarity": "high",
+    "word_count": 46,
+    "paragraph_count": 0,
+    "vocabulary_load": "light",
+    "syntax_load": "moderate",
+    "discourse_relations": ["claim_evidence", "contrast", "cause_effect"],
+    "evidence_distance": "same_paragraph",
+    "estimated_minutes": 6,
+    "max_hint_level": 4,
+    "estimate_source": "developer hypothesis; no learner calibration"
+  },
+  "review": {
+    "status": "developer_reviewed",
+    "reviewer_role": "developer_reviewer",
+    "reviewed_at": "2026-07-15T12:00:00Z",
+    "limitations": ["No teacher gold review", "No target-learner difficulty calibration"]
+  },
+  "situation": "A classmate uses an automatic translation tool for every English sentence. The tool helps them check unfamiliar details, but they now accept complete translations before trying to understand the sentence structure. Give practical advice that preserves useful support without letting the tool replace the target skill.",
+  "audience": "A classmate preparing for a reading-intensive English exam",
+  "purpose": "Recommend a better sequence for using assistance",
+  "target_argument_move": "Acknowledge a benefit, identify the condition where help becomes replacement, and propose a limited sequence",
+  "optional_active_resource": "Assistance becomes less useful when it performs the very act that the learner needs to practice.",
+  "forbidden_mechanical_use": ["Do not copy the resource sentence without adapting its subject and context", "Do not claim that all translation tools are harmful"],
+  "output_requirement": {
+    "sentence_min": 2,
+    "sentence_max": 4,
+    "word_min": 35,
+    "word_max": 90,
+    "language": "en"
+  },
+  "v1_minimum": ["States one legitimate benefit of the tool", "Names the reading action the learner should attempt independently", "Gives a usable order of actions"],
+  "feedback_rule": "Return only the single highest-priority issue in claim, logic, or expression; do not provide a replacement paragraph.",
+  "v2_success": ["The recommendation contains a clear before-and-after sequence", "The benefit and risk are both represented", "The learner's own wording remains the main text"],
+  "parallel_transfer": "Apply the same reasoning to a writing assistant that suggests complete sentences before the learner has drafted a claim. Keep the response to two to four English sentences.",
+  "automatic_feedback_refusal": ["The text contains too little English to identify a claim", "The request asks the system to write the whole response", "The content includes personal crisis, medical, legal, or financial advice"]
+}

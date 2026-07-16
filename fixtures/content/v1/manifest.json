@@ -1,0 +1,57 @@
+{
+  "schema_version": "1.0.0",
+  "pack_id": "technical_spike_content_pack",
+  "pack_version": "v1",
+  "purpose": "technical_spike_only",
+  "created_at": "2026-07-15T12:00:00Z",
+  "items": [
+    {
+      "content_version_id": "calibration_reading_a_v1",
+      "content_type": "calibration_reading",
+      "file": "calibration_reading_a.json",
+      "content_hash": "4596d5a5f472d315bf39820f410de65c9ad8537cd05f175ddacaa0b087ad0d99",
+      "rights_status": "eligible_dev",
+      "difficulty_status": "uncalibrated"
+    },
+    {
+      "content_version_id": "calibration_reading_b_v1",
+      "content_type": "calibration_reading",
+      "file": "calibration_reading_b.json",
+      "content_hash": "6b20a6a1fc7e04dc5c5d8190caed7c775612fd213388452a481d812778bc6794",
+      "rights_status": "eligible_dev",
+      "difficulty_status": "uncalibrated"
+    },
+    {
+      "content_version_id": "matched_reading_01_v1",
+      "content_type": "matched_reading",
+      "file": "matched_reading_01.json",
+      "content_hash": "71371b18ee48d44cf5af14521807d8bffa1189adfd6b442c7da1227a304a6e52",
+      "rights_status": "eligible_dev",
+      "difficulty_status": "uncalibrated"
+    },
+    {
+      "content_version_id": "matched_reading_02_v1",
+      "content_type": "matched_reading",
+      "file": "matched_reading_02.json",
+      "content_hash": "893e753d95e197bc000561a45079bb33680137081b7a493f41b97c65e95104af",
+      "rights_status": "eligible_dev",
+      "difficulty_status": "uncalibrated"
+    },
+    {
+      "content_version_id": "micro_expression_01_v1",
+      "content_type": "micro_expression",
+      "file": "micro_expression_01.json",
+      "content_hash": "574eca3cb793aa004b1e0af0f122b64a10cba9ab6c6e5f9ecf184a40ca56bae3",
+      "rights_status": "eligible_dev",
+      "difficulty_status": "uncalibrated"
+    },
+    {
+      "content_version_id": "micro_expression_02_v1",
+      "content_type": "micro_expression",
+      "file": "micro_expression_02.json",
+      "content_hash": "e4ba4742b85d00bcc7f09f577cc06f501f959647a51009242ec1547dc57e4d65",
+      "rights_status": "eligible_dev",
+      "difficulty_status": "uncalibrated"
+    }
+  ]
+}

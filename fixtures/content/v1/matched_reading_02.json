@@ -1,0 +1,115 @@
+{
+  "schema_version": "1.0.0",
+  "content_id": "matched_reading_02",
+  "content_version_id": "matched_reading_02_v1",
+  "title": "The Cost of Measuring the Easy Part",
+  "content_type": "matched_reading",
+  "content_hash": "893e753d95e197bc000561a45079bb33680137081b7a493f41b97c65e95104af",
+  "rights": {
+    "source_type": "project_authored",
+    "source_reference": "BinnAgent Sprint 0 authored fixture, 2026-07-15",
+    "rights_holder": "BinnAgent project",
+    "allowed_uses": ["development", "internal_test"],
+    "territory": "worldwide",
+    "valid_from": "2026-07-15",
+    "valid_until_reason": "No fixed end date for project-authored development fixture",
+    "derivative_allowed": true,
+    "attribution_required": false,
+    "rights_status": "eligible_dev",
+    "reviewed_by": "developer_reviewer",
+    "reviewed_at": "2026-07-15T12:00:00Z"
+  },
+  "difficulty": {
+    "difficulty_status": "uncalibrated",
+    "exam_tracks": ["english_1", "english_2"],
+    "topic_familiarity": "medium",
+    "word_count": 352,
+    "paragraph_count": 4,
+    "vocabulary_load": "moderate",
+    "syntax_load": "moderate",
+    "discourse_relations": ["claim_evidence", "cause_effect", "contrast", "concession", "example"],
+    "evidence_distance": "cross_paragraph",
+    "estimated_minutes": 12,
+    "max_hint_level": 4,
+    "estimate_source": "developer hypothesis; no learner calibration"
+  },
+  "review": {
+    "status": "developer_reviewed",
+    "reviewer_role": "developer_reviewer",
+    "reviewed_at": "2026-07-15T12:00:00Z",
+    "limitations": ["No teacher gold review", "No target-learner difficulty calibration", "Not an exam-style psychometric item"]
+  },
+  "paragraphs": [
+    {
+      "paragraph_id": "matched_02_p1",
+      "text": "Organizations naturally prefer visible measures. A service desk can count closed requests, a school can count submitted assignments, and a research team can count published reports. Such numbers are attractive because they are easy to compare over time. They can reveal delays or unequal workloads that would otherwise remain hidden. Trouble begins, however, when an accessible measure becomes a substitute for the less visible purpose of the work."
+    },
+    {
+      "paragraph_id": "matched_02_p2",
+      "text": "Imagine a service desk rewarded only for closing requests quickly. Staff members may learn to divide one complex problem into several simple tickets, close uncertain cases before users confirm the result, or avoid problems that require careful investigation. The reported speed improves while the actual experience may become worse. The measure has not necessarily been calculated incorrectly. Instead, behavior has changed in response to what the organization chose to reward."
+    },
+    {
+      "paragraph_id": "matched_02_p3",
+      "text": "The solution is not to abandon measurement. Without records, managers may rely on memory, vivid complaints, or personal preference. A more useful system combines several imperfect signals and keeps them close to a decision. Closing time might be considered alongside whether the issue returned, whether the user confirmed recovery, and whether a difficult case produced knowledge that helped the next person. None of these numbers is a complete definition of quality, but together they make gaming harder and discussion more specific."
+    },
+    {
+      "paragraph_id": "matched_02_p4",
+      "text": "Good measures also have an expiration date. A signal chosen to solve one problem should be reviewed after people adapt to it. If it no longer guides the desired behavior, preserving it for the sake of historical consistency can be more misleading than changing it. Measurement is therefore a continuing act of judgment: define the purpose, select evidence that is difficult to fake, watch for unintended responses, and revise the system without pretending that the numbers speak for themselves. This review should include the people whose work is being measured. They often notice defensive routines before a dashboard reveals them. Their explanations are not replacements for data, but they can show why a promising number moved and whether that movement reflects genuine improvement. In that sense, interpretation remains part of responsible measurement practice."
+    }
+  ],
+  "allowed_annotations": ["claim", "evidence", "logic", "uncertain", "reusable_expression"],
+  "main_question": {
+    "question_id": "matched_02_q1",
+    "prompt": "What is the author's main warning about visible measures? Choose an answer and support it with a precise passage span.",
+    "answer_type": "single_choice_with_explanation",
+    "options": [
+      { "option_id": "A", "text": "Measures are harmful because people cannot calculate them accurately." },
+      { "option_id": "B", "text": "An easy measure can distort behavior when it replaces the underlying purpose." },
+      { "option_id": "C", "text": "Historical consistency is more important than changing a measure." },
+      { "option_id": "D", "text": "Managers should use personal memory instead of imperfect records." }
+    ],
+    "correct_answer": "B",
+    "minimum_evidence": {
+      "paragraph_id": "matched_02_p1",
+      "start": 334,
+      "end": 448,
+      "text_quote": "Trouble begins, however, when an accessible measure becomes a substitute for the less visible purpose of the work.",
+      "text_hash": "704639612de58aaef8bfcbbfa6db6ff09ed5437ca6fcb635ee44b4e9a80c24e4"
+    },
+    "acceptable_alternative_evidence": [
+      {
+        "paragraph_id": "matched_02_p2",
+        "start": 259,
+        "end": 332,
+        "text_quote": "The reported speed improves while the actual experience may become worse.",
+        "text_hash": "54dd5c102ce778b94636ee85e80c57a7fc81b62b375fd92830af13895ce83809"
+      }
+    ],
+    "common_error_candidates": ["Assuming the author rejects all measurement", "Confusing accurate calculation with a valid choice of what to reward"],
+    "hints": {
+      "h1": "The author accepts that numbers can reveal useful problems, so look for the condition that creates trouble.",
+      "h2": "Compare reported speed with the user's actual experience in paragraph two.",
+      "h3": "The issue is not arithmetic accuracy; it is behavior changing around the rewarded signal.",
+      "h4": "Choose the option about an accessible measure replacing the real purpose and distorting behavior."
+    },
+    "public_explanation": "Option B matches the central qualification. The author values records but warns that a visible proxy can redirect behavior when it is treated as the purpose itself. Calculation may be correct even while the selected measure produces a misleading picture.",
+    "reveal_gate": "after_independent_output"
+  },
+  "parallel_reconstruction": {
+    "task_id": "matched_02_parallel_01",
+    "prompt": "Write two to four English sentences about measuring study progress. Name one easy number, explain how it could be gamed, and add a stronger piece of evidence.",
+    "success_criteria": ["Distinguishes an activity count from the intended ability", "Adds evidence that is closer to independent performance"]
+  },
+  "transferable_expressions": [
+    {
+      "expression": "The measure has not necessarily been calculated incorrectly; behavior has changed in response to what is rewarded.",
+      "appropriate_when": "Explaining why a correct metric can still create a misleading outcome",
+      "avoid_when": "The main problem is a known calculation or data-quality error"
+    },
+    {
+      "expression": "The solution is not to abandon X, but to combine it with Y.",
+      "appropriate_when": "Rejecting an extreme response while proposing a qualified alternative",
+      "avoid_when": "X is unsafe or invalid and should actually be removed"
+    }
+  ]
+}

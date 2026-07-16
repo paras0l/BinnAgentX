@@ -1,0 +1,115 @@
+{
+  "schema_version": "1.0.0",
+  "content_id": "matched_reading_01",
+  "content_version_id": "matched_reading_01_v1",
+  "title": "Productive Friction in Learning",
+  "content_type": "matched_reading",
+  "content_hash": "71371b18ee48d44cf5af14521807d8bffa1189adfd6b442c7da1227a304a6e52",
+  "rights": {
+    "source_type": "project_authored",
+    "source_reference": "BinnAgent Sprint 0 authored fixture, 2026-07-15",
+    "rights_holder": "BinnAgent project",
+    "allowed_uses": ["development", "internal_test"],
+    "territory": "worldwide",
+    "valid_from": "2026-07-15",
+    "valid_until_reason": "No fixed end date for project-authored development fixture",
+    "derivative_allowed": true,
+    "attribution_required": false,
+    "rights_status": "eligible_dev",
+    "reviewed_by": "developer_reviewer",
+    "reviewed_at": "2026-07-15T12:00:00Z"
+  },
+  "difficulty": {
+    "difficulty_status": "uncalibrated",
+    "exam_tracks": ["english_1", "english_2"],
+    "topic_familiarity": "high",
+    "word_count": 351,
+    "paragraph_count": 4,
+    "vocabulary_load": "moderate",
+    "syntax_load": "moderate",
+    "discourse_relations": ["claim_evidence", "cause_effect", "contrast", "concession", "example"],
+    "evidence_distance": "cross_paragraph",
+    "estimated_minutes": 12,
+    "max_hint_level": 4,
+    "estimate_source": "developer hypothesis; no learner calibration"
+  },
+  "review": {
+    "status": "developer_reviewed",
+    "reviewer_role": "developer_reviewer",
+    "reviewed_at": "2026-07-15T12:00:00Z",
+    "limitations": ["No teacher gold review", "No target-learner difficulty calibration", "Not an exam-style psychometric item"]
+  },
+  "paragraphs": [
+    {
+      "paragraph_id": "matched_01_p1",
+      "text": "Digital learning tools often promise to remove friction. A definition can appear before a reader notices confusion, a sentence can be completed after two typed words, and a polished answer can replace a rough draft in seconds. These conveniences are valuable when they remove barriers unrelated to the skill being learned. A slow search should not prevent someone from checking a fact. Yet assistance becomes less useful when it quietly performs the very act that the learner needs to practice."
+    },
+    {
+      "paragraph_id": "matched_01_p2",
+      "text": "Consider a reader who meets a difficult contrast in an English paragraph. If the software instantly supplies a complete explanation, the reader may recognize the explanation without learning how to produce it. A better sequence leaves a small amount of productive friction. The reader first marks the two ideas, states how they differ, and then receives a narrow prompt if the relation remains unclear. Useful effort can reveal exactly where understanding breaks down, giving later help a precise target."
+    },
+    {
+      "paragraph_id": "matched_01_p3",
+      "text": "Productive friction is not the same as making work unpleasant. Confusion that continues without feedback can waste time and reduce confidence. The difficulty must be limited, connected to a clear goal, and followed by information that helps the learner revise. It should also decrease as control improves. Someone who repeatedly identifies contrast correctly should no longer be forced through the same scaffold merely to satisfy the software."
+    },
+    {
+      "paragraph_id": "matched_01_p4",
+      "text": "This principle changes how progress is displayed. Finishing many assisted tasks may show persistence, but it does not by itself show independent ability. Stronger evidence appears when a learner explains a new passage before receiving help, repairs an error after a minimal cue, and later performs the same reasoning in another context. The best learning tool therefore does not aim to make every moment effortless. It aims to place effort where thinking matters, remove effort where it does not, and gradually make its own support unnecessary. This approach also requires patience from designers. Immediate satisfaction is easy to measure, whereas independent performance may appear only on a later task. A responsible system must keep these signals separate instead of labeling every smooth interaction as learning."
+    }
+  ],
+  "allowed_annotations": ["claim", "evidence", "logic", "uncertain", "reusable_expression"],
+  "main_question": {
+    "question_id": "matched_01_q1",
+    "prompt": "Which statement best expresses the author's view of productive friction in learning? Choose one and explain the claim-evidence relation.",
+    "answer_type": "single_choice_with_explanation",
+    "options": [
+      { "option_id": "A", "text": "All forms of software assistance reduce a learner's confidence." },
+      { "option_id": "B", "text": "Difficulty is useful whenever it makes a task take longer." },
+      { "option_id": "C", "text": "Limited effort can support learning when it exposes a gap and is followed by targeted help." },
+      { "option_id": "D", "text": "Progress should be measured mainly by the number of completed tasks." }
+    ],
+    "correct_answer": "C",
+    "minimum_evidence": {
+      "paragraph_id": "matched_01_p2",
+      "start": 403,
+      "end": 504,
+      "text_quote": "Useful effort can reveal exactly where understanding breaks down, giving later help a precise target.",
+      "text_hash": "d6be61790039532ade0fb99bccd40ae0df64ac725c420532d84121f27760e547"
+    },
+    "acceptable_alternative_evidence": [
+      {
+        "paragraph_id": "matched_01_p3",
+        "start": 143,
+        "end": 260,
+        "text_quote": "The difficulty must be limited, connected to a clear goal, and followed by information that helps the learner revise.",
+        "text_hash": "4f220d92ae7b1921f0fd75da128689edf12eb03a0bf9fddf63b0f567d1d18543"
+      }
+    ],
+    "common_error_candidates": ["Equating productive friction with any unpleasant or time-consuming difficulty", "Using task completion as direct proof of independent ability"],
+    "hints": {
+      "h1": "Separate the author's support for useful effort from the warning about unsupported confusion.",
+      "h2": "Find the conditions placed on difficulty in the third paragraph.",
+      "h3": "The answer must include both a limited challenge and targeted feedback or revision.",
+      "h4": "Choose the option that says effort exposes a gap and is followed by precise help."
+    },
+    "public_explanation": "Option C preserves both sides of the argument. The author supports a limited initial effort because it reveals the learner's gap, but rejects endless confusion and requires targeted feedback, revision, and gradual withdrawal of support.",
+    "reveal_gate": "after_independent_output"
+  },
+  "parallel_reconstruction": {
+    "task_id": "matched_01_parallel_01",
+    "prompt": "Write two to four English sentences about a calculator, navigation app, or writing tool. Explain when its help removes an irrelevant barrier and when it replaces a skill that still needs practice.",
+    "success_criteria": ["Distinguishes helpful convenience from skill replacement", "States a condition under which support should be reduced"]
+  },
+  "transferable_expressions": [
+    {
+      "expression": "Assistance becomes less useful when it performs the very act that the learner needs to practice.",
+      "appropriate_when": "Evaluating support that may replace a target skill",
+      "avoid_when": "The assisted action is unrelated to the learning objective"
+    },
+    {
+      "expression": "X is not the same as Y.",
+      "appropriate_when": "Correcting a plausible but misleading equivalence before defining a concept",
+      "avoid_when": "No reader is likely to confuse the two ideas"
+    }
+  ]
+}

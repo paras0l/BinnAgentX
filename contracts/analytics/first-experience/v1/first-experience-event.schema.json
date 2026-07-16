@@ -1,0 +1,1580 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:binnagent:analytics:first-experience:event:1.0.0",
+  "title": "BinnAgent First Experience Analytics Event v1",
+  "description": "Frozen v1 contract for the 32 first-experience analytics events. Raw answers, free text, source spans, prompts, scores, IP addresses, and device fingerprints are prohibited by omission and additionalProperties=false.",
+  "type": "object",
+  "required": [
+    "event_id",
+    "event_name",
+    "event_schema_version",
+    "occurred_at",
+    "source",
+    "anonymous_learner_id",
+    "session_id",
+    "flow_run_id",
+    "flow_version",
+    "page_state",
+    "app_version",
+    "device_class",
+    "exam_track",
+    "correlation_id",
+    "payload"
+  ],
+  "properties": {
+    "event_id": {
+      "$ref": "#/$defs/id"
+    },
+    "event_name": {
+      "enum": [
+        "first_experience_started",
+        "first_experience_resumed",
+        "profile_step_viewed",
+        "profile_step_submitted",
+        "profile_optional_skipped",
+        "calibration_intro_viewed",
+        "calibration_started",
+        "calibration_material_presented",
+        "calibration_response_submitted",
+        "calibration_evidence_submitted",
+        "calibration_confidence_submitted",
+        "calibration_hint_delivered",
+        "calibration_material_flagged",
+        "calibration_material_completed",
+        "calibration_paused",
+        "calibration_stalled",
+        "calibration_completed",
+        "reading_profile_snapshot_created",
+        "material_match_decided",
+        "profile_summary_viewed",
+        "matched_reading_presented",
+        "matched_reading_started",
+        "matched_reading_paused",
+        "matched_reading_completed",
+        "difficulty_feedback_submitted",
+        "difficulty_feedback_skipped",
+        "next_match_adjusted",
+        "first_experience_completed",
+        "flow_error_shown",
+        "flow_retry_requested",
+        "fallback_path_used",
+        "local_draft_recovered"
+      ]
+    },
+    "event_schema_version": {
+      "const": "1.0.0"
+    },
+    "occurred_at": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d{1,6})?Z$"
+    },
+    "source": {
+      "enum": [
+        "client",
+        "server",
+        "derived"
+      ]
+    },
+    "anonymous_learner_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{16,128}$"
+    },
+    "session_id": {
+      "$ref": "#/$defs/id"
+    },
+    "flow_run_id": {
+      "$ref": "#/$defs/id"
+    },
+    "flow_version": {
+      "$ref": "#/$defs/version"
+    },
+    "page_state": {
+      "$ref": "#/$defs/page_state"
+    },
+    "ui_substate": {
+      "$ref": "#/$defs/ui_substate"
+    },
+    "app_version": {
+      "$ref": "#/$defs/version"
+    },
+    "device_class": {
+      "const": "desktop",
+      "description": "Fixed for the desktop-browser-only v1 product surface; not used for device segmentation."
+    },
+    "exam_track": {
+      "enum": [
+        "english_1",
+        "english_2",
+        "unknown"
+      ]
+    },
+    "correlation_id": {
+      "$ref": "#/$defs/id"
+    },
+    "payload": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "event_name": {
+            "const": "first_experience_started"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "const": "server"
+          },
+          "payload": {
+            "$ref": "#/$defs/payload_first_experience_started"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_name": {
+            "const": "first_experience_resumed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "const": "server"
+          },
+          "payload": {
+            "$ref": "#/$defs/payload_first_experience_resumed"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_name": {
+            "const": "profile_step_viewed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "const": "client"
+          },
+          "payload": {
+            "$ref": "#/$defs/payload_profile_step_viewed"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_name": {
+            "const": "profile_step_submitted"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "const": "server"
+          },
+          "payload": {
+            "$ref": "#/$defs/payload_profile_step_submitted"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_name": {
+            "const": "profile_optional_skipped"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "const": "server"
+          },
+          "payload": {
+            "$ref": "#/$defs/payload_profile_optional_skipped"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_name": {
+            "const": "calibration_intro_viewed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "const": "client"
+          },
+          "payload": {
+            "$ref": "#/$defs/payload_calibration_intro_viewed"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_name": {
+            "const": "calibration_started"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "const": "server"
+          },
+          "payload": {
+            "$ref": "#/$defs/payload_calibration_started"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_name": {
+            "const": "calibration_material_presented"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "const": "server"
+          },
+          "payload": {
+            "$ref": "#/$defs/payload_calibration_material_presented"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_name": {
+            "const": "calibration_response_submitted"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "const": "server"
+          },
+          "payload": {
+            "$ref": "#/$defs/payload_calibration_response_submitted"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_name": {
+            "const": "calibration_evidence_submitted"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "const": "server"
+          },
+          "payload": {
+            "$ref": "#/$defs/payload_calibration_evidence_submitted"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_name": {
+            "const": "calibration_confidence_submitted"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "const": "server"
+          },
+          "payload": {
+            "$ref": "#/$defs/payload_calibration_confidence_submitted"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_name": {
+            "const": "calibration_hint_delivered"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "const": "server"
+          },
+          "payload": {
+            "$ref": "#/$defs/payload_calibration_hint_delivered"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_name": {
+            "const": "calibration_material_flagged"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "const": "server"
+          },
+          "payload": {
+            "$ref": "#/$defs/payload_calibration_material_flagged"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_name": {
+            "const": "calibration_material_completed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "const": "server"
+          },
+          "payload": {
+            "$ref": "#/$defs/payload_calibration_material_completed"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_name": {
+            "const": "calibration_paused"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "const": "server"
+          },
+          "payload": {
+            "$ref": "#/$defs/payload_calibration_paused"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_name": {
+            "const": "calibration_stalled"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "const": "derived"
+          },
+          "payload": {
+            "$ref": "#/$defs/payload_calibration_stalled"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_name": {
+            "const": "calibration_completed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "const": "server"
+          },
+          "payload": {
+            "$ref": "#/$defs/payload_calibration_completed"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_name": {
+            "const": "reading_profile_snapshot_created"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "const": "server"
+          },
+          "payload": {
+            "$ref": "#/$defs/payload_reading_profile_snapshot_created"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_name": {
+            "const": "material_match_decided"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "const": "server"
+          },
+          "payload": {
+            "$ref": "#/$defs/payload_material_match_decided"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_name": {
+            "const": "profile_summary_viewed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "const": "client"
+          },
+          "payload": {
+            "$ref": "#/$defs/payload_profile_summary_viewed"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_name": {
+            "const": "matched_reading_presented"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "const": "server"
+          },
+          "payload": {
+            "$ref": "#/$defs/payload_matched_reading_presented"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_name": {
+            "const": "matched_reading_started"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "const": "server"
+          },
+          "payload": {
+            "$ref": "#/$defs/payload_matched_reading_started"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_name": {
+            "const": "matched_reading_paused"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "const": "server"
+          },
+          "payload": {
+            "$ref": "#/$defs/payload_matched_reading_paused"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_name": {
+            "const": "matched_reading_completed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "const": "server"
+          },
+          "payload": {
+            "$ref": "#/$defs/payload_matched_reading_completed"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_name": {
+            "const": "difficulty_feedback_submitted"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "const": "server"
+          },
+          "payload": {
+            "$ref": "#/$defs/payload_difficulty_feedback_submitted"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_name": {
+            "const": "difficulty_feedback_skipped"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "const": "server"
+          },
+          "payload": {
+            "$ref": "#/$defs/payload_difficulty_feedback_skipped"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_name": {
+            "const": "next_match_adjusted"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "const": "server"
+          },
+          "payload": {
+            "$ref": "#/$defs/payload_next_match_adjusted"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_name": {
+            "const": "first_experience_completed"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "const": "server"
+          },
+          "payload": {
+            "$ref": "#/$defs/payload_first_experience_completed"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_name": {
+            "const": "flow_error_shown"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "const": "client"
+          },
+          "payload": {
+            "$ref": "#/$defs/payload_flow_error_shown"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_name": {
+            "const": "flow_retry_requested"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "const": "client"
+          },
+          "payload": {
+            "$ref": "#/$defs/payload_flow_retry_requested"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_name": {
+            "const": "fallback_path_used"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "const": "server"
+          },
+          "payload": {
+            "$ref": "#/$defs/payload_fallback_path_used"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "event_name": {
+            "const": "local_draft_recovered"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "source": {
+            "const": "client"
+          },
+          "payload": {
+            "$ref": "#/$defs/payload_local_draft_recovered"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$"
+    },
+    "page_state": {
+      "enum": [
+        "FT-00 entry.new",
+        "FT-00 entry.resume",
+        "FT-01 profile.required",
+        "FT-02 profile.optional",
+        "FT-03 calibration.intro",
+        "FT-04 calibration.material_a",
+        "FT-05 calibration.material_b",
+        "FT-06 calibration.processing",
+        "FT-07 summary.ready",
+        "FT-08 matched_reading.active",
+        "FT-09 difficulty_feedback",
+        "FT-10 first_experience.complete"
+      ]
+    },
+    "ui_substate": {
+      "enum": [
+        "loading",
+        "reading",
+        "responding",
+        "submitting",
+        "saved",
+        "hinted",
+        "seen_reported",
+        "issue_reported",
+        "recoverable_error",
+        "resumed"
+      ]
+    },
+    "active_seconds_band": {
+      "enum": [
+        "lt_30s",
+        "30_89s",
+        "90_179s",
+        "180_359s",
+        "gte_360s",
+        "unknown"
+      ]
+    },
+    "inactive_hours_band": {
+      "enum": [
+        "lt_1h",
+        "1_5h",
+        "6_23h",
+        "24_71h",
+        "gte_72h"
+      ]
+    },
+    "draft_age_minutes_band": {
+      "enum": [
+        "lt_5m",
+        "5_29m",
+        "30_119m",
+        "120_1439m",
+        "gte_1440m"
+      ]
+    },
+    "elapsed_minutes_band": {
+      "enum": [
+        "lt_15m",
+        "15_24m",
+        "25_39m",
+        "gte_40m"
+      ]
+    },
+    "difficulty_reason_code": {
+      "enum": [
+        "vocabulary",
+        "syntax",
+        "inference",
+        "length",
+        "time_pressure",
+        "topic",
+        "instructions",
+        "other_selected"
+      ]
+    },
+    "match_reason_code": {
+      "enum": [
+        "exam_track",
+        "conservative_start",
+        "vocabulary_fit",
+        "syntax_boundary",
+        "inference_boundary",
+        "length_fit",
+        "time_fit",
+        "rights_eligible",
+        "unseen_material",
+        "fallback_policy"
+      ]
+    },
+    "public_error_code": {
+      "enum": [
+        "NETWORK_RETRYABLE",
+        "SAVE_RETRYABLE",
+        "MATERIAL_UNAVAILABLE",
+        "SESSION_EXPIRED",
+        "UNKNOWN_RETRYABLE"
+      ]
+    },
+    "payload_first_experience_started": {
+      "type": "object",
+      "required": [
+        "entry_source"
+      ],
+      "properties": {
+        "entry_source": {
+          "enum": [
+            "direct",
+            "login_redirect",
+            "resume_redirect",
+            "internal_navigation"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "payload_first_experience_resumed": {
+      "type": "object",
+      "required": [
+        "resume_page_state",
+        "inactive_hours_band"
+      ],
+      "properties": {
+        "resume_page_state": {
+          "$ref": "#/$defs/page_state"
+        },
+        "inactive_hours_band": {
+          "$ref": "#/$defs/inactive_hours_band"
+        }
+      },
+      "additionalProperties": false
+    },
+    "payload_profile_step_viewed": {
+      "type": "object",
+      "required": [
+        "step_id",
+        "required"
+      ],
+      "properties": {
+        "step_id": {
+          "enum": [
+            "required_background",
+            "optional_background"
+          ]
+        },
+        "required": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "payload_profile_step_submitted": {
+      "type": "object",
+      "required": [
+        "step_id",
+        "provided_field_count",
+        "optional_field_count"
+      ],
+      "properties": {
+        "step_id": {
+          "enum": [
+            "required_background",
+            "optional_background"
+          ]
+        },
+        "provided_field_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 16
+        },
+        "optional_field_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 16
+        }
+      },
+      "additionalProperties": false
+    },
+    "payload_profile_optional_skipped": {
+      "type": "object",
+      "required": [
+        "step_id"
+      ],
+      "properties": {
+        "step_id": {
+          "const": "optional_background"
+        }
+      },
+      "additionalProperties": false
+    },
+    "payload_calibration_intro_viewed": {
+      "type": "object",
+      "required": [
+        "estimated_minutes_band"
+      ],
+      "properties": {
+        "estimated_minutes_band": {
+          "enum": [
+            "lt_5m",
+            "5_9m",
+            "10_14m",
+            "gte_15m"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "payload_calibration_started": {
+      "type": "object",
+      "required": [
+        "calibration_session_id",
+        "plan_version",
+        "material_count"
+      ],
+      "properties": {
+        "calibration_session_id": {
+          "$ref": "#/$defs/id"
+        },
+        "plan_version": {
+          "$ref": "#/$defs/version"
+        },
+        "material_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4
+        }
+      },
+      "additionalProperties": false
+    },
+    "payload_calibration_material_presented": {
+      "type": "object",
+      "required": [
+        "material_version_id",
+        "position",
+        "difficulty_profile_id",
+        "selection_reason_code"
+      ],
+      "properties": {
+        "material_version_id": {
+          "$ref": "#/$defs/id"
+        },
+        "position": {
+          "enum": [
+            1,
+            2
+          ]
+        },
+        "difficulty_profile_id": {
+          "$ref": "#/$defs/id"
+        },
+        "selection_reason_code": {
+          "enum": [
+            "conservative_start",
+            "boundary_probe",
+            "replacement_after_seen",
+            "replacement_after_issue"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "payload_calibration_response_submitted": {
+      "type": "object",
+      "required": [
+        "attempt_id",
+        "material_version_id",
+        "position",
+        "response_type",
+        "active_seconds_band"
+      ],
+      "properties": {
+        "attempt_id": {
+          "$ref": "#/$defs/id"
+        },
+        "material_version_id": {
+          "$ref": "#/$defs/id"
+        },
+        "position": {
+          "enum": [
+            1,
+            2
+          ]
+        },
+        "response_type": {
+          "enum": [
+            "multiple_choice",
+            "evidence_selection",
+            "sentence_analysis",
+            "short_text"
+          ]
+        },
+        "active_seconds_band": {
+          "$ref": "#/$defs/active_seconds_band"
+        }
+      },
+      "additionalProperties": false
+    },
+    "payload_calibration_evidence_submitted": {
+      "type": "object",
+      "required": [
+        "attempt_id",
+        "span_count",
+        "evidence_status"
+      ],
+      "properties": {
+        "attempt_id": {
+          "$ref": "#/$defs/id"
+        },
+        "span_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 20
+        },
+        "evidence_status": {
+          "enum": [
+            "provided",
+            "not_required",
+            "skipped",
+            "invalid"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "payload_calibration_confidence_submitted": {
+      "type": "object",
+      "required": [
+        "attempt_id",
+        "confidence_band"
+      ],
+      "properties": {
+        "attempt_id": {
+          "$ref": "#/$defs/id"
+        },
+        "confidence_band": {
+          "enum": [
+            "sure",
+            "unsure",
+            "guessed"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "payload_calibration_hint_delivered": {
+      "type": "object",
+      "required": [
+        "attempt_id",
+        "hint_level",
+        "hint_type"
+      ],
+      "properties": {
+        "attempt_id": {
+          "$ref": "#/$defs/id"
+        },
+        "hint_level": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 7
+        },
+        "hint_type": {
+          "enum": [
+            "reminder",
+            "range",
+            "question",
+            "knowledge",
+            "local_frame",
+            "local_example",
+            "full_reference"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "payload_calibration_material_flagged": {
+      "type": "object",
+      "required": [
+        "material_version_id",
+        "flag_type",
+        "replacement_issued"
+      ],
+      "properties": {
+        "material_version_id": {
+          "$ref": "#/$defs/id"
+        },
+        "flag_type": {
+          "enum": [
+            "seen_before",
+            "content_error",
+            "display_issue",
+            "other_selected"
+          ]
+        },
+        "replacement_issued": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "payload_calibration_material_completed": {
+      "type": "object",
+      "required": [
+        "material_version_id",
+        "position",
+        "attempt_id",
+        "hint_level_max"
+      ],
+      "properties": {
+        "material_version_id": {
+          "$ref": "#/$defs/id"
+        },
+        "position": {
+          "enum": [
+            1,
+            2
+          ]
+        },
+        "attempt_id": {
+          "$ref": "#/$defs/id"
+        },
+        "hint_level_max": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 7
+        }
+      },
+      "additionalProperties": false
+    },
+    "payload_calibration_paused": {
+      "type": "object",
+      "required": [
+        "pause_page_state",
+        "completed_material_count"
+      ],
+      "properties": {
+        "pause_page_state": {
+          "$ref": "#/$defs/page_state"
+        },
+        "completed_material_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2
+        }
+      },
+      "additionalProperties": false
+    },
+    "payload_calibration_stalled": {
+      "type": "object",
+      "required": [
+        "last_confirmed_page_state",
+        "inactive_hours_band"
+      ],
+      "properties": {
+        "last_confirmed_page_state": {
+          "$ref": "#/$defs/page_state"
+        },
+        "inactive_hours_band": {
+          "$ref": "#/$defs/inactive_hours_band"
+        }
+      },
+      "additionalProperties": false
+    },
+    "payload_calibration_completed": {
+      "type": "object",
+      "required": [
+        "calibration_session_id",
+        "completion_mode",
+        "valid_material_count"
+      ],
+      "properties": {
+        "calibration_session_id": {
+          "$ref": "#/$defs/id"
+        },
+        "completion_mode": {
+          "enum": [
+            "standard",
+            "conservative_fallback",
+            "replacement_material"
+          ]
+        },
+        "valid_material_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 2
+        }
+      },
+      "additionalProperties": false
+    },
+    "payload_reading_profile_snapshot_created": {
+      "type": "object",
+      "required": [
+        "learner_snapshot_id",
+        "evidence_count",
+        "confidence_band",
+        "snapshot_version"
+      ],
+      "properties": {
+        "learner_snapshot_id": {
+          "$ref": "#/$defs/id"
+        },
+        "evidence_count": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000
+        },
+        "confidence_band": {
+          "enum": [
+            "low",
+            "medium",
+            "high"
+          ]
+        },
+        "snapshot_version": {
+          "$ref": "#/$defs/version"
+        }
+      },
+      "additionalProperties": false
+    },
+    "payload_material_match_decided": {
+      "type": "object",
+      "required": [
+        "match_decision_id",
+        "learner_snapshot_id",
+        "candidate_count",
+        "selected_material_version_id",
+        "reason_codes",
+        "fallback_used"
+      ],
+      "properties": {
+        "match_decision_id": {
+          "$ref": "#/$defs/id"
+        },
+        "learner_snapshot_id": {
+          "$ref": "#/$defs/id"
+        },
+        "candidate_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        },
+        "selected_material_version_id": {
+          "$ref": "#/$defs/id"
+        },
+        "reason_codes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/match_reason_code"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "fallback_used": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "payload_profile_summary_viewed": {
+      "type": "object",
+      "required": [
+        "learner_snapshot_id",
+        "uncertainty_message_shown"
+      ],
+      "properties": {
+        "learner_snapshot_id": {
+          "$ref": "#/$defs/id"
+        },
+        "uncertainty_message_shown": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "payload_matched_reading_presented": {
+      "type": "object",
+      "required": [
+        "match_decision_id",
+        "material_version_id",
+        "difficulty_profile_id"
+      ],
+      "properties": {
+        "match_decision_id": {
+          "$ref": "#/$defs/id"
+        },
+        "material_version_id": {
+          "$ref": "#/$defs/id"
+        },
+        "difficulty_profile_id": {
+          "$ref": "#/$defs/id"
+        }
+      },
+      "additionalProperties": false
+    },
+    "payload_matched_reading_started": {
+      "type": "object",
+      "required": [
+        "task_id",
+        "material_version_id",
+        "match_decision_id"
+      ],
+      "properties": {
+        "task_id": {
+          "$ref": "#/$defs/id"
+        },
+        "material_version_id": {
+          "$ref": "#/$defs/id"
+        },
+        "match_decision_id": {
+          "$ref": "#/$defs/id"
+        }
+      },
+      "additionalProperties": false
+    },
+    "payload_matched_reading_paused": {
+      "type": "object",
+      "required": [
+        "task_id",
+        "task_state",
+        "active_seconds_band"
+      ],
+      "properties": {
+        "task_id": {
+          "$ref": "#/$defs/id"
+        },
+        "task_state": {
+          "enum": [
+            "reading",
+            "responding",
+            "submitting",
+            "feedback"
+          ]
+        },
+        "active_seconds_band": {
+          "$ref": "#/$defs/active_seconds_band"
+        }
+      },
+      "additionalProperties": false
+    },
+    "payload_matched_reading_completed": {
+      "type": "object",
+      "required": [
+        "task_id",
+        "attempt_id",
+        "hint_level_max",
+        "completion_mode"
+      ],
+      "properties": {
+        "task_id": {
+          "$ref": "#/$defs/id"
+        },
+        "attempt_id": {
+          "$ref": "#/$defs/id"
+        },
+        "hint_level_max": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 7
+        },
+        "completion_mode": {
+          "enum": [
+            "standard",
+            "resumed",
+            "conservative_fallback"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "payload_difficulty_feedback_submitted": {
+      "type": "object",
+      "required": [
+        "task_id",
+        "rating",
+        "reason_codes"
+      ],
+      "properties": {
+        "task_id": {
+          "$ref": "#/$defs/id"
+        },
+        "rating": {
+          "enum": [
+            "too_hard",
+            "fit",
+            "too_easy"
+          ]
+        },
+        "reason_codes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/difficulty_reason_code"
+          },
+          "maxItems": 8,
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "payload_difficulty_feedback_skipped": {
+      "type": "object",
+      "required": [
+        "task_id",
+        "skip_surface"
+      ],
+      "properties": {
+        "task_id": {
+          "$ref": "#/$defs/id"
+        },
+        "skip_surface": {
+          "enum": [
+            "feedback_page",
+            "completion_page"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "payload_next_match_adjusted": {
+      "type": "object",
+      "required": [
+        "previous_match_decision_id",
+        "new_match_decision_id",
+        "adjustment_direction",
+        "reason_codes"
+      ],
+      "properties": {
+        "previous_match_decision_id": {
+          "$ref": "#/$defs/id"
+        },
+        "new_match_decision_id": {
+          "$ref": "#/$defs/id"
+        },
+        "adjustment_direction": {
+          "enum": [
+            "easier",
+            "harder",
+            "same_level_new_dimension"
+          ]
+        },
+        "reason_codes": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/difficulty_reason_code"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": false
+    },
+    "payload_first_experience_completed": {
+      "type": "object",
+      "required": [
+        "elapsed_minutes_band",
+        "completion_path"
+      ],
+      "properties": {
+        "elapsed_minutes_band": {
+          "$ref": "#/$defs/elapsed_minutes_band"
+        },
+        "completion_path": {
+          "enum": [
+            "standard",
+            "feedback_skipped",
+            "conservative_fallback",
+            "resumed"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "payload_flow_error_shown": {
+      "type": "object",
+      "required": [
+        "public_error_code",
+        "retry_available"
+      ],
+      "properties": {
+        "public_error_code": {
+          "$ref": "#/$defs/public_error_code"
+        },
+        "retry_available": {
+          "type": "boolean"
+        }
+      },
+      "additionalProperties": false
+    },
+    "payload_flow_retry_requested": {
+      "type": "object",
+      "required": [
+        "public_error_code",
+        "retry_count_band"
+      ],
+      "properties": {
+        "public_error_code": {
+          "$ref": "#/$defs/public_error_code"
+        },
+        "retry_count_band": {
+          "enum": [
+            "first",
+            "second_or_third",
+            "gte_fourth"
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+    "payload_fallback_path_used": {
+      "type": "object",
+      "required": [
+        "fallback_reason_code",
+        "fallback_version"
+      ],
+      "properties": {
+        "fallback_reason_code": {
+          "enum": [
+            "low_evidence",
+            "conflicting_evidence",
+            "match_service_unavailable",
+            "eligible_pool_empty"
+          ]
+        },
+        "fallback_version": {
+          "$ref": "#/$defs/version"
+        }
+      },
+      "additionalProperties": false
+    },
+    "payload_local_draft_recovered": {
+      "type": "object",
+      "required": [
+        "draft_age_minutes_band"
+      ],
+      "properties": {
+        "draft_age_minutes_band": {
+          "$ref": "#/$defs/draft_age_minutes_band"
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

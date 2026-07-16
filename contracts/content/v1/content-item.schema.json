@@ -1,0 +1,321 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:binnagent:content:item:1.0.0",
+  "title": "BinnAgent Development Content Item v1",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "content_id",
+    "content_version_id",
+    "title",
+    "content_type",
+    "content_hash",
+    "rights",
+    "difficulty",
+    "review"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "content_id": { "$ref": "#/$defs/id" },
+    "content_version_id": { "$ref": "#/$defs/id" },
+    "title": { "type": "string", "minLength": 1, "maxLength": 160 },
+    "content_type": {
+      "enum": ["calibration_reading", "matched_reading", "micro_expression"]
+    },
+    "content_hash": { "$ref": "#/$defs/sha256" },
+    "rights": { "$ref": "#/$defs/rights" },
+    "difficulty": { "$ref": "#/$defs/difficulty" },
+    "review": { "$ref": "#/$defs/review" },
+    "paragraphs": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 12,
+      "items": { "$ref": "#/$defs/paragraph" }
+    },
+    "allowed_annotations": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "enum": ["claim", "evidence", "logic", "uncertain", "reusable_expression"] }
+    },
+    "main_question": { "$ref": "#/$defs/main_question" },
+    "parallel_reconstruction": { "$ref": "#/$defs/parallel_reconstruction" },
+    "transferable_expressions": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 4,
+      "items": { "$ref": "#/$defs/transferable_expression" }
+    },
+    "situation": { "type": "string", "minLength": 20, "maxLength": 1200 },
+    "audience": { "type": "string", "minLength": 2, "maxLength": 200 },
+    "purpose": { "type": "string", "minLength": 2, "maxLength": 300 },
+    "target_argument_move": { "type": "string", "minLength": 2, "maxLength": 300 },
+    "optional_active_resource": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "forbidden_mechanical_use": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1, "maxLength": 200 }
+    },
+    "output_requirement": { "$ref": "#/$defs/output_requirement" },
+    "v1_minimum": {
+      "type": "array",
+      "minItems": 2,
+      "items": { "type": "string", "minLength": 2, "maxLength": 300 }
+    },
+    "feedback_rule": { "type": "string", "minLength": 10, "maxLength": 500 },
+    "v2_success": {
+      "type": "array",
+      "minItems": 2,
+      "items": { "type": "string", "minLength": 2, "maxLength": 300 }
+    },
+    "parallel_transfer": { "type": "string", "minLength": 20, "maxLength": 800 },
+    "automatic_feedback_refusal": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 2, "maxLength": 300 }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "content_type": { "enum": ["calibration_reading", "matched_reading"] } },
+        "required": ["content_type"]
+      },
+      "then": {
+        "required": ["paragraphs", "allowed_annotations", "main_question", "parallel_reconstruction", "transferable_expressions"]
+      }
+    },
+    {
+      "if": {
+        "properties": { "content_type": { "const": "micro_expression" } },
+        "required": ["content_type"]
+      },
+      "then": {
+        "required": [
+          "situation",
+          "audience",
+          "purpose",
+          "target_argument_move",
+          "optional_active_resource",
+          "forbidden_mechanical_use",
+          "output_requirement",
+          "v1_minimum",
+          "feedback_rule",
+          "v2_success",
+          "parallel_transfer",
+          "automatic_feedback_refusal"
+        ]
+      }
+    }
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[a-z][a-z0-9_]{7,127}$" },
+    "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+    "timestamp": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2})$"
+    },
+    "rights": {
+      "type": "object",
+      "required": [
+        "source_type",
+        "source_reference",
+        "rights_holder",
+        "allowed_uses",
+        "territory",
+        "valid_from",
+        "valid_until_reason",
+        "derivative_allowed",
+        "attribution_required",
+        "rights_status",
+        "reviewed_by",
+        "reviewed_at"
+      ],
+      "properties": {
+        "source_type": { "const": "project_authored" },
+        "source_reference": { "type": "string", "minLength": 8, "maxLength": 300 },
+        "rights_holder": { "type": "string", "minLength": 2, "maxLength": 160 },
+        "allowed_uses": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "enum": ["development", "internal_test", "closed_pilot", "commercial_release"] }
+        },
+        "territory": { "type": "string", "minLength": 2, "maxLength": 100 },
+        "valid_from": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "valid_until": { "type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$" },
+        "valid_until_reason": { "type": "string", "minLength": 2, "maxLength": 200 },
+        "derivative_allowed": { "type": "boolean" },
+        "attribution_required": { "type": "boolean" },
+        "rights_status": {
+          "enum": ["draft", "review_pending", "eligible_dev", "eligible_pilot", "eligible_release", "blocked", "withdrawn"]
+        },
+        "reviewed_by": { "type": "string", "minLength": 2, "maxLength": 100 },
+        "reviewed_at": { "$ref": "#/$defs/timestamp" },
+        "withdrawal_reason": { "type": "string", "minLength": 2, "maxLength": 300 }
+      },
+      "additionalProperties": false
+    },
+    "difficulty": {
+      "type": "object",
+      "required": [
+        "difficulty_status",
+        "exam_tracks",
+        "topic_familiarity",
+        "word_count",
+        "paragraph_count",
+        "vocabulary_load",
+        "syntax_load",
+        "discourse_relations",
+        "evidence_distance",
+        "estimated_minutes",
+        "max_hint_level",
+        "estimate_source"
+      ],
+      "properties": {
+        "difficulty_status": { "const": "uncalibrated" },
+        "exam_tracks": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "enum": ["english_1", "english_2"] }
+        },
+        "topic_familiarity": { "enum": ["high", "medium", "low"] },
+        "word_count": { "type": "integer", "minimum": 0, "maximum": 1000 },
+        "paragraph_count": { "type": "integer", "minimum": 0, "maximum": 20 },
+        "vocabulary_load": { "enum": ["light", "moderate", "heavy"] },
+        "syntax_load": { "enum": ["light", "moderate", "heavy"] },
+        "discourse_relations": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "enum": ["claim_evidence", "cause_effect", "contrast", "concession", "example", "reference"] }
+        },
+        "evidence_distance": { "enum": ["same_sentence", "same_paragraph", "cross_paragraph"] },
+        "estimated_minutes": { "type": "integer", "minimum": 1, "maximum": 60 },
+        "max_hint_level": { "type": "integer", "minimum": 1, "maximum": 4 },
+        "estimate_source": { "type": "string", "minLength": 4, "maxLength": 200 }
+      },
+      "additionalProperties": false
+    },
+    "review": {
+      "type": "object",
+      "required": ["status", "reviewer_role", "reviewed_at", "limitations"],
+      "properties": {
+        "status": { "const": "developer_reviewed" },
+        "reviewer_role": { "const": "developer_reviewer" },
+        "reviewed_at": { "$ref": "#/$defs/timestamp" },
+        "limitations": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 5, "maxLength": 300 }
+        }
+      },
+      "additionalProperties": false
+    },
+    "paragraph": {
+      "type": "object",
+      "required": ["paragraph_id", "text"],
+      "properties": {
+        "paragraph_id": { "$ref": "#/$defs/id" },
+        "text": { "type": "string", "minLength": 20, "maxLength": 4000 }
+      },
+      "additionalProperties": false
+    },
+    "evidence_span": {
+      "type": "object",
+      "required": ["paragraph_id", "start", "end", "text_quote", "text_hash"],
+      "properties": {
+        "paragraph_id": { "$ref": "#/$defs/id" },
+        "start": { "type": "integer", "minimum": 0 },
+        "end": { "type": "integer", "minimum": 1 },
+        "text_quote": { "type": "string", "minLength": 2, "maxLength": 1000 },
+        "text_hash": { "$ref": "#/$defs/sha256" }
+      },
+      "additionalProperties": false
+    },
+    "main_question": {
+      "type": "object",
+      "required": ["question_id", "prompt", "answer_type", "options", "correct_answer", "minimum_evidence", "acceptable_alternative_evidence", "common_error_candidates", "hints", "public_explanation", "reveal_gate"],
+      "properties": {
+        "question_id": { "$ref": "#/$defs/id" },
+        "prompt": { "type": "string", "minLength": 10, "maxLength": 800 },
+        "answer_type": { "const": "single_choice_with_explanation" },
+        "options": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 5,
+          "items": {
+            "type": "object",
+            "required": ["option_id", "text"],
+            "properties": {
+              "option_id": { "type": "string", "pattern": "^[A-E]$" },
+              "text": { "type": "string", "minLength": 2, "maxLength": 400 }
+            },
+            "additionalProperties": false
+          }
+        },
+        "correct_answer": { "type": "string", "pattern": "^[A-E]$" },
+        "minimum_evidence": { "$ref": "#/$defs/evidence_span" },
+        "acceptable_alternative_evidence": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/evidence_span" }
+        },
+        "common_error_candidates": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 4, "maxLength": 400 }
+        },
+        "hints": {
+          "type": "object",
+          "required": ["h1", "h2", "h3", "h4"],
+          "properties": {
+            "h1": { "type": "string", "minLength": 4, "maxLength": 400 },
+            "h2": { "type": "string", "minLength": 4, "maxLength": 400 },
+            "h3": { "type": "string", "minLength": 4, "maxLength": 400 },
+            "h4": { "type": "string", "minLength": 4, "maxLength": 600 }
+          },
+          "additionalProperties": false
+        },
+        "public_explanation": { "type": "string", "minLength": 20, "maxLength": 1200 },
+        "reveal_gate": { "const": "after_independent_output" }
+      },
+      "additionalProperties": false
+    },
+    "parallel_reconstruction": {
+      "type": "object",
+      "required": ["task_id", "prompt", "success_criteria"],
+      "properties": {
+        "task_id": { "$ref": "#/$defs/id" },
+        "prompt": { "type": "string", "minLength": 20, "maxLength": 800 },
+        "success_criteria": {
+          "type": "array",
+          "minItems": 2,
+          "items": { "type": "string", "minLength": 3, "maxLength": 300 }
+        }
+      },
+      "additionalProperties": false
+    },
+    "transferable_expression": {
+      "type": "object",
+      "required": ["expression", "appropriate_when", "avoid_when"],
+      "properties": {
+        "expression": { "type": "string", "minLength": 2, "maxLength": 200 },
+        "appropriate_when": { "type": "string", "minLength": 4, "maxLength": 300 },
+        "avoid_when": { "type": "string", "minLength": 4, "maxLength": 300 }
+      },
+      "additionalProperties": false
+    },
+    "output_requirement": {
+      "type": "object",
+      "required": ["sentence_min", "sentence_max", "word_min", "word_max", "language"],
+      "properties": {
+        "sentence_min": { "const": 2 },
+        "sentence_max": { "const": 4 },
+        "word_min": { "type": "integer", "minimum": 20, "maximum": 100 },
+        "word_max": { "type": "integer", "minimum": 40, "maximum": 100 },
+        "language": { "const": "en" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

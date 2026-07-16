@@ -4,7 +4,17 @@
 > 安装日期：2026-07-15  
 > OpenWiki：0.1.2  
 > 当前模式：Code  
-> 已验证模型：`gpt-5.4-mini`（显式指定 ChatGPT 登录）
+> 已验证模型：`gpt-5.3-codex-spark`（ChatGPT 登录 / Codex 后端）
+
+## 0. 操作权限规则
+
+OpenWiki 由项目所有者本人手动操作。Agent 必须遵守：
+
+- 只有当用户在当前请求中明确要求时，才可以运行 OpenWiki、更新生成页、切换模型、修改配置或处理 OpenWiki 工作流；
+- “更新项目文档”“同步文档”“整理今天内容”等一般请求只授权修改源文档，不包含 OpenWiki；
+- 每次授权只对当次指定操作有效，不能自动延续到后续任务；
+- 未获明确授权时，Agent 应停在源文档更新完成处，并提醒用户自行决定是否手动运行 OpenWiki；
+- 不得以修复导航、保持一致性、验证模型或生成页过期为由自行运行。
 
 ## 1. 当前安装状态
 
@@ -66,11 +76,11 @@ openwiki
 
 ### 3.2 更新全部 Wiki
 
-日常推荐显式指定已经验证的 ChatGPT 登录，避免继承本机当前的 OpenRouter 默认配置：
+日常推荐显式指定已经验证的 ChatGPT 登录和项目模型：
 
 ```bash
 OPENWIKI_PROVIDER=openai-chatgpt \
-  openwiki code --update --print --modelId gpt-5.4-mini
+  openwiki code --update --print --modelId gpt-5.3-codex-spark
 ```
 
 `--print` 表示单次运行，完成后退出。去掉它会进入可连续提问的交互界面。
@@ -79,7 +89,7 @@ OPENWIKI_PROVIDER=openai-chatgpt \
 
 ```bash
 OPENWIKI_PROVIDER=openai-chatgpt \
-  openwiki code --update --print --modelId gpt-5.4-mini \
+  openwiki code --update --print --modelId gpt-5.3-codex-spark \
   "根据最近的产品文档变更更新训练系统和来源地图，不要把规划写成已经实现"
 ```
 
@@ -88,7 +98,7 @@ OPENWIKI_PROVIDER=openai-chatgpt \
 ### 3.4 只咨询，不要求改文档
 
 ```bash
-openwiki code --print --modelId gpt-5.4-mini \
+openwiki code --print --modelId gpt-5.3-codex-spark \
   "总结当前仓库进入技术立项前还缺少什么"
 ```
 
@@ -138,12 +148,14 @@ openwiki/INSTRUCTIONS.md
 修改后运行：
 
 ```bash
-openwiki code --update --print --modelId gpt-5.4-mini
+openwiki code --update --print --modelId gpt-5.3-codex-spark
 ```
 
 ## 6. 模型和登录
 
-本项目已使用 ChatGPT 登录完成授权，但截至 2026-07-15，裸命令的启动横幅显示本机默认仍为 **OpenRouter / `z-ai/glm-5.2`**。因此项目命令应显式设置 `OPENWIKI_PROVIDER=openai-chatgpt`；仅写 `--modelId gpt-5.4-mini` 不会自动切换供应商。
+本项目已使用 ChatGPT 登录完成授权，并已在 OpenWiki 配置中把默认供应商与模型切换为 **OpenAI（ChatGPT login）/ `gpt-5.3-codex-spark`**。已经用显式模型参数和裸 `openwiki code --print` 各完成一次真实调用。
+
+GPT-5.3-Codex-Spark 截至 2026-07-15 仍是 Codex 研究预览模型，主要面向符合资格的 ChatGPT Pro 用户，可能有独立限额、排队或临时不可用；API 仅向少量合作方开放，见 [OpenAI 发布说明](https://openai.com/index/introducing-gpt-5-3-codex-spark/)。它适合快速、定向的文档修改，但复杂的全仓长任务仍应拆成小批并逐页复核。命令中保留显式供应商和模型参数，可以避免用户目录默认值将来变化后悄悄换模。
 
 OpenWiki 将配置与凭据保存在用户目录：
 
@@ -157,9 +169,9 @@ OpenWiki 将配置与凭据保存在用户目录：
 - 不要把 `~/.openwiki/.env` 复制到本项目或提交 Git；
 - 不要在命令、Wiki 指令或问题中粘贴访问令牌；
 - ChatGPT 刷新令牌应按密码处理；
-- 当前裸命令显示的默认供应商/模型为 OpenRouter / `z-ai/glm-5.2`；其额度不足时会出现 HTTP 402；
-- 本项目验证并推荐显式指定 ChatGPT 供应商与 `gpt-5.4-mini`；
-- 去掉供应商或 `--modelId` 会继承 OpenWiki 当前保存的默认配置，不能假设仍是上次成功配置。
+- 当前裸命令显示的默认供应商/模型为 OpenAI（ChatGPT login）/ `gpt-5.3-codex-spark`；
+- 本项目仍推荐在可复现命令中显式写出 `OPENWIKI_PROVIDER=openai-chatgpt` 与 `--modelId gpt-5.3-codex-spark`；
+- 如果研究预览资格、限额或模型可用性变化，调用可能失败；不得静默换成其他模型后仍声称由 Spark 生成。
 
 如果登录失效，重新启动官方登录初始化：
 
@@ -200,18 +212,18 @@ OPENWIKI_PROVIDER=openai-chatgpt openwiki code --init
 - ChatGPT、模型供应商或 LangSmith 的 Key/Token；
 - 用户目录下的 OpenWiki 本地缓存或连接器原始数据。
 
-当前仓库尚无首个 Git 提交，因此 `.last-update.json` 中会记录无法解析 `HEAD`。完成首个提交后再运行一次 `--update`，OpenWiki 就能记录有效的 Git 版本。
+当前仓库已有 `main` 分支、提交记录和 GitHub 远端；重新运行 `--update` 后，`.last-update.json` 应记录有效的 Git 版本。
 
 ## 9. 可选的自动更新
 
-OpenWiki 已在本项目生成 `.github/workflows/openwiki-update.yml`，但它目前只是待配置模板，并未形成可运行的云端自动化：当前本地仓库没有 Git 提交和已确认的 GitHub 远端，也没有配置工作流要求的模型 Secret。
+OpenWiki 已在本项目生成 `.github/workflows/openwiki-update.yml`，但它目前只是**手动触发的待配置模板**，没有启用定时执行。原因是 Spark 的 ChatGPT 订阅访问不能直接复用到 GitHub Actions，而其 API 在研究预览阶段仅向有限合作方开放。
 
 模板当前行为：
 
-- 每天 UTC 08:00 运行，也支持手动触发；
+- 只支持手动触发；
 - 使用 Node.js 22 和 npm 最新版 OpenWiki；
-- CI 使用 OpenRouter 的 `z-ai/glm-5.2`，不复用本机 ChatGPT 登录；
-- 需要 GitHub Secret：`OPENROUTER_API_KEY`；
+- CI 预设 OpenAI API 与 `gpt-5.3-codex-spark`，但只有账号已经获得该模型 API 权限时才可运行；
+- 需要 GitHub Secret：`OPENAI_API_KEY`；
 - 模板还引用可选的 `LANGSMITH_API_KEY`；不使用 LangSmith 时应在启用前移除对应环境变量和追踪配置；
 - 更新完成后创建 `openwiki/update` 分支和文档 PR，不直接合并默认分支。
 
@@ -236,11 +248,11 @@ OpenWiki 可能正在按页面逐步写入。先在另一个终端检查：
 find openwiki -maxdepth 1 -type f -print
 ```
 
-如果默认模型长时间没有产生新文件，可以终止后改用：
+如果默认模型长时间没有产生新文件，可以终止后用显式参数重试：
 
 ```bash
 OPENWIKI_PROVIDER=openai-chatgpt \
-  openwiki code --update --print --modelId gpt-5.4-mini
+  openwiki code --update --print --modelId gpt-5.3-codex-spark
 ```
 
 ### 在错误目录运行
@@ -286,7 +298,7 @@ npm install -g openwiki@latest
 
 ```bash
 openwiki code --help
-openwiki code --update --print --modelId gpt-5.4-mini
+openwiki code --update --print --modelId gpt-5.3-codex-spark
 ```
 
 ## 11. 推荐的日常流程

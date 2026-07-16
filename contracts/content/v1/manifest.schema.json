@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:binnagent:content:manifest:1.0.0",
+  "title": "BinnAgent Development Content Manifest v1",
+  "type": "object",
+  "required": ["schema_version", "pack_id", "pack_version", "purpose", "created_at", "items"],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "pack_id": { "type": "string", "pattern": "^[a-z][a-z0-9_]{7,127}$" },
+    "pack_version": { "type": "string", "pattern": "^v[0-9]+$" },
+    "purpose": { "const": "technical_spike_only" },
+    "created_at": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(?:\\.\\d+)?(?:Z|[+-]\\d{2}:\\d{2})$"
+    },
+    "items": {
+      "type": "array",
+      "minItems": 6,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "required": ["content_version_id", "content_type", "file", "content_hash", "rights_status", "difficulty_status"],
+        "properties": {
+          "content_version_id": { "type": "string", "pattern": "^[a-z][a-z0-9_]{7,127}$" },
+          "content_type": { "enum": ["calibration_reading", "matched_reading", "micro_expression"] },
+          "file": { "type": "string", "pattern": "^[a-z][a-z0-9_]+\\.json$" },
+          "content_hash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+          "rights_status": { "const": "eligible_dev" },
+          "difficulty_status": { "const": "uncalibrated" }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

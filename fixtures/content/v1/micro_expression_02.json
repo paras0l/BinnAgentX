@@ -1,0 +1,60 @@
+{
+  "schema_version": "1.0.0",
+  "content_id": "micro_expression_02",
+  "content_version_id": "micro_expression_02_v1",
+  "title": "A Better Signal of Study Progress",
+  "content_type": "micro_expression",
+  "content_hash": "e4ba4742b85d00bcc7f09f577cc06f501f959647a51009242ec1547dc57e4d65",
+  "rights": {
+    "source_type": "project_authored",
+    "source_reference": "BinnAgent Sprint 0 authored fixture, 2026-07-15",
+    "rights_holder": "BinnAgent project",
+    "allowed_uses": ["development", "internal_test"],
+    "territory": "worldwide",
+    "valid_from": "2026-07-15",
+    "valid_until_reason": "No fixed end date for project-authored development fixture",
+    "derivative_allowed": true,
+    "attribution_required": false,
+    "rights_status": "eligible_dev",
+    "reviewed_by": "developer_reviewer",
+    "reviewed_at": "2026-07-15T12:00:00Z"
+  },
+  "difficulty": {
+    "difficulty_status": "uncalibrated",
+    "exam_tracks": ["english_1", "english_2"],
+    "topic_familiarity": "high",
+    "word_count": 44,
+    "paragraph_count": 0,
+    "vocabulary_load": "moderate",
+    "syntax_load": "moderate",
+    "discourse_relations": ["claim_evidence", "concession", "contrast", "example"],
+    "evidence_distance": "same_paragraph",
+    "estimated_minutes": 6,
+    "max_hint_level": 4,
+    "estimate_source": "developer hypothesis; no learner calibration"
+  },
+  "review": {
+    "status": "developer_reviewed",
+    "reviewer_role": "developer_reviewer",
+    "reviewed_at": "2026-07-15T12:00:00Z",
+    "limitations": ["No teacher gold review", "No target-learner difficulty calibration"]
+  },
+  "situation": "A study group reports progress only by counting how many reading passages each member finishes. You believe completion counts show effort but can hide whether members understand new passages independently. Suggest one additional form of evidence and explain why it is harder to fake.",
+  "audience": "Members of a peer study group",
+  "purpose": "Improve the group's progress measure without rejecting activity records",
+  "target_argument_move": "Concede the value of an easy measure, expose its limit, and add evidence closer to the intended ability",
+  "optional_active_resource": "The solution is not to abandon X, but to combine it with Y.",
+  "forbidden_mechanical_use": ["Do not treat passage count as proof of comprehension", "Do not claim that activity records have no value"],
+  "output_requirement": {
+    "sentence_min": 2,
+    "sentence_max": 4,
+    "word_min": 35,
+    "word_max": 90,
+    "language": "en"
+  },
+  "v1_minimum": ["Acknowledges what completion count can show", "Names a distinct independent-performance signal", "Explains why the new signal is closer to comprehension"],
+  "feedback_rule": "Return only the single highest-priority issue in claim, logic, or expression; do not provide a replacement paragraph.",
+  "v2_success": ["Activity and ability evidence are clearly distinguished", "The additional evidence could be observed in a concrete task", "The learner has revised the priority issue in their own words"],
+  "parallel_transfer": "Apply the same argument to a group that measures writing progress only by total word count. Propose a stronger signal in two to four English sentences.",
+  "automatic_feedback_refusal": ["The text contains too little English to identify a claim", "The response includes fabricated personal scores presented as real evidence", "The request asks the system to write the whole response"]
+}

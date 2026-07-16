@@ -1,0 +1,106 @@
+{
+  "schema_version": "1.0.0",
+  "content_id": "calibration_reading_a",
+  "content_version_id": "calibration_reading_a_v1",
+  "title": "A Quiet Hour at the Library",
+  "content_type": "calibration_reading",
+  "content_hash": "4596d5a5f472d315bf39820f410de65c9ad8537cd05f175ddacaa0b087ad0d99",
+  "rights": {
+    "source_type": "project_authored",
+    "source_reference": "BinnAgent Sprint 0 authored fixture, 2026-07-15",
+    "rights_holder": "BinnAgent project",
+    "allowed_uses": ["development", "internal_test"],
+    "territory": "worldwide",
+    "valid_from": "2026-07-15",
+    "valid_until_reason": "No fixed end date for project-authored development fixture",
+    "derivative_allowed": true,
+    "attribution_required": false,
+    "rights_status": "eligible_dev",
+    "reviewed_by": "developer_reviewer",
+    "reviewed_at": "2026-07-15T12:00:00Z"
+  },
+  "difficulty": {
+    "difficulty_status": "uncalibrated",
+    "exam_tracks": ["english_1", "english_2"],
+    "topic_familiarity": "high",
+    "word_count": 222,
+    "paragraph_count": 3,
+    "vocabulary_load": "light",
+    "syntax_load": "light",
+    "discourse_relations": ["claim_evidence", "cause_effect", "contrast"],
+    "evidence_distance": "same_paragraph",
+    "estimated_minutes": 6,
+    "max_hint_level": 4,
+    "estimate_source": "developer hypothesis; no learner calibration"
+  },
+  "review": {
+    "status": "developer_reviewed",
+    "reviewer_role": "developer_reviewer",
+    "reviewed_at": "2026-07-15T12:00:00Z",
+    "limitations": ["No teacher gold review", "No target-learner difficulty calibration"]
+  },
+  "paragraphs": [
+    {
+      "paragraph_id": "calibration_a_p1",
+      "text": "A neighborhood library once opened every study room as soon as the doors unlocked. The policy seemed fair, yet many rooms stayed empty while students searched for quiet seats elsewhere. Staff members noticed that people reserved rooms for long blocks of time but often arrived late or left early. The unused space was not caused by a lack of demand; it resulted from a schedule that treated every hour as equally valuable."
+    },
+    {
+      "paragraph_id": "calibration_a_p2",
+      "text": "The library tested a simple change. During the busiest evening hour, small rooms could be booked for only thirty minutes, and a reservation disappeared if nobody arrived within ten minutes. Longer bookings remained available at other times. After two weeks, more students found a place to work, and complaints about unavailable rooms fell. The new rule did not create more space. It made existing space easier to share."
+    },
+    {
+      "paragraph_id": "calibration_a_p3",
+      "text": "Some students initially disliked the shorter evening sessions. However, staff explained the reason for the trial and placed a clock outside each room. Most users then planned smaller tasks for busy periods and saved group discussions for quieter hours. The experiment suggests that a resource can become more useful when access rules reflect how people actually use it. Fairness does not always mean giving everyone the same amount at every moment; it may mean reducing waste so that more people can participate."
+    }
+  ],
+  "allowed_annotations": ["claim", "evidence", "logic", "uncertain", "reusable_expression"],
+  "main_question": {
+    "question_id": "calibration_a_q1",
+    "prompt": "What was the main effect of the library's new booking rule? Choose an answer and explain it with evidence from the passage.",
+    "answer_type": "single_choice_with_explanation",
+    "options": [
+      { "option_id": "A", "text": "It persuaded the library to build additional study rooms." },
+      { "option_id": "B", "text": "It helped more students use the existing rooms during busy periods." },
+      { "option_id": "C", "text": "It removed all limits on evening reservations." },
+      { "option_id": "D", "text": "It made group discussion the main evening activity." }
+    ],
+    "correct_answer": "B",
+    "minimum_evidence": {
+      "paragraph_id": "calibration_a_p2",
+      "start": 241,
+      "end": 339,
+      "text_quote": "After two weeks, more students found a place to work, and complaints about unavailable rooms fell.",
+      "text_hash": "3b4adcfe90a85207ef8025d3914e0bebb67b909b69fe9567a7e2e3b08fa01794"
+    },
+    "acceptable_alternative_evidence": [
+      {
+        "paragraph_id": "calibration_a_p2",
+        "start": 340,
+        "end": 419,
+        "text_quote": "The new rule did not create more space. It made existing space easier to share.",
+        "text_hash": "eefc2a052498efbba34d589cc9a5abc016a771af7a4fcbd767cbd47bf9416c81"
+      }
+    ],
+    "common_error_candidates": ["Confusing more efficient use with construction of new rooms", "Focusing on one student's inconvenience instead of the reported overall result"],
+    "hints": {
+      "h1": "Look for the result reported after the two-week trial.",
+      "h2": "Compare what changed for students with what did not change about the building.",
+      "h3": "The passage contrasts creating more space with sharing existing space.",
+      "h4": "The answer is the option saying that existing rooms became available to more students."
+    },
+    "public_explanation": "Option B matches the reported outcome: more students found places and complaints fell, even though no new rooms were created. The other options either reverse the rule or add results that the passage never states.",
+    "reveal_gate": "after_independent_output"
+  },
+  "parallel_reconstruction": {
+    "task_id": "calibration_a_parallel_01",
+    "prompt": "In two English sentences, explain how a shared printer or meeting room could become more useful without buying another one.",
+    "success_criteria": ["States a change in an access rule", "Connects the rule to reduced waste or broader access"]
+  },
+  "transferable_expressions": [
+    {
+      "expression": "The change did not create more X; it made existing X easier to share.",
+      "appropriate_when": "Contrasting increased supply with more efficient use of existing resources",
+      "avoid_when": "The change actually adds new resources or when X cannot naturally be shared"
+    }
+  ]
+}
