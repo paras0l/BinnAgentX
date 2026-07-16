@@ -51,6 +51,15 @@ def test_vertical_slice_example_follows_domain_contract() -> None:
     assert_valid(example, schema)
 
 
+def test_priority_feedback_example_follows_model_output_contract() -> None:
+    root = REPOSITORY_ROOT / "contracts/model/priority-feedback/v1"
+    schema = read_json(root / "priority-feedback-output.schema.json")
+    example = read_json(root / "example.valid.json")
+    assert isinstance(schema, dict)
+
+    assert_valid(example, schema)
+
+
 def test_content_pack_schema_hashes_counts_and_evidence_spans() -> None:
     assert validate_content_pack(REPOSITORY_ROOT) == []
 

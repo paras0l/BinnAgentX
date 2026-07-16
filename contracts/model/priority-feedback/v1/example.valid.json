@@ -1,0 +1,7 @@
+{
+  "schema_version": "1.0.0",
+  "focus": "logic",
+  "feedback": "Name what the learner should try before relying on the tool.",
+  "evidence_quote": "complete translations can also replace the effort",
+  "replacement_text": null
+}

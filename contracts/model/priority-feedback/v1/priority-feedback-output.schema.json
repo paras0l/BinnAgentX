@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://binnagent.local/contracts/model/priority-feedback/v1/priority-feedback-output.schema.json",
+  "title": "Priority feedback model output v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "focus",
+    "feedback",
+    "evidence_quote",
+    "replacement_text"
+  ],
+  "properties": {
+    "schema_version": { "const": "1.0.0" },
+    "focus": { "enum": ["claim", "logic", "expression"] },
+    "feedback": {
+      "type": "string",
+      "minLength": 20,
+      "maxLength": 500,
+      "pattern": "\\S"
+    },
+    "evidence_quote": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240,
+      "pattern": "\\S"
+    },
+    "replacement_text": { "type": "null" }
+  }
+}

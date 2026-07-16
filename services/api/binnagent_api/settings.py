@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     control_identity_adapter: Literal["synthetic", "external"] = "synthetic"
     control_required_role: str = "developer_reviewer"
     model_adapter: str = "deterministic_fixture"
+    enable_remote_model_calls: bool = False
     model_timeout_seconds: int = 20
     model_max_calls_per_slice: int = 3
     model_max_cost_usd_per_slice: Decimal = Decimal("0.20")
@@ -43,11 +44,13 @@ class Settings(BaseSettings):
             self.learner_identity_adapter == "synthetic",
             self.control_identity_adapter == "synthetic",
             self.model_adapter == "deterministic_fixture",
+            not self.enable_remote_model_calls,
             self.min_content_rights_status != "eligible_release",
         ]
         if any(unsafe):
             raise ValueError(
-                "production cannot use synthetic identity, fixture model, or dev content"
+                "production cannot use synthetic identity, fixture model, disabled remote "
+                "models, or dev content"
             )
         return self
 

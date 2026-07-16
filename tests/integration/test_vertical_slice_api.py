@@ -97,6 +97,7 @@ async def _clean() -> None:
         tables.run_task_completion_events,
         tables.run_task_refs,
         tables.revision_events,
+        tables.model_invocations,
         tables.ai_interventions,
         tables.attempt_versions,
         tables.material_assignment_invalidations,
@@ -243,8 +244,14 @@ async def test_expression_priority_feedback_is_idempotent_auditable_and_user_aut
         assert replay.status_code == 200
         replay_text = replay.text
         assert v1_text not in replay_text
-        assert "approved_content_fixture" in replay_text
-        assert "prompt_expression_priority_feedback_v1" in replay_text
+        assert "deterministic_fixture" in replay_text
+        assert "prompt_expression_priority_feedback_v2" in replay_text
+        model_invocations = replay.json()["model_invocations"]
+        assert len(model_invocations) == 1
+        assert model_invocations[0]["outcome"] == "validated_fixture"
+        assert model_invocations[0]["is_remote"] is False
+        assert model_invocations[0]["evidence_hash"] is not None
+        assert model_invocations[0]["rejection_code"] is None
         assert replay.json()["evidence_counts"] == {
             "annotations": 0,
             "attempts": 2,
@@ -259,8 +266,12 @@ async def test_expression_priority_feedback_is_idempotent_auditable_and_user_aut
         outbox_count = await connection.scalar(
             sa.select(sa.func.count()).select_from(tables.outbox_messages)
         )
+        invocation_count = await connection.scalar(
+            sa.select(sa.func.count()).select_from(tables.model_invocations)
+        )
         assert attempt_count == 2
         assert outbox_count == 6
+        assert invocation_count == 1
 
 
 @pytest.mark.asyncio

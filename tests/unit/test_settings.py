@@ -14,3 +14,4 @@ def test_spike_high_impact_features_default_off() -> None:
     assert settings.enable_irt_cat is False
     assert settings.enable_automatic_total_score is False
     assert settings.enable_predicted_score_gain is False
+    assert settings.enable_remote_model_calls is False

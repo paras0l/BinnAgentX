@@ -1,5 +1,6 @@
 import json
 from datetime import UTC, datetime
+from decimal import Decimal
 from hashlib import sha256
 from typing import Annotated, Any
 from uuid import uuid4
@@ -25,10 +26,17 @@ from binnagent_domain.vertical_slice.models import (
     TaskType,
     TextSpan,
 )
+from binnagent_workflow import (
+    DeterministicPriorityFeedbackAdapter,
+    ModelBudget,
+    PriorityFeedbackGateway,
+    PriorityFeedbackRequest,
+)
 from fastapi import APIRouter, Depends, Header
 
 from binnagent_api.auth import ControlIdentity, require_control_identity
 from binnagent_api.database import get_engine
+from binnagent_api.settings import get_settings
 from binnagent_api.vertical_slice import tables
 from binnagent_api.vertical_slice.content_catalog import LocalContentCatalog
 from binnagent_api.vertical_slice.repository import VerticalSliceRepository
@@ -216,10 +224,79 @@ async def request_priority_feedback(
                 PublicErrorCode.SAVE_NOT_CONFIRMED,
                 "priority_feedback_already_delivered_for_current_material",
             )
-        reason_code, delivered_content = content_catalog.approved_expression_feedback(
+        fallback_reason_code, fallback_feedback = content_catalog.approved_expression_feedback(
             previous.current_material.content_version_id,
             current_attempts[-1].text,
         )
+        settings = get_settings()
+        budget_row = (
+            (
+                await connection.execute(
+                    sa.select(
+                        tables.workflow_runs.c.model_call_count,
+                        tables.workflow_runs.c.cost_usd,
+                    ).where(tables.workflow_runs.c.workflow_run_id == previous.workflow_run_id)
+                )
+            )
+            .mappings()
+            .one()
+        )
+        gateway = PriorityFeedbackGateway(
+            DeterministicPriorityFeedbackAdapter(),
+            timeout_seconds=settings.model_timeout_seconds,
+            allow_remote=settings.enable_remote_model_calls,
+        )
+        gateway_result = await gateway.generate(
+            PriorityFeedbackRequest(
+                workflow_run_id=previous.workflow_run_id,
+                task_id=previous.task_id,
+                input_attempt_version_id=body.input_attempt_version_id,
+                content_version_id=previous.current_material.content_version_id,
+                attempt_text=current_attempts[-1].text,
+                fallback_reason_code=fallback_reason_code,
+                fallback_feedback=fallback_feedback,
+            ),
+            ModelBudget(
+                call_count=int(budget_row["model_call_count"]),
+                cost_usd=Decimal(str(budget_row["cost_usd"])),
+                max_calls=settings.model_max_calls_per_slice,
+                max_cost_usd=settings.model_max_cost_usd_per_slice,
+            ),
+        )
+        now = datetime.now(UTC)
+        await connection.execute(
+            tables.model_invocations.insert().values(
+                invocation_id=_id("model_invocation"),
+                workflow_run_id=previous.workflow_run_id,
+                task_id=previous.task_id,
+                input_attempt_version_id=body.input_attempt_version_id,
+                purpose="expression_priority_feedback",
+                adapter=gateway_result.adapter,
+                prompt_version=gateway_result.prompt_version,
+                outcome=gateway_result.outcome.value,
+                is_remote=gateway_result.used_remote_call,
+                estimated_cost_usd=gateway_result.estimated_cost_usd,
+                actual_cost_usd=gateway_result.actual_cost_usd,
+                latency_ms=gateway_result.latency_ms,
+                output_hash=gateway_result.output_hash,
+                focus=gateway_result.focus,
+                evidence_start=gateway_result.evidence_start,
+                evidence_end=gateway_result.evidence_end,
+                evidence_hash=gateway_result.evidence_hash,
+                rejection_code=gateway_result.rejection_code,
+                created_at=now,
+            )
+        )
+        if gateway_result.used_remote_call:
+            await connection.execute(
+                tables.workflow_runs.update()
+                .where(tables.workflow_runs.c.workflow_run_id == previous.workflow_run_id)
+                .values(
+                    model_call_count=tables.workflow_runs.c.model_call_count + 1,
+                    cost_usd=tables.workflow_runs.c.cost_usd + gateway_result.actual_cost_usd,
+                    updated_at=now,
+                )
+            )
         transition = previous.record_intervention(
             RecordIntervention(
                 expected_version=body.expected_version,
@@ -227,12 +304,16 @@ async def request_priority_feedback(
                 input_attempt_version_id=body.input_attempt_version_id,
                 hint_level=2,
                 intervention_type=InterventionType.PRIORITY_FEEDBACK,
-                model_adapter="approved_content_fixture",
-                prompt_version="prompt_expression_priority_feedback_v1",
-                reason_code=reason_code,
-                delivered_content=delivered_content,
-                result_status=InterventionResult.DELIVERED,
-                now=datetime.now(UTC),
+                model_adapter=gateway_result.adapter,
+                prompt_version=gateway_result.prompt_version,
+                reason_code=gateway_result.reason_code,
+                delivered_content=gateway_result.delivered_content,
+                result_status=(
+                    InterventionResult.FALLBACK
+                    if gateway_result.used_fallback
+                    else InterventionResult.DELIVERED
+                ),
+                now=now,
             )
         )
         task, replayed = await repository.save(
@@ -459,6 +540,17 @@ async def _control_view(connection: Any, task: LearningTask) -> ControlReplayVie
         .mappings()
         .all()
     )
+    invocation_rows = (
+        (
+            await connection.execute(
+                sa.select(tables.model_invocations)
+                .where(tables.model_invocations.c.task_id == task.task_id)
+                .order_by(tables.model_invocations.c.created_at)
+            )
+        )
+        .mappings()
+        .all()
+    )
     return ControlReplayView(
         task_id=task.task_id,
         workflow_run_id=task.workflow_run_id,
@@ -470,6 +562,28 @@ async def _control_view(connection: Any, task: LearningTask) -> ControlReplayVie
             "interventions": len(task.interventions),
             "revisions": len(task.revisions),
         },
+        model_invocations=[
+            {
+                "invocation_id": row["invocation_id"],
+                "input_attempt_version_id": row["input_attempt_version_id"],
+                "purpose": row["purpose"],
+                "adapter": row["adapter"],
+                "prompt_version": row["prompt_version"],
+                "outcome": row["outcome"],
+                "is_remote": row["is_remote"],
+                "estimated_cost_usd": row["estimated_cost_usd"],
+                "actual_cost_usd": row["actual_cost_usd"],
+                "latency_ms": row["latency_ms"],
+                "output_hash": row["output_hash"],
+                "focus": row["focus"],
+                "evidence_start": row["evidence_start"],
+                "evidence_end": row["evidence_end"],
+                "evidence_hash": row["evidence_hash"],
+                "rejection_code": row["rejection_code"],
+                "created_at": row["created_at"],
+            }
+            for row in invocation_rows
+        ],
         event_chain=[
             {
                 "event_id": row["event_id"],

@@ -41,6 +41,7 @@ async def _clean() -> None:
         tables.run_task_completion_events,
         tables.run_task_refs,
         tables.revision_events,
+        tables.model_invocations,
         tables.ai_interventions,
         tables.attempt_versions,
         tables.material_assignment_invalidations,

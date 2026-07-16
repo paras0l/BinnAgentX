@@ -1,4 +1,5 @@
 from datetime import datetime
+from decimal import Decimal
 from typing import Annotated, Literal
 
 from binnagent_domain.vertical_slice.models import (
@@ -151,7 +152,28 @@ class ControlReplayView(BaseModel):
     state: str
     version: int
     evidence_counts: dict[str, int]
+    model_invocations: list["ModelInvocationView"]
     event_chain: list[dict[str, object]]
+
+
+class ModelInvocationView(BaseModel):
+    invocation_id: str
+    input_attempt_version_id: str
+    purpose: str
+    adapter: str
+    prompt_version: str
+    outcome: str
+    is_remote: bool
+    estimated_cost_usd: Decimal
+    actual_cost_usd: Decimal
+    latency_ms: int
+    output_hash: str
+    focus: str | None
+    evidence_start: int | None
+    evidence_end: int | None
+    evidence_hash: str | None
+    rejection_code: str | None
+    created_at: datetime
 
 
 class CreateRunRequest(BaseModel):
