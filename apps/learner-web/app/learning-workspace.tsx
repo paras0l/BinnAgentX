@@ -11,6 +11,7 @@ import {
   pauseTask,
   recordDifficulty,
   requestH1Hint,
+  requestPriorityFeedback,
   reserveNextTask,
   resumeTask,
   saveAnnotation,
@@ -206,6 +207,7 @@ function ActiveTaskWorkspace({
     !linkedRevision,
   );
   const wordCount = text.trim() ? text.trim().split(/\s+/u).length : 0;
+  const interventionLabel = isReading ? "H1" : "单项反馈";
 
   const selectText = () => {
     if (!isReading) return;
@@ -319,7 +321,7 @@ function ActiveTaskWorkspace({
     if (!outputIsValid()) return;
     const attemptText = isReading ? `选择 ${choice}。\n${text.trim()}` : text.trim();
     if (hasUnansweredIntervention && latestAttempt?.text === attemptText) {
-      setProgressMessage("H1 已经指出新的检查方向。请亲自修改判断或解释后，再保存 V2。");
+      setProgressMessage(`${interventionLabel}已经指出新的检查方向。请亲自修改后，再保存 V2。`);
       responseRef.current?.focus();
       return;
     }
@@ -335,7 +337,7 @@ function ActiveTaskWorkspace({
           setProgressMessage(
             isReading
               ? "V1 已保存。你可以保持独立直接完成，也可以领取一次 H1 后亲自写 V2。"
-              : "V1 已保存。当前仍是 H0 独立输出，可以直接完成本步。",
+              : "V1 已保存。你可以保持独立直接完成，也可以查看一次单项反馈后亲自写 V2。",
           );
           return;
         }
@@ -353,7 +355,9 @@ function ActiveTaskWorkspace({
           onTaskChange(currentTask);
           clearDraft(task.task_id);
           setSaveState("clean");
-          setProgressMessage("V2 与 H1 的引用已保存。请先查看前后版本，再确认完成本步。");
+          setProgressMessage(
+            `V2 与${interventionLabel}的引用已保存。请先查看前后版本，再确认完成本步。`,
+          );
           return;
         }
         if (needsRevisionLink && latestIntervention && latestAttempt) {
@@ -365,7 +369,7 @@ function ActiveTaskWorkspace({
           );
           onTaskChange(currentTask);
           clearDraft(task.task_id);
-          setProgressMessage("V1、H1 和 V2 的引用已经补齐，请确认后完成本步。");
+          setProgressMessage(`V1、${interventionLabel}和 V2 的引用已经补齐，请确认后完成本步。`);
           return;
         }
         if (currentTask.state !== "completed") {
@@ -400,6 +404,30 @@ function ActiveTaskWorkspace({
         });
         onTaskChange(updated);
         setProgressMessage("H1 只指出一个检查方向。现在请回到自己的判断，亲自形成 V2。");
+        window.requestAnimationFrame(() => responseRef.current?.focus());
+      } catch (error) {
+        onError(messageFor(error));
+      }
+    });
+  };
+
+  const requestExpressionFeedback = () => {
+    if (isReading || !latestAttempt || latestIntervention) return;
+    onError(null);
+    startTransition(async () => {
+      try {
+        const updated = await requestPriorityFeedback(task);
+        setText(latestAttempt.text);
+        saveDraft({
+          schemaVersion: 1,
+          taskId: task.task_id,
+          contentVersionId: task.current_content_version_id,
+          choice: "",
+          text: latestAttempt.text,
+          updatedAt: new Date().toISOString(),
+        });
+        onTaskChange(updated);
+        setProgressMessage("单项反馈只指出一个优先检查方向。请保留自己的立场和措辞，亲自形成 V2。");
         window.requestAnimationFrame(() => responseRef.current?.focus());
       } catch (error) {
         onError(messageFor(error));
@@ -491,6 +519,18 @@ function ActiveTaskWorkspace({
               wordCount <= material.output_requirement.word_max),
         },
         { label: "保存第一次作品 V1", complete: hasAttempt },
+        ...(latestIntervention
+          ? [
+              {
+                label: "根据单项反馈亲自形成 V2",
+                complete: Boolean(
+                  latestAttempt &&
+                  latestAttempt.attempt_version_id !== latestIntervention.input_attempt_version_id,
+                ),
+              },
+              { label: "保存 V1 → 反馈 → V2 引用", complete: Boolean(linkedRevision) },
+            ]
+          : []),
       ];
 
   const allowedAnnotations = isReading ? (material as ReadingMaterialView).allowed_annotations : [];
@@ -699,7 +739,11 @@ function ActiveTaskWorkspace({
             </section>
 
             {material.content_type === "micro_expression" ? (
-              <ExpressionResponseHeader material={material} wordCount={wordCount} />
+              <ExpressionResponseHeader
+                material={material}
+                wordCount={wordCount}
+                isRevision={hasUnansweredIntervention || task.attempts.length > 1}
+              />
             ) : (
               <>
                 <p className="step-label">本步任务</p>
@@ -734,7 +778,9 @@ function ActiveTaskWorkspace({
                   ? hasUnansweredIntervention || task.attempts.length > 1
                     ? "我的解释 · V2"
                     : "我的解释 · V1"
-                  : "我的作品"}
+                  : hasUnansweredIntervention || task.attempts.length > 1
+                    ? "我的作品 · V2"
+                    : "我的作品 · V1"}
                 <small>
                   {isReading ? "先说清判断与证据的关系" : `当前约 ${wordCount} 个英文词`}
                 </small>
@@ -759,7 +805,7 @@ function ActiveTaskWorkspace({
             </label>
 
             {isReading && hasAttempt && !latestIntervention ? (
-              <section className="h1-offer" aria-labelledby="h1-offer-title">
+              <section className="intervention-offer" aria-labelledby="h1-offer-title">
                 <div>
                   <p className="step-label">可选最小帮助</p>
                   <h3 id="h1-offer-title">只指出一个检查方向，然后由你写 V2</h3>
@@ -772,6 +818,29 @@ function ActiveTaskWorkspace({
                   disabled={isPending}
                 >
                   领取 H1
+                </button>
+              </section>
+            ) : null}
+
+            {!isReading && hasAttempt && !latestIntervention ? (
+              <section
+                className="intervention-offer expression-feedback-offer"
+                aria-labelledby="expression-feedback-title"
+              >
+                <div>
+                  <p className="step-label">可选单项反馈</p>
+                  <h3 id="expression-feedback-title">只指出一项最值得先改的问题</h3>
+                  <p>
+                    这是版本化规则检查，不是作文评分，也不会生成替代句。使用后必须由你亲自写 V2。
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={requestExpressionFeedback}
+                  disabled={isPending}
+                >
+                  查看单项反馈
                 </button>
               </section>
             ) : null}
@@ -869,6 +938,7 @@ interface AttemptTimelineProps {
 
 function AttemptTimeline({ attempts, interventions, revisions }: AttemptTimelineProps) {
   const latestIntervention = interventions.at(-1);
+  const isPriorityFeedback = latestIntervention?.intervention_type === "priority_feedback";
   const linkedRevision = latestIntervention
     ? revisions.find((revision) => revision.intervention_id === latestIntervention.intervention_id)
     : undefined;
@@ -888,15 +958,28 @@ function AttemptTimeline({ attempts, interventions, revisions }: AttemptTimeline
           <article key={attempt.attempt_version_id}>
             <strong>V{index + 1}</strong>
             <span>{attempt.independence === "independent" ? "独立输出" : "提示后输出"}</span>
-            <p>{attempt.text}</p>
+            <p tabIndex={0} aria-label={`V${index + 1} 作品正文，可滚动查看`}>
+              {attempt.text}
+            </p>
           </article>
         ))}
       </div>
       {latestIntervention ? (
-        <aside className="delivered-hint" aria-label={`已领取 H${latestIntervention.hint_level}`}>
+        <aside
+          className="delivered-hint"
+          aria-label={
+            isPriorityFeedback ? "已收到单项反馈" : `已领取 H${latestIntervention.hint_level}`
+          }
+        >
           <div>
-            <strong>H{latestIntervention.hint_level} · 只检查一个方向</strong>
-            <span>已引用 V1，不提供当前答案</span>
+            <strong>
+              {isPriorityFeedback
+                ? "单项反馈 · 只改一个优先问题"
+                : `H${latestIntervention.hint_level} · 只检查一个方向`}
+            </strong>
+            <span>
+              {isPriorityFeedback ? "已引用 V1，不提供替代段落" : "已引用 V1，不提供当前答案"}
+            </span>
           </div>
           <p>{latestIntervention.delivered_content}</p>
         </aside>
@@ -904,7 +987,9 @@ function AttemptTimeline({ attempts, interventions, revisions }: AttemptTimeline
         <p className="no-hint-evidence">当前仍是 H0；不领取帮助可以直接完成本步。</p>
       )}
       {linkedRevision ? (
-        <p className="revision-link-confirmed">V1 → H1 → V2 引用已保存；是否改善仍待验证。</p>
+        <p className="revision-link-confirmed">
+          V1 → {isPriorityFeedback ? "反馈" : "H1"} → V2 引用已保存；是否改善仍待验证。
+        </p>
       ) : latestIntervention && attempts.length > 1 ? (
         <p className="revision-link-pending">V2 已保存，正在等待引用确认。</p>
       ) : null}
@@ -1168,16 +1253,23 @@ function ExpressionBrief({ material, materialRef }: ExpressionBriefProps) {
 interface ExpressionResponseHeaderProps {
   material: ExpressionMaterialView;
   wordCount: number;
+  isRevision: boolean;
 }
 
-function ExpressionResponseHeader({ material, wordCount }: ExpressionResponseHeaderProps) {
+function ExpressionResponseHeader({
+  material,
+  wordCount,
+  isRevision,
+}: ExpressionResponseHeaderProps) {
   const withinRange =
     wordCount >= material.output_requirement.word_min &&
     wordCount <= material.output_requirement.word_max;
   return (
     <>
-      <p className="step-label">我的作品 · V1</p>
-      <h2 id="response-title">先把立场、条件和建议写出来</h2>
+      <p className="step-label">我的作品 · {isRevision ? "V2" : "V1"}</p>
+      <h2 id="response-title">
+        {isRevision ? "只处理一个优先问题，保留自己的表达" : "先把立场、条件和建议写出来"}
+      </h2>
       <ul className="minimum-list">
         {material.v1_minimum.map((item) => (
           <li key={item}>{item}</li>

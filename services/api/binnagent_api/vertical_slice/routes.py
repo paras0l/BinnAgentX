@@ -176,6 +176,77 @@ async def request_h1_hint(
     return learner_task_view(task, replayed)
 
 
+@learner_router.post("/tasks/{task_id}/feedback/priority", response_model=LearnerTaskView)
+async def request_priority_feedback(
+    task_id: str, body: HintRequest, idempotency_key: IdempotencyKey
+) -> LearnerTaskView:
+    async with get_engine().begin() as connection:
+        replay = await _find_replay(
+            connection,
+            idempotency_key,
+            body,
+            "learner_requested_priority_feedback",
+        )
+        if replay is not None:
+            return learner_task_view(replay, True)
+        previous = await repository.load(connection, task_id)
+        if previous.task_type is not TaskType.MICRO_EXPRESSION:
+            raise DomainError(
+                PublicErrorCode.SAVE_NOT_CONFIRMED,
+                "priority_feedback_expression_only",
+            )
+        current_attempts = previous.current_attempts
+        if not current_attempts:
+            raise DomainError(
+                PublicErrorCode.SAVE_NOT_CONFIRMED,
+                "learner_attempt_required_before_intervention",
+            )
+        if current_attempts[-1].attempt_version_id != body.input_attempt_version_id:
+            raise DomainError(
+                PublicErrorCode.SAVE_NOT_CONFIRMED,
+                "priority_feedback_must_reference_latest_attempt",
+            )
+        current_attempt_ids = {item.attempt_version_id for item in current_attempts}
+        if any(
+            item.input_attempt_version_id in current_attempt_ids
+            and item.intervention_type is InterventionType.PRIORITY_FEEDBACK
+            for item in previous.interventions
+        ):
+            raise DomainError(
+                PublicErrorCode.SAVE_NOT_CONFIRMED,
+                "priority_feedback_already_delivered_for_current_material",
+            )
+        reason_code, delivered_content = content_catalog.approved_expression_feedback(
+            previous.current_material.content_version_id,
+            current_attempts[-1].text,
+        )
+        transition = previous.record_intervention(
+            RecordIntervention(
+                expected_version=body.expected_version,
+                intervention_id=_id("intervention"),
+                input_attempt_version_id=body.input_attempt_version_id,
+                hint_level=2,
+                intervention_type=InterventionType.PRIORITY_FEEDBACK,
+                model_adapter="approved_content_fixture",
+                prompt_version="prompt_expression_priority_feedback_v1",
+                reason_code=reason_code,
+                delivered_content=delivered_content,
+                result_status=InterventionResult.DELIVERED,
+                now=datetime.now(UTC),
+            )
+        )
+        task, replayed = await repository.save(
+            connection,
+            previous,
+            transition,
+            idempotency_key=idempotency_key,
+            request_hash=_request_hash(body),
+            command_name="learner_requested_priority_feedback",
+            actor=ActorType.SYSTEM,
+        )
+    return learner_task_view(task, replayed)
+
+
 @learner_router.post("/tasks/{task_id}/revisions", response_model=LearnerTaskView)
 async def record_revision(
     task_id: str, body: RevisionRequest, idempotency_key: IdempotencyKey

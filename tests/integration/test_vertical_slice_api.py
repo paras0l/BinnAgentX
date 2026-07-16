@@ -126,7 +126,7 @@ async def test_task_creation_is_owned_by_run_orchestration() -> None:
 
 
 @pytest.mark.asyncio
-async def test_h2_revision_is_idempotent_auditable_and_user_authored() -> None:
+async def test_expression_priority_feedback_is_idempotent_auditable_and_user_authored() -> None:
     transport = httpx2.ASGITransport(app=create_app())
     async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
         task = await _seed_task(
@@ -136,7 +136,10 @@ async def test_h2_revision_is_idempotent_auditable_and_user_authored() -> None:
         )
         task_id = str(task["task_id"])
 
-        v1_text = "Useful effort reveals what I do not understand."
+        v1_text = (
+            "The translation tool can help a learner check unfamiliar details, but complete "
+            "translations can also replace the effort needed to understand sentence structure."
+        )
         v1_body = {
             "expected_version": task["version"],
             "text": v1_text,
@@ -161,27 +164,36 @@ async def test_h2_revision_is_idempotent_auditable_and_user_authored() -> None:
         assert len(duplicate.json()["attempts"]) == 1
 
         intervention = await client.post(
-            f"/control/v1/tasks/{task_id}/interventions",
-            headers={
-                "Idempotency-Key": "feedback-h2-0001",
-                "X-BinnAgent-Control-Role": "developer_reviewer",
-            },
+            f"/learner/v1/tasks/{task_id}/feedback/priority",
+            headers={"Idempotency-Key": "feedback-h2-0001"},
             json={
                 "expected_version": v1_payload["version"],
                 "input_attempt_version_id": v1_id,
-                "hint_level": 2,
-                "intervention_type": "priority_feedback",
-                "model_adapter": "deterministic_fixture",
-                "prompt_version": "prompt_priority_feedback_v1",
-                "delivered_content": (
-                    "Clarify the recommendation sequence before polishing expression."
-                ),
-                "result_status": "delivered",
-                "reason_code": "priority_feedback_delivered",
             },
         )
         assert intervention.status_code == 200
         intervention_payload = intervention.json()
+        assert intervention_payload["highest_hint_level"] == 2
+        assert intervention_payload["interventions"][0]["reason_code"] == (
+            "priority_feedback_sequence"
+        )
+        assert (
+            "what the learner should try before"
+            in (intervention_payload["interventions"][0]["delivered_content"])
+        )
+        assert "model_adapter" not in intervention.text
+
+        intervention_replay = await client.post(
+            f"/learner/v1/tasks/{task_id}/feedback/priority",
+            headers={"Idempotency-Key": "feedback-h2-0001"},
+            json={
+                "expected_version": v1_payload["version"],
+                "input_attempt_version_id": v1_id,
+            },
+        )
+        assert intervention_replay.status_code == 200
+        assert intervention_replay.json()["replayed"] is True
+        assert len(intervention_replay.json()["interventions"]) == 1
 
         current = await client.get(f"/learner/v1/tasks/{task_id}")
         assert current.status_code == 200
@@ -198,11 +210,7 @@ async def test_h2_revision_is_idempotent_auditable_and_user_authored() -> None:
         assert v2.status_code == 200
         v2_payload = v2.json()
         v2_id = v2_payload["attempts"][1]["attempt_version_id"]
-        intervention_id = next(
-            event["payload"]["intervention_id"]
-            for event in intervention_payload["event_chain"]
-            if event["event_type"] == "ai_intervention_delivered"
-        )
+        intervention_id = intervention_payload["interventions"][0]["intervention_id"]
 
         revision = await client.post(
             f"/learner/v1/tasks/{task_id}/revisions",
@@ -235,7 +243,8 @@ async def test_h2_revision_is_idempotent_auditable_and_user_authored() -> None:
         assert replay.status_code == 200
         replay_text = replay.text
         assert v1_text not in replay_text
-        assert "deterministic_fixture" in replay_text
+        assert "approved_content_fixture" in replay_text
+        assert "prompt_expression_priority_feedback_v1" in replay_text
         assert replay.json()["evidence_counts"] == {
             "annotations": 0,
             "attempts": 2,

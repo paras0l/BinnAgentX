@@ -984,7 +984,7 @@ textarea:disabled {
   min-height: 170px;
 }
 
-.h1-offer {
+.intervention-offer {
   display: grid;
   grid-template-columns: 1fr auto;
   gap: 18px;
@@ -996,21 +996,34 @@ textarea:disabled {
   background: #fffdf8;
 }
 
-.h1-offer .step-label {
+.intervention-offer .step-label {
   margin-bottom: 3px;
 }
 
-.h1-offer h3 {
+.intervention-offer h3 {
   margin: 0;
   color: #493c24;
   font-size: 13px;
 }
 
-.h1-offer p {
+.intervention-offer p {
   margin: 5px 0 0;
   color: #6b604b;
   font-size: 10px;
   line-height: 1.45;
+}
+
+.expression-feedback-offer {
+  border-color: #9eb9aa;
+  background: #f8fcf9;
+}
+
+.expression-feedback-offer h3 {
+  color: #244d3a;
+}
+
+.expression-feedback-offer p {
+  color: #526b5f;
 }
 
 .annotation-composer {

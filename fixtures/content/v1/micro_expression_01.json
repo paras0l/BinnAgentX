@@ -54,6 +54,19 @@
   },
   "v1_minimum": ["States one legitimate benefit of the tool", "Names the reading action the learner should attempt independently", "Gives a usable order of actions"],
   "feedback_rule": "Return only the single highest-priority issue in claim, logic, or expression; do not provide a replacement paragraph.",
+  "priority_feedback_checks": [
+    {
+      "check_id": "sequence",
+      "signal_terms": ["before", "after", "first", "then", "next", "only when"],
+      "feedback": "Make the action order explicit: state what the learner should try before using the tool and when support should enter. Keep every sentence in your own wording."
+    },
+    {
+      "check_id": "benefit_risk",
+      "signal_terms": ["but", "however", "although", "while", "yet"],
+      "feedback": "Make the benefit-risk contrast visible in one clear move. Preserve one legitimate use of the tool, then state the point where it starts replacing reading practice."
+    }
+  ],
+  "priority_feedback_fallback": "Check whether each sentence has one job: acknowledge a benefit, set a limit, or give the action sequence. Revise only the weakest connection in your own words.",
   "v2_success": ["The recommendation contains a clear before-and-after sequence", "The benefit and risk are both represented", "The learner's own wording remains the main text"],
   "parallel_transfer": "Apply the same reasoning to a writing assistant that suggests complete sentences before the learner has drafted a claim. Keep the response to two to four English sentences.",
   "automatic_feedback_refusal": ["The text contains too little English to identify a claim", "The request asks the system to write the whole response", "The content includes personal crisis, medical, legal, or financial advice"]

@@ -54,6 +54,19 @@
   },
   "v1_minimum": ["Acknowledges what completion count can show", "Names a distinct independent-performance signal", "Explains why the new signal is closer to comprehension"],
   "feedback_rule": "Return only the single highest-priority issue in claim, logic, or expression; do not provide a replacement paragraph.",
+  "priority_feedback_checks": [
+    {
+      "check_id": "activity_value",
+      "signal_terms": ["count", "effort", "activity", "record", "finish"],
+      "feedback": "Acknowledge what completion counts can genuinely show before challenging their limit. Keep that concession brief so your stronger evidence remains the main point."
+    },
+    {
+      "check_id": "independent_signal",
+      "signal_terms": ["independent", "without help", "new passage", "unseen", "explain", "justify"],
+      "feedback": "Name one observable independent-performance task, not another activity total. Then explain why success on that task is closer to comprehension."
+    }
+  ],
+  "priority_feedback_fallback": "Separate activity evidence from ability evidence more sharply. Revise the sentence where the two signals are easiest to confuse, using your own wording.",
   "v2_success": ["Activity and ability evidence are clearly distinguished", "The additional evidence could be observed in a concrete task", "The learner has revised the priority issue in their own words"],
   "parallel_transfer": "Apply the same argument to a group that measures writing progress only by total word count. Propose a stronger signal in two to four English sentences.",
   "automatic_feedback_refusal": ["The text contains too little English to identify a claim", "The response includes fabricated personal scores presented as real evidence", "The request asks the system to write the whole response"]

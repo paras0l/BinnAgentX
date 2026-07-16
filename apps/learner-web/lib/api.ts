@@ -132,6 +132,15 @@ export function requestH1Hint(task: LearnerTaskView): Promise<LearnerTaskView> {
   });
 }
 
+export function requestPriorityFeedback(task: LearnerTaskView): Promise<LearnerTaskView> {
+  const latestAttempt = task.attempts.at(-1);
+  if (!latestAttempt) return Promise.reject(new Error("V1 is required before priority feedback"));
+  return command(`/v1/tasks/${task.task_id}/feedback/priority`, "request_priority_feedback", {
+    expected_version: task.version,
+    input_attempt_version_id: latestAttempt.attempt_version_id,
+  });
+}
+
 export function saveRevision(
   task: LearnerTaskView,
   fromAttemptVersionId: string,

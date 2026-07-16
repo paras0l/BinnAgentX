@@ -1,4 +1,5 @@
 import json
+import re
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, NoReturn
@@ -70,6 +71,47 @@ class LocalContentCatalog:
         if not isinstance(hint, str) or not hint.strip():
             self._not_eligible("approved_hint_unavailable")
         return hint.strip()
+
+    def approved_expression_feedback(
+        self,
+        content_version_id: str,
+        attempt_text: str,
+    ) -> tuple[str, str]:
+        """Select one pre-reviewed check from visible surface signals in learner V1."""
+        item = self.learner_item(content_version_id)
+        if item.get("content_type") != "micro_expression":
+            self._not_eligible("priority_feedback_requires_expression_content")
+        english_words = re.findall(r"[A-Za-z]+(?:'[A-Za-z]+)?", attempt_text)
+        if len(english_words) < 12:
+            raise DomainError(
+                PublicErrorCode.SAVE_NOT_CONFIRMED,
+                "expression_v1_too_short_for_priority_feedback",
+            )
+        normalized = " ".join(attempt_text.lower().split())
+        checks = item.get("priority_feedback_checks")
+        if not isinstance(checks, list) or not checks:
+            self._not_eligible("approved_priority_feedback_unavailable")
+        for check in checks:
+            if not isinstance(check, dict):
+                self._not_eligible("approved_priority_feedback_invalid")
+            check_id = check.get("check_id")
+            signal_terms = check.get("signal_terms")
+            feedback = check.get("feedback")
+            if (
+                not isinstance(check_id, str)
+                or not isinstance(signal_terms, list)
+                or not signal_terms
+                or not all(isinstance(term, str) for term in signal_terms)
+                or not isinstance(feedback, str)
+                or not feedback.strip()
+            ):
+                self._not_eligible("approved_priority_feedback_invalid")
+            if not any(term.lower() in normalized for term in signal_terms):
+                return f"priority_feedback_{check_id}", feedback.strip()
+        fallback = item.get("priority_feedback_fallback")
+        if not isinstance(fallback, str) or not fallback.strip():
+            self._not_eligible("approved_priority_feedback_fallback_unavailable")
+        return "priority_feedback_fallback", fallback.strip()
 
     def paired_expression_for(self, matched_content_version_id: str) -> MaterialRef:
         preferred = (

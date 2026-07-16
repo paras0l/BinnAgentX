@@ -400,3 +400,199 @@ test("first experience opens the reading and output workspace", async ({ page })
   const results = await new AxeBuilder({ page }).analyze();
   expect(results.violations).toEqual([]);
 });
+
+test("expression workspace keeps V1, gives one priority check, and requires learner V2", async ({
+  page,
+}) => {
+  const expressionRun = {
+    ...run,
+    workflow_run_id: "workflow_run_expression_browser_0001",
+    stage: "micro_expression",
+    version: 4,
+    current_task_id: "task_expression_browser_0001",
+    task_refs: [
+      {
+        task_id: "task_expression_browser_0001",
+        role: "micro_expression",
+        task_type: "micro_expression",
+        content_version_id: "micro_expression_01_v1",
+        completed: false,
+        completed_task_version: null,
+        highest_hint_level: null,
+      },
+    ],
+    completion_gaps: ["micro_expression_completed"],
+  };
+  const expressionTask = {
+    ...workspace.task,
+    task_id: "task_expression_browser_0001",
+    workflow_run_id: expressionRun.workflow_run_id,
+    task_type: "micro_expression",
+    current_content_version_id: "micro_expression_01_v1",
+    completion_gaps: ["learner_attempt"],
+  };
+  const expressionMaterial = {
+    content_type: "micro_expression",
+    content_version_id: "micro_expression_01_v1",
+    title: "Helpful Support Without Skill Replacement",
+    situation:
+      "A classmate accepts complete translations before trying to understand sentence structure. Give practical advice that preserves useful support.",
+    audience: "A classmate preparing for an English exam",
+    purpose: "Recommend a better sequence for using assistance",
+    target_argument_move: "Acknowledge a benefit, set a limit, and propose an action sequence",
+    optional_active_resource: "Assistance should not replace the act being learned.",
+    forbidden_mechanical_use: ["Do not copy the resource sentence"],
+    output_requirement: {
+      sentence_min: 2,
+      sentence_max: 4,
+      word_min: 35,
+      word_max: 90,
+      language: "en",
+    },
+    v1_minimum: [
+      "States one legitimate benefit of the tool",
+      "Names the reading action to attempt independently",
+      "Gives a usable order of actions",
+    ],
+  };
+  const v1Text =
+    "Translation tools can help learners check unfamiliar details, but complete translations may replace careful reading practice. Learners should still examine sentence structure and identify the main relation themselves, using support only for details that remain unclear.";
+  const v2Text =
+    "Translation tools can help learners check unfamiliar details, but complete translations may replace careful reading practice. First, learners should examine sentence structure and identify the main relation themselves. Then they can use support only for details that remain unclear.";
+  const v1 = {
+    attempt_version_id: "attempt_version_expression_browser_v1",
+    version: 1,
+    text: v1Text,
+    content_hash: "d".repeat(64),
+    independence: "independent",
+    created_at: "2026-07-16T14:00:00Z",
+  };
+  const intervention = {
+    intervention_id: "intervention_expression_browser_0001",
+    input_attempt_version_id: v1.attempt_version_id,
+    hint_level: 2,
+    intervention_type: "priority_feedback",
+    reason_code: "priority_feedback_sequence",
+    delivered_content:
+      "Make the action order explicit: state what the learner should try before using the tool and when support should enter.",
+    content_hash: "e".repeat(64),
+    result_status: "delivered",
+    created_at: "2026-07-16T14:01:00Z",
+  };
+  const v2 = {
+    attempt_version_id: "attempt_version_expression_browser_v2",
+    version: 2,
+    text: v2Text,
+    content_hash: "f".repeat(64),
+    independence: "hinted_low",
+    created_at: "2026-07-16T14:02:00Z",
+  };
+  let currentExpressionTask: Record<string, unknown> = expressionTask;
+
+  await page.route("**/api/learner/v1/runs", async (route) => {
+    await route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify(expressionRun),
+    });
+  });
+  await page.route(
+    `**/api/learner/v1/runs/${expressionRun.workflow_run_id}/workspace`,
+    async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          run: expressionRun,
+          task: currentExpressionTask,
+          material: expressionMaterial,
+        }),
+      });
+    },
+  );
+  await page.route(`**/api/learner/v1/tasks/${expressionTask.task_id}/attempts`, async (route) => {
+    const body = route.request().postDataJSON() as { expected_version: number };
+    currentExpressionTask =
+      body.expected_version === 1
+        ? { ...expressionTask, version: 2, state: "saved", attempts: [v1] }
+        : {
+            ...expressionTask,
+            version: 4,
+            state: "saved",
+            highest_hint_level: 2,
+            attempts: [v1, v2],
+            interventions: [intervention],
+          };
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(currentExpressionTask),
+    });
+  });
+  await page.route(
+    `**/api/learner/v1/tasks/${expressionTask.task_id}/feedback/priority`,
+    async (route) => {
+      currentExpressionTask = {
+        ...expressionTask,
+        version: 3,
+        state: "hinted",
+        highest_hint_level: 2,
+        attempts: [v1],
+        interventions: [intervention],
+      };
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(currentExpressionTask),
+      });
+    },
+  );
+  await page.route(`**/api/learner/v1/tasks/${expressionTask.task_id}/revisions`, async (route) => {
+    currentExpressionTask = {
+      ...expressionTask,
+      version: 5,
+      state: "saved",
+      highest_hint_level: 2,
+      attempts: [v1, v2],
+      interventions: [intervention],
+      revisions: [
+        {
+          revision_event_id: "revision_event_expression_browser_0001",
+          from_attempt_version_id: v1.attempt_version_id,
+          to_attempt_version_id: v2.attempt_version_id,
+          intervention_id: intervention.intervention_id,
+          result_status: "needs_review",
+          created_at: "2026-07-16T14:03:00Z",
+        },
+      ],
+    };
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(currentExpressionTask),
+    });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "开始独立校准" }).click();
+  await expect(page.getByRole("heading", { name: "把读到的思路变成自己的表达" })).toBeVisible();
+  await page.getByLabel(/^我的作品/).fill(v1Text);
+  await page.getByRole("button", { name: "保存 V1（不结束本步）" }).click();
+  await expect(page.getByRole("button", { name: "查看单项反馈" })).toBeVisible();
+  await page.getByRole("button", { name: "查看单项反馈" }).click();
+  await expect(page.getByText(/Make the action order explicit/)).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "只处理一个优先问题，保留自己的表达" }),
+  ).toBeVisible();
+  await page.getByLabel(/^我的作品 · V2/).fill(v2Text);
+  await page.getByRole("button", { name: "保存 V2 并建立引用" }).click();
+
+  await expect(page.getByRole("heading", { name: "V1 与 V2 都已保留" })).toBeVisible();
+  await expect(page.getByText("V1 → 反馈 → V2 引用已保存；是否改善仍待验证。")).toBeVisible();
+  const versions = page.locator(".attempt-versions article");
+  await expect(versions.nth(0)).toContainText(v1Text);
+  await expect(versions.nth(1)).toContainText(v2Text);
+
+  const results = await new AxeBuilder({ page }).analyze();
+  expect(results.violations).toEqual([]);
+});
