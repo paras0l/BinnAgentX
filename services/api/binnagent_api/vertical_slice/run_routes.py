@@ -41,6 +41,7 @@ from binnagent_api.database import get_engine
 from binnagent_api.vertical_slice import tables
 from binnagent_api.vertical_slice.content_catalog import LocalContentCatalog
 from binnagent_api.vertical_slice.repository import VerticalSliceRepository
+from binnagent_api.vertical_slice.routes import learner_task_view
 from binnagent_api.vertical_slice.run_repository import VerticalSliceRunRepository
 from binnagent_api.vertical_slice.schemas import (
     AdvanceRunRequest,
@@ -48,7 +49,14 @@ from binnagent_api.vertical_slice.schemas import (
     ControlRunReplayView,
     CreateRunRequest,
     DifficultyFeedbackRequest,
+    LearnerExpressionMaterialView,
+    LearnerOutputRequirementView,
+    LearnerParagraphView,
+    LearnerQuestionOptionView,
+    LearnerReadingMaterialView,
+    LearnerReadingQuestionView,
     LearnerRunView,
+    LearnerWorkspaceView,
     MatchDecisionView,
     NextTaskPlaceholderRequest,
     RunTaskRefView,
@@ -104,6 +112,28 @@ async def get_run(workflow_run_id: str) -> LearnerRunView:
     async with get_engine().connect() as connection:
         run = await run_repository.load(connection, workflow_run_id)
     return _run_view(run)
+
+
+@learner_run_router.get("/{workflow_run_id}/workspace", response_model=LearnerWorkspaceView)
+async def get_run_workspace(workflow_run_id: str) -> LearnerWorkspaceView:
+    async with get_engine().connect() as connection:
+        run = await run_repository.load(connection, workflow_run_id)
+        current = run.current_task
+        if current is None:
+            return LearnerWorkspaceView(run=_run_view(run), task=None, material=None)
+        task = await task_repository.load(connection, current.task_id)
+        if task.workflow_run_id != run.workflow_run_id:
+            raise DomainError(
+                PublicErrorCode.SESSION_CONFLICT,
+                "workspace_task_run_mismatch",
+                run.version,
+            )
+        material = _material_view(task)
+        return LearnerWorkspaceView(
+            run=_run_view(run),
+            task=learner_task_view(task),
+            material=material,
+        )
 
 
 @learner_run_router.post("/{workflow_run_id}/advance", response_model=LearnerRunView)
@@ -412,6 +442,86 @@ def _new_task(
             assignment_id=_id("assignment"),
             now=now,
         )
+    )
+
+
+def _material_view(
+    task: LearningTask,
+) -> LearnerReadingMaterialView | LearnerExpressionMaterialView:
+    item = content_catalog.learner_item(task.current_material.content_version_id)
+    if task.task_type in {TaskType.CALIBRATION_READING, TaskType.MATCHED_READING}:
+        paragraphs = item.get("paragraphs")
+        question = item.get("main_question")
+        options = question.get("options") if isinstance(question, dict) else None
+        annotations = item.get("allowed_annotations")
+        if (
+            not isinstance(paragraphs, list)
+            or not isinstance(question, dict)
+            or not isinstance(options, list)
+            or not isinstance(annotations, list)
+        ):
+            raise DomainError(
+                PublicErrorCode.CONTENT_NOT_ELIGIBLE,
+                "learner_reading_projection_missing",
+            )
+        return LearnerReadingMaterialView(
+            content_type=(
+                "calibration_reading"
+                if task.task_type is TaskType.CALIBRATION_READING
+                else "matched_reading"
+            ),
+            content_version_id=task.current_material.content_version_id,
+            title=str(item.get("title", "")),
+            paragraphs=[
+                LearnerParagraphView(
+                    paragraph_id=str(part.get("paragraph_id", "")),
+                    text=str(part.get("text", "")),
+                )
+                for part in paragraphs
+                if isinstance(part, dict)
+            ],
+            allowed_annotations=[str(value) for value in annotations],
+            question=LearnerReadingQuestionView(
+                question_id=str(question.get("question_id", "")),
+                prompt=str(question.get("prompt", "")),
+                options=[
+                    LearnerQuestionOptionView(
+                        option_id=str(option.get("option_id", "")),
+                        text=str(option.get("text", "")),
+                    )
+                    for option in options
+                    if isinstance(option, dict)
+                ],
+            ),
+        )
+    requirement = item.get("output_requirement")
+    if not isinstance(requirement, dict):
+        raise DomainError(
+            PublicErrorCode.CONTENT_NOT_ELIGIBLE,
+            "learner_expression_projection_missing",
+        )
+    forbidden = item.get("forbidden_mechanical_use")
+    minimum = item.get("v1_minimum")
+    return LearnerExpressionMaterialView(
+        content_type="micro_expression",
+        content_version_id=task.current_material.content_version_id,
+        title=str(item.get("title", "")),
+        situation=str(item.get("situation", "")),
+        audience=str(item.get("audience", "")),
+        purpose=str(item.get("purpose", "")),
+        target_argument_move=str(item.get("target_argument_move", "")),
+        optional_active_resource=str(item.get("optional_active_resource", "")),
+        forbidden_mechanical_use=(
+            [str(value) for value in forbidden] if isinstance(forbidden, list) else []
+        ),
+        output_requirement=LearnerOutputRequirementView(
+            sentence_min=int(requirement.get("sentence_min", 0)),
+            sentence_max=int(requirement.get("sentence_max", 0)),
+            word_min=int(requirement.get("word_min", 0)),
+            word_max=int(requirement.get("word_max", 0)),
+            language=str(requirement.get("language", "")),
+        ),
+        v1_minimum=[str(value) for value in minimum] if isinstance(minimum, list) else [],
     )
 
 

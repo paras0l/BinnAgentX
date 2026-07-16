@@ -125,6 +125,16 @@ async def test_complete_cross_task_run_with_conservative_matching_and_replay() -
         assert run["stage"] == "calibration_a"
         assert run["task_refs"][0]["content_version_id"] == "calibration_reading_a_v1"
 
+        workspace = await client.get(f"/learner/v1/runs/{run_id}/workspace")
+        assert workspace.status_code == 200, workspace.text
+        workspace_payload = workspace.json()
+        assert workspace_payload["task"]["task_id"] == run["current_task_id"]
+        assert workspace_payload["material"]["content_type"] == "calibration_reading"
+        assert workspace_payload["material"]["question"]["options"][1]["option_id"] == "B"
+        assert "correct_answer" not in workspace.text
+        assert "public_explanation" not in workspace.text
+        assert '"hints"' not in workspace.text
+
         first_task = (await client.get(f"/learner/v1/tasks/{run['current_task_id']}")).json()
         first_attempt = await _save_independent_attempt(
             client,
@@ -215,6 +225,12 @@ async def test_complete_cross_task_run_with_conservative_matching_and_replay() -
         run = await _advance_run(client, run_id, run["version"], "run-advance-matched-0001")
         assert run["stage"] == "micro_expression"
         assert run["task_refs"][-1]["content_version_id"] == "micro_expression_01_v1"
+
+        expression_workspace = await client.get(f"/learner/v1/runs/{run_id}/workspace")
+        assert expression_workspace.status_code == 200, expression_workspace.text
+        assert expression_workspace.json()["material"]["content_type"] == "micro_expression"
+        assert "feedback_rule" not in expression_workspace.text
+        assert "automatic_feedback_refusal" not in expression_workspace.text
 
         micro_task = (await client.get(f"/learner/v1/tasks/{run['current_task_id']}")).json()
         micro_attempt = await _save_independent_attempt(

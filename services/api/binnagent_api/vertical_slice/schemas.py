@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Annotated
+from typing import Annotated, Literal
 
 from binnagent_domain.vertical_slice.models import (
     AnnotationKind,
@@ -174,3 +174,56 @@ class LearnerRunView(BaseModel):
 
 class ControlRunReplayView(LearnerRunView):
     event_chain: list[dict[str, object]]
+
+
+class LearnerParagraphView(BaseModel):
+    paragraph_id: str
+    text: str
+
+
+class LearnerQuestionOptionView(BaseModel):
+    option_id: str
+    text: str
+
+
+class LearnerReadingQuestionView(BaseModel):
+    question_id: str
+    prompt: str
+    options: list[LearnerQuestionOptionView]
+
+
+class LearnerReadingMaterialView(BaseModel):
+    content_type: Literal["calibration_reading", "matched_reading"]
+    content_version_id: str
+    title: str
+    paragraphs: list[LearnerParagraphView]
+    allowed_annotations: list[str]
+    question: LearnerReadingQuestionView
+
+
+class LearnerOutputRequirementView(BaseModel):
+    sentence_min: int
+    sentence_max: int
+    word_min: int
+    word_max: int
+    language: str
+
+
+class LearnerExpressionMaterialView(BaseModel):
+    content_type: Literal["micro_expression"]
+    content_version_id: str
+    title: str
+    situation: str
+    audience: str
+    purpose: str
+    target_argument_move: str
+    optional_active_resource: str
+    forbidden_mechanical_use: list[str]
+    output_requirement: LearnerOutputRequirementView
+    v1_minimum: list[str]
+
+
+class LearnerWorkspaceView(BaseModel):
+    run: LearnerRunView
+    task: LearnerTaskView | None
+    material: LearnerReadingMaterialView | LearnerExpressionMaterialView | None

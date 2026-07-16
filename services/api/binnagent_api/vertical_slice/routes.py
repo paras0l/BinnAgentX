@@ -52,7 +52,7 @@ IdempotencyKey = Annotated[
 async def get_task(task_id: str) -> LearnerTaskView:
     async with get_engine().connect() as connection:
         task = await repository.load(connection, task_id)
-    return _learner_view(task)
+    return learner_task_view(task)
 
 
 @learner_router.post("/tasks/{task_id}/annotations", response_model=LearnerTaskView)
@@ -62,7 +62,7 @@ async def add_annotation(
     async with get_engine().begin() as connection:
         replay = await _find_replay(connection, idempotency_key, body, "add_annotation")
         if replay is not None:
-            return _learner_view(replay, True)
+            return learner_task_view(replay, True)
         previous = await repository.load(connection, task_id)
         span = TextSpan(**body.span.model_dump())
         content_catalog.validate_span(previous.current_material.content_version_id, span)
@@ -84,7 +84,7 @@ async def add_annotation(
             body,
             "add_annotation",
         )
-    return _learner_view(task, replayed)
+    return learner_task_view(task, replayed)
 
 
 @learner_router.post("/tasks/{task_id}/attempts", response_model=LearnerTaskView)
@@ -94,7 +94,7 @@ async def save_attempt(
     async with get_engine().begin() as connection:
         replay = await _find_replay(connection, idempotency_key, body, "save_attempt")
         if replay is not None:
-            return _learner_view(replay, True)
+            return learner_task_view(replay, True)
         previous = await repository.load(connection, task_id)
         transition = previous.save_attempt(
             SaveAttempt(
@@ -108,7 +108,7 @@ async def save_attempt(
         task, replayed = await _save(
             connection, previous, transition, idempotency_key, body, "save_attempt"
         )
-    return _learner_view(task, replayed)
+    return learner_task_view(task, replayed)
 
 
 @learner_router.post("/tasks/{task_id}/revisions", response_model=LearnerTaskView)
@@ -118,7 +118,7 @@ async def record_revision(
     async with get_engine().begin() as connection:
         replay = await _find_replay(connection, idempotency_key, body, "record_revision")
         if replay is not None:
-            return _learner_view(replay, True)
+            return learner_task_view(replay, True)
         previous = await repository.load(connection, task_id)
         transition = previous.record_revision(
             RecordRevision(
@@ -134,7 +134,7 @@ async def record_revision(
         task, replayed = await _save(
             connection, previous, transition, idempotency_key, body, "record_revision"
         )
-    return _learner_view(task, replayed)
+    return learner_task_view(task, replayed)
 
 
 @learner_router.post("/tasks/{task_id}/material-seen", response_model=LearnerTaskView)
@@ -144,7 +144,7 @@ async def report_material_seen(
     async with get_engine().begin() as connection:
         replay = await _find_replay(connection, idempotency_key, body, "report_material_seen")
         if replay is not None:
-            return _learner_view(replay, True)
+            return learner_task_view(replay, True)
         previous = await repository.load(connection, task_id)
         transition = previous.replace_material(
             ReplaceMaterial(
@@ -166,7 +166,7 @@ async def report_material_seen(
             body,
             "report_material_seen",
         )
-    return _learner_view(task, replayed)
+    return learner_task_view(task, replayed)
 
 
 @learner_router.post("/tasks/{task_id}/pause", response_model=LearnerTaskView)
@@ -176,13 +176,13 @@ async def pause_task(
     async with get_engine().begin() as connection:
         replay = await _find_replay(connection, idempotency_key, body, "pause_task")
         if replay is not None:
-            return _learner_view(replay, True)
+            return learner_task_view(replay, True)
         previous = await repository.load(connection, task_id)
         transition = previous.pause(PauseTask(body.expected_version, datetime.now(UTC)))
         task, replayed = await _save(
             connection, previous, transition, idempotency_key, body, "pause_task"
         )
-    return _learner_view(task, replayed)
+    return learner_task_view(task, replayed)
 
 
 @learner_router.post("/tasks/{task_id}/resume", response_model=LearnerTaskView)
@@ -192,7 +192,7 @@ async def resume_task(
     async with get_engine().begin() as connection:
         replay = await _find_replay(connection, idempotency_key, body, "resume_task")
         if replay is not None:
-            return _learner_view(replay, True)
+            return learner_task_view(replay, True)
         previous = await repository.load(connection, task_id)
         current_material = content_catalog.current(previous.current_material.content_version_id)
         transition = previous.resume(
@@ -205,7 +205,7 @@ async def resume_task(
         task, replayed = await _save(
             connection, previous, transition, idempotency_key, body, "resume_task"
         )
-    return _learner_view(task, replayed)
+    return learner_task_view(task, replayed)
 
 
 @learner_router.post("/tasks/{task_id}/complete", response_model=LearnerTaskView)
@@ -215,13 +215,13 @@ async def complete_task(
     async with get_engine().begin() as connection:
         replay = await _find_replay(connection, idempotency_key, body, "complete_task")
         if replay is not None:
-            return _learner_view(replay, True)
+            return learner_task_view(replay, True)
         previous = await repository.load(connection, task_id)
         transition = previous.complete(CompleteTask(body.expected_version, datetime.now(UTC)))
         task, replayed = await _save(
             connection, previous, transition, idempotency_key, body, "complete_task"
         )
-    return _learner_view(task, replayed)
+    return learner_task_view(task, replayed)
 
 
 @control_router.post("/tasks/{task_id}/interventions", response_model=ControlReplayView)
@@ -345,7 +345,7 @@ async def _control_view(connection: Any, task: LearningTask) -> ControlReplayVie
     )
 
 
-def _learner_view(task: LearningTask, replayed: bool = False) -> LearnerTaskView:
+def learner_task_view(task: LearningTask, replayed: bool = False) -> LearnerTaskView:
     return LearnerTaskView(
         task_id=task.task_id,
         workflow_run_id=task.workflow_run_id,

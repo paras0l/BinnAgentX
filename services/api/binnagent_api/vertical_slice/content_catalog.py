@@ -50,6 +50,15 @@ class LocalContentCatalog:
             self._not_eligible("selected_material_is_not_eligible")
         return self._material(entry)
 
+    def learner_item(self, content_version_id: str) -> dict[str, Any]:
+        """Return an eligible source item for an API presenter to redact."""
+        entry = self._entry(content_version_id)
+        if entry is None or not self._eligible(entry):
+            self._not_eligible("selected_material_is_not_eligible")
+        self._material(entry)
+        manifest_path = Path(get_settings().content_manifest)
+        return self._read_json(manifest_path.parent / str(entry.get("file", "")))
+
     def paired_expression_for(self, matched_content_version_id: str) -> MaterialRef:
         preferred = (
             "micro_expression_02_v1"
