@@ -28,6 +28,7 @@ from binnagent_domain.vertical_slice.models import (
     TaskState,
     TaskType,
 )
+from binnagent_domain.vertical_slice.run import VerticalSliceRun
 
 __all__ = [
     "ActorType",
@@ -54,4 +55,5 @@ __all__ = [
     "SelfReportedLevel",
     "TaskState",
     "TaskType",
+    "VerticalSliceRun",
 ]

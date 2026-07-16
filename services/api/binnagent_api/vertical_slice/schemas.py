@@ -12,6 +12,7 @@ from binnagent_domain.vertical_slice.models import (
     SelfReportedLevel,
     TaskType,
 )
+from binnagent_domain.vertical_slice.run import DifficultyRating
 from pydantic import BaseModel, Field
 
 Identifier = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]{7,127}$")]
@@ -29,11 +30,6 @@ class ProfileInput(BaseModel):
     timed: bool
     evidence_count: Annotated[int, Field(ge=0)] = 0
     confidence_band: Annotated[str, Field(pattern=r"^(low|medium|high)$")] = "low"
-
-
-class CreateTaskRequest(BaseModel):
-    task_type: TaskType
-    learner_profile: ProfileInput
 
 
 class SpanInput(BaseModel):
@@ -111,4 +107,70 @@ class ControlReplayView(BaseModel):
     state: str
     version: int
     evidence_counts: dict[str, int]
+    event_chain: list[dict[str, object]]
+
+
+class CreateRunRequest(BaseModel):
+    learner_profile: ProfileInput
+
+
+class AdvanceRunRequest(VersionedCommandRequest):
+    pass
+
+
+class DifficultyFeedbackRequest(VersionedCommandRequest):
+    rating: DifficultyRating | None = None
+    skipped: bool = False
+
+
+class NextTaskPlaceholderRequest(VersionedCommandRequest):
+    planned_task_type: TaskType
+    reason_code: Annotated[
+        str,
+        Field(pattern=r"^(continue_matched_practice|review_priority_gap)$"),
+    ]
+
+
+class CalibrationFallbackRequest(VersionedCommandRequest):
+    reason_code: Annotated[
+        str,
+        Field(pattern=r"^(content_unavailable|technical_recovery)$"),
+    ]
+
+
+class RunTaskRefView(BaseModel):
+    task_id: str
+    role: str
+    task_type: str
+    content_version_id: str
+    completed: bool
+    completed_task_version: int | None
+    highest_hint_level: int | None
+
+
+class MatchDecisionView(BaseModel):
+    decision_id: str
+    selected_content_version_id: str
+    policy_version: str
+    conservative: bool
+    reason_codes: list[str]
+
+
+class LearnerRunView(BaseModel):
+    workflow_run_id: str
+    lifecycle: str
+    stage: str
+    version: int
+    current_task_id: str | None
+    task_refs: list[RunTaskRefView]
+    match_decisions: list[MatchDecisionView]
+    calibration_fallback_approved: bool
+    difficulty_feedback_status: str
+    difficulty_rating: str | None
+    next_task_placeholder_id: str | None
+    completion_gaps: list[str]
+    replayed: bool = False
+
+
+class ControlRunReplayView(LearnerRunView):
     event_chain: list[dict[str, object]]

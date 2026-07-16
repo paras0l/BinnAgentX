@@ -9,6 +9,8 @@ from binnagent_api.auth import ControlIdentity, require_control_identity
 from binnagent_api.settings import get_settings
 from binnagent_api.vertical_slice.repository import TaskNotFoundError
 from binnagent_api.vertical_slice.routes import control_router, learner_router
+from binnagent_api.vertical_slice.run_repository import RunNotFoundError
+from binnagent_api.vertical_slice.run_routes import control_run_router, learner_run_router
 
 
 def create_learner_app() -> FastAPI:
@@ -29,6 +31,7 @@ def create_learner_app() -> FastAPI:
         }
 
     learner.include_router(learner_router)
+    learner.include_router(learner_run_router)
     _register_error_handlers(learner)
     return learner
 
@@ -58,6 +61,7 @@ def create_control_app() -> FastAPI:
         }
 
     control.include_router(control_router)
+    control.include_router(control_run_router)
     _register_error_handlers(control)
     return control
 
@@ -84,4 +88,14 @@ def _register_error_handlers(app: FastAPI) -> None:
         return JSONResponse(
             status_code=status.HTTP_404_NOT_FOUND,
             content={"code": "TASK_NOT_FOUND", "task_id": exc.task_id},
+        )
+
+    @app.exception_handler(RunNotFoundError)
+    async def run_not_found(_: Request, exc: RunNotFoundError) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_404_NOT_FOUND,
+            content={
+                "code": "RUN_NOT_FOUND",
+                "workflow_run_id": exc.workflow_run_id,
+            },
         )

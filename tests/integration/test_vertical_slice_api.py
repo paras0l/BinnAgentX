@@ -1,5 +1,8 @@
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from hashlib import sha256
+from typing import TypedDict
+from uuid import uuid4
 
 import httpx2
 import pytest
@@ -8,8 +11,72 @@ import sqlalchemy as sa
 from binnagent_api.database import dispose_engine, get_engine
 from binnagent_api.main import create_app
 from binnagent_api.vertical_slice import tables
+from binnagent_api.vertical_slice.content_catalog import LocalContentCatalog
+from binnagent_api.vertical_slice.repository import VerticalSliceRepository
+from binnagent_domain.vertical_slice.aggregate import LearningTask
+from binnagent_domain.vertical_slice.commands import CreateTask
+from binnagent_domain.vertical_slice.models import (
+    ActorType,
+    ExamTrack,
+    FeedbackDensity,
+    LearnerProfileSnapshot,
+    SelfReportedLevel,
+    TaskType,
+)
 
 pytestmark = pytest.mark.integration
+repository = VerticalSliceRepository()
+content_catalog = LocalContentCatalog()
+
+
+class SeededTask(TypedDict):
+    task_id: str
+    version: int
+
+
+async def _seed_task(
+    task_type: TaskType,
+    *,
+    exam_track: ExamTrack,
+    self_reported_level: SelfReportedLevel,
+) -> SeededTask:
+    """Build an internal task fixture without exposing a learner task-creation API."""
+    now = datetime.now(UTC)
+    suffix = uuid4().hex
+    transition = LearningTask.create(
+        CreateTask(
+            task_id=f"task_{suffix}",
+            workflow_run_id=f"workflow_run_{suffix}",
+            task_type=task_type,
+            learner_profile=LearnerProfileSnapshot(
+                learner_snapshot_id=f"learner_snapshot_{suffix}",
+                exam_track=exam_track,
+                target_score=70,
+                weekly_minutes=420,
+                self_reported_level=self_reported_level,
+                prior_exam_seen=False,
+                session_minutes=45,
+                feedback_density=FeedbackDensity.MINIMAL,
+                timed=False,
+                evidence_count=0,
+                confidence_band="low",
+                created_at=now,
+            ),
+            material=content_catalog.first_for(task_type),
+            assignment_id=f"assignment_{suffix}",
+            now=now,
+        )
+    )
+    async with get_engine().begin() as connection:
+        await repository.insert_embedded(
+            connection,
+            transition,
+            actor=ActorType.SYSTEM,
+            command_name="integration_fixture",
+            ensure_workflow=True,
+        )
+    task = transition.task
+    return {"task_id": task.task_id, "version": task.version}
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -24,6 +91,11 @@ async def _clean() -> None:
     ordered = [
         tables.audit_events,
         tables.domain_events,
+        tables.next_task_placeholders,
+        tables.difficulty_feedback_events,
+        tables.material_match_decisions,
+        tables.run_task_completion_events,
+        tables.run_task_refs,
         tables.revision_events,
         tables.ai_interventions,
         tables.attempt_versions,
@@ -42,33 +114,32 @@ async def _clean() -> None:
 
 
 @pytest.mark.asyncio
+async def test_task_creation_is_owned_by_run_orchestration() -> None:
+    transport = httpx2.ASGITransport(app=create_app())
+    async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/learner/v1/tasks",
+            headers={"Idempotency-Key": "direct-task-create-0001"},
+            json={"task_type": "matched_reading", "learner_profile": {}},
+        )
+    assert response.status_code == 404
+
+
+@pytest.mark.asyncio
 async def test_h2_revision_is_idempotent_auditable_and_user_authored() -> None:
     transport = httpx2.ASGITransport(app=create_app())
     async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
-        created = await client.post(
-            "/learner/v1/tasks",
-            headers={"Idempotency-Key": "create-slice-0001"},
-            json={
-                "task_type": "micro_expression",
-                "learner_profile": {
-                    "exam_track": "english_1",
-                    "target_score": 70,
-                    "weekly_minutes": 420,
-                    "self_reported_level": "developing",
-                    "prior_exam_seen": False,
-                    "session_minutes": 45,
-                    "feedback_density": "minimal",
-                    "timed": False,
-                },
-            },
+        task = await _seed_task(
+            TaskType.MICRO_EXPRESSION,
+            exam_track=ExamTrack.ENGLISH_1,
+            self_reported_level=SelfReportedLevel.DEVELOPING,
         )
-        assert created.status_code == 201
-        task = created.json()
-        task_id = task["task_id"]
+        task_id = str(task["task_id"])
 
+        v1_text = "Useful effort reveals what I do not understand."
         v1_body = {
             "expected_version": task["version"],
-            "text": "Useful effort reveals what I do not understand.",
+            "text": v1_text,
             "independence": "independent",
         }
         v1 = await client.post(
@@ -152,7 +223,7 @@ async def test_h2_revision_is_idempotent_auditable_and_user_authored() -> None:
         assert completed.status_code == 200
         assert completed.json()["state"] == "completed"
         assert completed.json()["highest_hint_level"] == 2
-        assert completed.json()["attempts"][0]["text"] == v1_body["text"]
+        assert completed.json()["attempts"][0]["text"] == v1_text
 
         replay = await client.get(
             f"/control/v1/tasks/{task_id}/replay",
@@ -160,7 +231,7 @@ async def test_h2_revision_is_idempotent_auditable_and_user_authored() -> None:
         )
         assert replay.status_code == 200
         replay_text = replay.text
-        assert v1_body["text"] not in replay_text
+        assert v1_text not in replay_text
         assert "deterministic_fixture" in replay_text
         assert replay.json()["evidence_counts"] == {
             "annotations": 0,
@@ -184,24 +255,11 @@ async def test_h2_revision_is_idempotent_auditable_and_user_authored() -> None:
 async def test_stale_write_returns_only_public_conflict_details() -> None:
     transport = httpx2.ASGITransport(app=create_app())
     async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
-        created = await client.post(
-            "/learner/v1/tasks",
-            headers={"Idempotency-Key": "create-conflict-0001"},
-            json={
-                "task_type": "matched_reading",
-                "learner_profile": {
-                    "exam_track": "english_2",
-                    "target_score": 65,
-                    "weekly_minutes": 300,
-                    "self_reported_level": "weak",
-                    "prior_exam_seen": False,
-                    "session_minutes": 30,
-                    "feedback_density": "minimal",
-                    "timed": False,
-                },
-            },
+        payload = await _seed_task(
+            TaskType.MATCHED_READING,
+            exam_track=ExamTrack.ENGLISH_2,
+            self_reported_level=SelfReportedLevel.WEAK,
         )
-        payload = created.json()
         quote = (
             "Useful effort can reveal exactly where understanding breaks down, "
             "giving later help a precise target."

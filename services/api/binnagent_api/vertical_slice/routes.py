@@ -9,7 +9,6 @@ from binnagent_domain.vertical_slice.aggregate import LearningTask, Transition
 from binnagent_domain.vertical_slice.commands import (
     AddAnnotation,
     CompleteTask,
-    CreateTask,
     PauseTask,
     RecordIntervention,
     RecordRevision,
@@ -19,7 +18,6 @@ from binnagent_domain.vertical_slice.commands import (
 )
 from binnagent_domain.vertical_slice.models import (
     ActorType,
-    LearnerProfileSnapshot,
     TextSpan,
 )
 from fastapi import APIRouter, Depends, Header
@@ -34,7 +32,6 @@ from binnagent_api.vertical_slice.schemas import (
     AttemptRequest,
     AttemptView,
     ControlReplayView,
-    CreateTaskRequest,
     InterventionRequest,
     LearnerTaskView,
     RevisionRequest,
@@ -49,35 +46,6 @@ IdempotencyKey = Annotated[
     str,
     Header(alias="Idempotency-Key", min_length=8, max_length=128, pattern=r"^[A-Za-z0-9_.:-]+$"),
 ]
-
-
-@learner_router.post("/tasks", response_model=LearnerTaskView, status_code=201)
-async def create_task(body: CreateTaskRequest, idempotency_key: IdempotencyKey) -> LearnerTaskView:
-    async with get_engine().begin() as connection:
-        replay = await _find_replay(connection, idempotency_key, body, "create_task")
-        if replay is not None:
-            return _learner_view(replay, True)
-        now = datetime.now(UTC)
-        transition = LearningTask.create(
-            CreateTask(
-                task_id=_id("task"),
-                workflow_run_id=_id("workflow_run"),
-                task_type=body.task_type,
-                learner_profile=_profile(body, now),
-                material=content_catalog.first_for(body.task_type),
-                assignment_id=_id("assignment"),
-                now=now,
-            )
-        )
-        task, replayed = await repository.create(
-            connection,
-            transition,
-            idempotency_key=idempotency_key,
-            request_hash=_request_hash(body),
-            command_name="create_task",
-            actor=ActorType.LEARNER,
-        )
-    return _learner_view(task, replayed)
 
 
 @learner_router.get("/tasks/{task_id}", response_model=LearnerTaskView)
@@ -374,24 +342,6 @@ async def _control_view(connection: Any, task: LearningTask) -> ControlReplayVie
             }
             for row in rows
         ],
-    )
-
-
-def _profile(body: CreateTaskRequest, now: datetime) -> LearnerProfileSnapshot:
-    value = body.learner_profile
-    return LearnerProfileSnapshot(
-        learner_snapshot_id=_id("learner_snapshot"),
-        exam_track=value.exam_track,
-        target_score=value.target_score,
-        weekly_minutes=value.weekly_minutes,
-        self_reported_level=value.self_reported_level,
-        prior_exam_seen=value.prior_exam_seen,
-        session_minutes=value.session_minutes,
-        feedback_density=value.feedback_density,
-        timed=value.timed,
-        evidence_count=value.evidence_count,
-        confidence_band=value.confidence_band,
-        created_at=now,
     )
 
 

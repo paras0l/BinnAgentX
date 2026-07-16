@@ -62,6 +62,34 @@ class VerticalSliceRepository:
             return await self.load(connection, replay), True
 
         task = transition.task
+        await self.insert_embedded(
+            connection,
+            transition,
+            actor=actor,
+            command_name=command_name,
+            ensure_workflow=True,
+        )
+        await self._record_idempotency(
+            connection,
+            idempotency_key,
+            request_hash,
+            command_name,
+            task.task_id,
+            task.updated_at,
+        )
+        return task, False
+
+    async def insert_embedded(
+        self,
+        connection: AsyncConnection,
+        transition: Transition,
+        *,
+        actor: ActorType,
+        command_name: str,
+        ensure_workflow: bool,
+    ) -> None:
+        """Insert a task as part of a wider run transaction."""
+        task = transition.task
         profile = task.learner_profile
         await connection.execute(
             pg_insert(tables.learner_profile_snapshots)
@@ -72,28 +100,25 @@ class VerticalSliceRepository:
             )
             .on_conflict_do_nothing(index_elements=["learner_snapshot_id"])
         )
-        await connection.execute(
-            pg_insert(tables.workflow_runs)
-            .values(
-                workflow_run_id=task.workflow_run_id,
-                workflow_version="workflow_read_write_v1",
-                state="running",
-                checkpoint_id="checkpoint_initial",
-                model_call_count=0,
-                cost_usd=Decimal("0"),
-                version=1,
-                created_at=task.created_at,
-                updated_at=task.updated_at,
+        if ensure_workflow:
+            await connection.execute(
+                pg_insert(tables.workflow_runs)
+                .values(
+                    workflow_run_id=task.workflow_run_id,
+                    workflow_version="workflow_read_write_v1",
+                    state="running",
+                    checkpoint_id="checkpoint_initial",
+                    model_call_count=0,
+                    cost_usd=Decimal("0"),
+                    version=1,
+                    created_at=task.created_at,
+                    updated_at=task.updated_at,
+                )
+                .on_conflict_do_nothing(index_elements=["workflow_run_id"])
             )
-            .on_conflict_do_nothing(index_elements=["workflow_run_id"])
-        )
         await connection.execute(tables.learning_tasks.insert().values(**_task_projection(task)))
         await self._append_facts(connection, None, task)
         await self._append_events(connection, transition, actor, command_name)
-        await self._record_idempotency(
-            connection, idempotency_key, request_hash, command_name, task.task_id, task.updated_at
-        )
-        return task, False
 
     async def save(
         self,

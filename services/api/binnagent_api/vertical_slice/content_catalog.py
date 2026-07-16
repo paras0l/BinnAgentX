@@ -5,8 +5,10 @@ from typing import Any, NoReturn
 
 from binnagent_domain.public_errors import PublicErrorCode
 from binnagent_domain.vertical_slice.errors import DomainError
+from binnagent_domain.vertical_slice.matching import MaterialCandidate
 from binnagent_domain.vertical_slice.models import (
     DifficultyStatus,
+    ExamTrack,
     MaterialRef,
     RightsStatus,
     TaskType,
@@ -35,6 +37,60 @@ class LocalContentCatalog:
         if not candidates:
             self._not_eligible("no_eligible_material_for_task_type")
         return self._material(candidates[0])
+
+    def material_at(self, task_type: TaskType, index: int) -> MaterialRef:
+        candidates = self._eligible_entries(task_type)
+        if index < 0 or index >= len(candidates):
+            self._not_eligible("required_material_ordinal_unavailable")
+        return self._material(candidates[index])
+
+    def material_by_version(self, content_version_id: str) -> MaterialRef:
+        entry = self._entry(content_version_id)
+        if entry is None or not self._eligible(entry):
+            self._not_eligible("selected_material_is_not_eligible")
+        return self._material(entry)
+
+    def paired_expression_for(self, matched_content_version_id: str) -> MaterialRef:
+        preferred = (
+            "micro_expression_02_v1"
+            if "reading_02_" in matched_content_version_id
+            else "micro_expression_01_v1"
+        )
+        return self.material_by_version(preferred)
+
+    def candidates_for(self, task_type: TaskType) -> tuple[MaterialCandidate, ...]:
+        candidates: list[MaterialCandidate] = []
+        for entry in self._eligible_entries(task_type):
+            material = self._material(entry)
+            manifest_path = Path(get_settings().content_manifest)
+            item = self._read_json(manifest_path.parent / str(entry.get("file", "")))
+            difficulty = item.get("difficulty")
+            if not isinstance(difficulty, dict):
+                self._not_eligible("candidate_difficulty_missing")
+            raw_tracks = difficulty.get("exam_tracks")
+            if not isinstance(raw_tracks, list):
+                self._not_eligible("candidate_exam_tracks_missing")
+            try:
+                exam_tracks = tuple(ExamTrack(str(value)) for value in raw_tracks)
+            except ValueError as exc:
+                raise DomainError(
+                    PublicErrorCode.CONTENT_NOT_ELIGIBLE,
+                    "candidate_exam_track_invalid",
+                ) from exc
+            candidates.append(
+                MaterialCandidate(
+                    content_id=material.content_id,
+                    content_version_id=material.content_version_id,
+                    exam_tracks=exam_tracks,
+                    topic_familiarity=str(difficulty.get("topic_familiarity")),
+                    word_count=int(difficulty.get("word_count", 0)),
+                    vocabulary_load=str(difficulty.get("vocabulary_load")),
+                    syntax_load=str(difficulty.get("syntax_load")),
+                    evidence_distance=str(difficulty.get("evidence_distance")),
+                    estimated_minutes=int(difficulty.get("estimated_minutes", 0)),
+                )
+            )
+        return tuple(candidates)
 
     def replacement_for(self, task_type: TaskType, current_version_id: str) -> MaterialRef:
         candidate = next(
