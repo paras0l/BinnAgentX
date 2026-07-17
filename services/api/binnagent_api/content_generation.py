@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Annotated
 
+from binnagent_agent.agents.content_generator import RemoteContentGenerationAdapter
 from binnagent_agent.workflows.content_generation import ContentGenerationWorkflow
 from fastapi import APIRouter, Depends
 
@@ -19,8 +20,44 @@ async def run_content_generation_job(
 ) -> dict[str, object]:
     del identity
     settings = get_settings()
+    content_generator = None
+    if settings.model_adapter == "ollama":
+        content_generator = RemoteContentGenerationAdapter(
+            provider="ollama",
+            base_url=settings.ollama_base_url,
+            model=settings.ollama_chat_model,
+            api_key=None,
+            estimated_cost_usd=settings.model_estimated_cost_usd,
+            max_tokens=settings.model_max_tokens,
+            timeout_seconds=settings.model_timeout_seconds,
+        )
+    elif settings.model_adapter == "deepseek":
+        content_generator = RemoteContentGenerationAdapter(
+            provider="deepseek",
+            base_url=settings.deepseek_base_url,
+            model=settings.deepseek_chat_model,
+            api_key=(
+                settings.deepseek_api_key.get_secret_value() if settings.deepseek_api_key else None
+            ),
+            estimated_cost_usd=settings.model_estimated_cost_usd,
+            max_tokens=settings.model_max_tokens,
+            timeout_seconds=settings.model_timeout_seconds,
+        )
+    elif settings.model_adapter == "longcat":
+        content_generator = RemoteContentGenerationAdapter(
+            provider="longcat",
+            base_url=settings.longcat_base_url,
+            model=settings.longcat_chat_model,
+            api_key=(
+                settings.longcat_api_key.get_secret_value() if settings.longcat_api_key else None
+            ),
+            estimated_cost_usd=settings.model_estimated_cost_usd,
+            max_tokens=settings.model_max_tokens,
+            timeout_seconds=settings.model_timeout_seconds,
+        )
     workflow = ContentGenerationWorkflow(
         output_directory=Path(settings.content_generation_output_directory),
+        content_generator=content_generator,
         pack_version="v1",
         pack_id=f"agent_generated_content_pack_{settings.env}",
     )
