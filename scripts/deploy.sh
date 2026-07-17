@@ -131,10 +131,6 @@ if command -v pg_isready >/dev/null 2>&1; then
   done
 fi
 
-if ! uv run python -c "import alembic" >/dev/null 2>&1; then
-  echo "错误：当前 uv 项目环境中未安装 alembic，或虚拟环境未准备好。请先执行：uv sync"
-  exit 1
-fi
 uv run alembic -c services/api/alembic.ini upgrade head
 
 if [[ "$GENERATE_CONTENT" == "true" ]]; then
