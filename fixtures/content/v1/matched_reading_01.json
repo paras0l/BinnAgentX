@@ -60,7 +60,7 @@
   "allowed_annotations": ["claim", "evidence", "logic", "uncertain", "reusable_expression"],
   "main_question": {
     "question_id": "matched_01_q1",
-    "prompt": "Which statement best expresses the author's view of productive friction in learning? Choose one and explain the claim-evidence relation.",
+    "prompt": "Which statement best expresses the author's view of productive friction in learning?",
     "answer_type": "single_choice_with_explanation",
     "options": [
       { "option_id": "A", "text": "All forms of software assistance reduce a learner's confidence." },

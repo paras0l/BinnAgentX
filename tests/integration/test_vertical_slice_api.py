@@ -89,6 +89,9 @@ async def clean_vertical_slice_tables() -> AsyncIterator[None]:
 
 async def _clean() -> None:
     ordered = [
+        tables.learner_sessions,
+        tables.experience_code_redemptions,
+        tables.email_verification_challenges,
         tables.audit_events,
         tables.domain_events,
         tables.next_task_placeholders,
@@ -105,6 +108,8 @@ async def _clean() -> None:
         tables.task_material_assignments,
         tables.learning_tasks,
         tables.workflow_runs,
+        tables.learners,
+        tables.experience_codes,
         tables.learner_profile_snapshots,
         tables.outbox_messages,
         tables.idempotency_records,
@@ -112,6 +117,33 @@ async def _clean() -> None:
     async with get_engine().begin() as connection:
         for table in ordered:
             await connection.execute(sa.delete(table))
+
+
+@pytest.mark.asyncio
+async def test_end_task_early_is_explicit_and_idempotent() -> None:
+    seeded = await _seed_task(
+        TaskType.MATCHED_READING,
+        exam_track=ExamTrack.ENGLISH_1,
+        self_reported_level=SelfReportedLevel.DEVELOPING,
+    )
+    transport = httpx2.ASGITransport(app=create_app())
+    async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            f"/learner/v1/tasks/{seeded['task_id']}/end-early",
+            headers={"Idempotency-Key": "end-task-early-0001"},
+            json={"expected_version": seeded["version"]},
+        )
+        replay = await client.post(
+            f"/learner/v1/tasks/{seeded['task_id']}/end-early",
+            headers={"Idempotency-Key": "end-task-early-0001"},
+            json={"expected_version": seeded["version"]},
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["state"] == "ended_early"
+    assert response.json()["completion_gaps"] == ["learner_attempt", "cognitive_annotation"]
+    assert replay.status_code == 200, replay.text
+    assert replay.json()["replayed"] is True
 
 
 @pytest.mark.asyncio
@@ -381,6 +413,63 @@ async def test_stale_write_returns_only_public_conflict_details() -> None:
         assert invalidation_count == 1
         assert assignment_count == 2
         assert preserved_annotation_count == 1
+
+
+@pytest.mark.asyncio
+async def test_annotation_question_can_request_audited_ai_analysis_without_mutating_task() -> None:
+    transport = httpx2.ASGITransport(app=create_app())
+    async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
+        task = await _seed_task(
+            TaskType.MATCHED_READING,
+            exam_track=ExamTrack.ENGLISH_2,
+            self_reported_level=SelfReportedLevel.WEAK,
+        )
+        material = content_catalog.learner_item("matched_reading_01_v1")
+        paragraph = material["paragraphs"][1]
+        paragraph_text = str(paragraph["text"])
+        quote = "Useful effort can reveal exactly where understanding breaks down"
+        start = paragraph_text.index(quote)
+
+        analysis = await client.post(
+            f"/learner/v1/tasks/{task['task_id']}/annotations/analyze",
+            json={
+                "expected_version": task["version"],
+                "span": {
+                    "paragraph_id": paragraph["paragraph_id"],
+                    "start": start,
+                    "end": start + len(quote),
+                    "text_quote": quote,
+                    "text_hash": sha256(quote.encode()).hexdigest(),
+                },
+                "learner_question": "我还没理清这个长句的主干和修饰关系。",
+            },
+        )
+
+        assert analysis.status_code == 200
+        payload = analysis.json()
+        assert payload["focus"] == "syntax"
+        assert payload["source"] == "local_fallback"
+        assert len(payload["breakdown"]) == 3
+        assert "不直接给题目答案" in payload["boundary_note"]
+
+        unchanged = await client.get(f"/learner/v1/tasks/{task['task_id']}")
+        assert unchanged.json()["version"] == task["version"]
+        assert unchanged.json()["annotation_count"] == 0
+
+    async with get_engine().connect() as connection:
+        invocation = (
+            (
+                await connection.execute(
+                    sa.select(tables.model_invocations).where(
+                        tables.model_invocations.c.task_id == task["task_id"]
+                    )
+                )
+            )
+            .mappings()
+            .one()
+        )
+        assert invocation["purpose"] == "annotation_confusion_analysis"
+        assert invocation["is_remote"] is False
 
 
 @pytest.mark.asyncio

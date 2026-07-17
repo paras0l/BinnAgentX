@@ -26,6 +26,7 @@ from binnagent_domain.vertical_slice.run import (
     DifficultyRating,
     RecordDifficultyFeedback,
     ReserveNextTask,
+    RunKind,
     RunStage,
     VerticalSliceRun,
 )
@@ -54,9 +55,15 @@ def _run() -> VerticalSliceRun:
     return VerticalSliceRun.create(
         CreateVerticalSliceRun(
             workflow_run_id="workflow_run_slice_0001",
+            learner_id="learner_test_0001",
             learner_profile=_profile(),
             initial_task_id="task_calibration_a_0001",
+            initial_task_type=TaskType.CALIBRATION_READING,
+            initial_stage=RunStage.CALIBRATION_A,
             initial_content_version_id="calibration_reading_a_v1",
+            run_kind=RunKind.FIRST_EXPERIENCE,
+            predecessor_run_id=None,
+            initial_match_decision=None,
             now=NOW,
         )
     ).run
@@ -164,6 +171,54 @@ def test_full_run_requires_all_tasks_feedback_and_placeholder() -> None:
     assert completed.completion_gaps() == ()
     assert len(completed.task_refs) == 4
     assert all(item.completed_at is not None for item in completed.task_refs)
+
+
+def test_practice_run_starts_at_new_matched_reading_without_calibration_gap() -> None:
+    decision = replace(
+        _decision(NOW),
+        selected_content_version_id="matched_reading_02_v1",
+        policy_version="continuous_practice_match_v1",
+    )
+    run = VerticalSliceRun.create(
+        CreateVerticalSliceRun(
+            workflow_run_id="workflow_run_practice_0001",
+            learner_id="learner_test_0001",
+            learner_profile=_profile(),
+            initial_task_id="task_matched_practice_0001",
+            initial_task_type=TaskType.MATCHED_READING,
+            initial_stage=RunStage.MATCHED_READING,
+            initial_content_version_id="matched_reading_02_v1",
+            run_kind=RunKind.PRACTICE,
+            predecessor_run_id="workflow_run_slice_0001",
+            initial_match_decision=decision,
+            now=NOW,
+        )
+    ).run
+
+    assert run.current_task is not None
+    assert run.current_task.role is RunStage.MATCHED_READING
+    run = _advance(
+        run,
+        completed_task_id="task_matched_practice_0001",
+        next_task_id="task_micro_practice_0001",
+        next_task_type=TaskType.MICRO_EXPRESSION,
+        next_content_version_id="micro_expression_02_v1",
+        minute=1,
+    )
+    run = _advance(
+        run,
+        completed_task_id="task_micro_practice_0001",
+        next_task_id=None,
+        next_task_type=None,
+        next_content_version_id=None,
+        minute=2,
+    )
+
+    assert run.stage is RunStage.WRAP_UP
+    assert run.completion_gaps() == (
+        "difficulty_feedback_or_explicit_skip",
+        "next_task_placeholder",
+    )
 
 
 def test_run_rejects_wrong_task_and_missing_match_decision() -> None:

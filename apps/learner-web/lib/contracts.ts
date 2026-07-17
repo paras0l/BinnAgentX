@@ -37,6 +37,17 @@ export interface AnnotationView {
   created_at: string;
 }
 
+export interface AnnotationAnalysisView {
+  analysis_id: string;
+  focus: "vocabulary" | "syntax" | "reference" | "logic" | "context" | "mixed";
+  diagnosis: string;
+  breakdown: string[];
+  next_check: string;
+  source: "model" | "local_fallback";
+  reason_code: string;
+  boundary_note: string;
+}
+
 export interface InterventionView {
   intervention_id: string;
   input_attempt_version_id: string;
@@ -79,6 +90,8 @@ export interface LearnerTaskView {
 
 export interface LearnerRunView {
   workflow_run_id: string;
+  run_kind: "first_experience" | "practice";
+  predecessor_run_id: string | null;
   lifecycle: string;
   stage:
     | "calibration_a"
@@ -110,6 +123,8 @@ export interface LearnerRunView {
   difficulty_rating: string | null;
   next_task_placeholder_id: string | null;
   completion_gaps: string[];
+  created_at: string;
+  updated_at: string;
   replayed: boolean;
 }
 

@@ -49,6 +49,7 @@ class TaskState(StrEnum):
     REVIEW_PENDING = "review_pending"
     PAUSED = "paused"
     COMPLETED = "completed"
+    ENDED_EARLY = "ended_early"
     RECOVERABLE_ERROR = "recoverable_error"
 
 

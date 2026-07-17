@@ -56,7 +56,7 @@
   "allowed_annotations": ["claim", "evidence", "logic", "uncertain", "reusable_expression"],
   "main_question": {
     "question_id": "calibration_b_q1",
-    "prompt": "Why did the team shorten its presentation checklist? Choose an answer and justify it with the author's reasoning.",
+    "prompt": "Why did the team shorten its presentation checklist?",
     "answer_type": "single_choice_with_explanation",
     "options": [
       { "option_id": "A", "text": "The longer checklist prevented students from giving identical presentations." },

@@ -15,12 +15,17 @@ node_modules/
 .next/
 .turbo/
 .pnpm-store/
+.hypothesis/
 __pycache__/
 *.py[cod]
+*.egg-info/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+.eslintcache
+*.tsbuildinfo
 .coverage
+.coverage.*
 htmlcov/
 .venv/
 dist/
@@ -28,6 +33,7 @@ build/
 coverage/
 playwright-report/
 test-results/
+artifacts/
 openwiki/
 
 # Logs and temporary files
@@ -35,3 +41,4 @@ openwiki/
 *.tmp
 *.swp
 *~
+/design-qa.md

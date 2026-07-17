@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 
 import "@binnagent/ui-foundation/tokens.css";
 import "./styles.css";
+import "./motion.css";
 
 export const metadata: Metadata = {
   title: "BinnAgent 考研英语",

@@ -1,4 +1,4 @@
-name: binnagent-exam-english-spike
+name: binnagent
 
 services:
   postgres:

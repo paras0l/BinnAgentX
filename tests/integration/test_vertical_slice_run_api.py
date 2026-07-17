@@ -33,6 +33,9 @@ async def clean_vertical_slice_tables() -> AsyncIterator[None]:
 
 async def _clean() -> None:
     ordered = [
+        tables.learner_sessions,
+        tables.experience_code_redemptions,
+        tables.email_verification_challenges,
         tables.audit_events,
         tables.domain_events,
         tables.next_task_placeholders,
@@ -49,6 +52,8 @@ async def _clean() -> None:
         tables.task_material_assignments,
         tables.learning_tasks,
         tables.workflow_runs,
+        tables.learners,
+        tables.experience_codes,
         tables.learner_profile_snapshots,
         tables.outbox_messages,
         tables.idempotency_records,
@@ -109,6 +114,48 @@ async def _advance_run(
 
 
 @pytest.mark.asyncio
+async def test_early_ended_task_can_advance_without_becoming_completion_evidence() -> None:
+    transport = httpx2.ASGITransport(app=create_app())
+    async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
+        created = await client.post(
+            "/learner/v1/runs",
+            headers={"Idempotency-Key": "run-create-early-end-0001"},
+            json={
+                "learner_profile": {
+                    "exam_track": "english_1",
+                    "target_score": 70,
+                    "weekly_minutes": 420,
+                    "self_reported_level": "developing",
+                    "prior_exam_seen": False,
+                    "session_minutes": 45,
+                    "feedback_density": "minimal",
+                    "timed": False,
+                    "evidence_count": 0,
+                    "confidence_band": "low",
+                }
+            },
+        )
+        run = created.json()
+        task = (await client.get(f"/learner/v1/tasks/{run['current_task_id']}")).json()
+        ended = await client.post(
+            f"/learner/v1/tasks/{task['task_id']}/end-early",
+            headers={"Idempotency-Key": "run-task-end-early-0001"},
+            json={"expected_version": task["version"]},
+        )
+        advanced = await client.post(
+            f"/learner/v1/runs/{run['workflow_run_id']}/advance",
+            headers={"Idempotency-Key": "run-advance-early-end-0001"},
+            json={"expected_version": run["version"]},
+        )
+
+    assert created.status_code == 201, created.text
+    assert ended.status_code == 200, ended.text
+    assert ended.json()["state"] == "ended_early"
+    assert advanced.status_code == 200, advanced.text
+    assert advanced.json()["stage"] == "calibration_b"
+
+
+@pytest.mark.asyncio
 async def test_complete_cross_task_run_with_conservative_matching_and_replay() -> None:
     transport = httpx2.ASGITransport(app=create_app())
     async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -135,6 +182,16 @@ async def test_complete_cross_task_run_with_conservative_matching_and_replay() -
         run_id = run["workflow_run_id"]
         assert run["stage"] == "calibration_a"
         assert run["task_refs"][0]["content_version_id"] == "calibration_reading_a_v1"
+
+        premature_continuation = await client.post(
+            f"/learner/v1/runs/{run_id}/continue",
+            headers={"Idempotency-Key": "run-continue-premature-0001"},
+            json={"expected_version": run["version"]},
+        )
+        assert premature_continuation.status_code == 409
+        assert premature_continuation.json()["reason"] == (
+            "practice_requires_completed_predecessor"
+        )
 
         workspace = await client.get(f"/learner/v1/runs/{run_id}/workspace")
         assert workspace.status_code == 200, workspace.text
@@ -299,7 +356,28 @@ async def test_complete_cross_task_run_with_conservative_matching_and_replay() -
         )
         assert completed.status_code == 200, completed.text
         assert completed.json()["stage"] == "completed"
+        assert completed.json()["run_kind"] == "first_experience"
         assert completed.json()["completion_gaps"] == []
+
+        continued = await client.post(
+            f"/learner/v1/runs/{run_id}/continue",
+            headers={"Idempotency-Key": "run-continue-0001"},
+            json={"expected_version": completed.json()["version"]},
+        )
+        assert continued.status_code == 201, continued.text
+        continued_run = continued.json()
+        assert continued_run["run_kind"] == "practice"
+        assert continued_run["predecessor_run_id"] == run_id
+        assert continued_run["stage"] == "matched_reading"
+        assert continued_run["task_refs"][0]["content_version_id"] == "matched_reading_02_v1"
+        repeated_continuation = await client.post(
+            f"/learner/v1/runs/{run_id}/continue",
+            headers={"Idempotency-Key": "run-continue-0002"},
+            json={"expected_version": completed.json()["version"]},
+        )
+        assert repeated_continuation.status_code == 201
+        assert repeated_continuation.json()["workflow_run_id"] == continued_run["workflow_run_id"]
+        assert repeated_continuation.json()["replayed"] is True
 
         replay = await client.get(
             f"/control/v1/runs/{run_id}/replay",
@@ -321,6 +399,6 @@ async def test_complete_cross_task_run_with_conservative_matching_and_replay() -
         decision_count = await connection.scalar(
             sa.select(sa.func.count()).select_from(tables.material_match_decisions)
         )
-        assert task_count == 4
+        assert task_count == 5
         assert completion_count == 4
-        assert decision_count == 1
+        assert decision_count == 2

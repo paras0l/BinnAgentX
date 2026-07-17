@@ -8,6 +8,7 @@ from binnagent_domain.vertical_slice.commands import (
     AddAnnotation,
     CompleteTask,
     CreateTask,
+    EndTaskEarly,
     PauseTask,
     RecordIntervention,
     RecordRevision,
@@ -29,6 +30,7 @@ from binnagent_domain.vertical_slice.models import (
     RevisionResult,
     RightsStatus,
     SelfReportedLevel,
+    TaskState,
     TaskType,
     TextSpan,
 )
@@ -204,6 +206,20 @@ def test_intervention_cannot_precede_learner_output() -> None:
         )
     assert raised.value.code is PublicErrorCode.SAVE_NOT_CONFIRMED
     assert raised.value.reason == "learner_attempt_required_before_intervention"
+
+
+def test_learner_can_end_task_early_without_completion_evidence() -> None:
+    task = _task()
+
+    transition = task.end_early(EndTaskEarly(task.version, NOW + timedelta(minutes=1)))
+
+    assert transition.task.state is TaskState.ENDED_EARLY
+    assert transition.task.completion_gaps() == ("learner_attempt", "cognitive_annotation")
+    assert transition.events[0].event_type == "task_ended_early"
+    assert transition.events[0].payload["completion_gap_count"] == 2
+    with pytest.raises(DomainError) as immutable:
+        transition.task.pause(PauseTask(transition.task.version, NOW + timedelta(minutes=2)))
+    assert immutable.value.reason == "terminal_task_is_immutable"
 
 
 def test_material_replacement_appends_invalidation_without_deleting_history() -> None:

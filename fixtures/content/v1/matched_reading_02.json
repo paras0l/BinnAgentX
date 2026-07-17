@@ -60,7 +60,7 @@
   "allowed_annotations": ["claim", "evidence", "logic", "uncertain", "reusable_expression"],
   "main_question": {
     "question_id": "matched_02_q1",
-    "prompt": "What is the author's main warning about visible measures? Choose an answer and support it with a precise passage span.",
+    "prompt": "What is the author's main warning about visible measures?",
     "answer_type": "single_choice_with_explanation",
     "options": [
       { "option_id": "A", "text": "Measures are harmful because people cannot calculate them accurately." },

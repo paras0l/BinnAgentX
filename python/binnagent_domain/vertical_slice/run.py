@@ -29,6 +29,11 @@ class RunLifecycle(StrEnum):
     FAILED_TERMINAL = "failed_terminal"
 
 
+class RunKind(StrEnum):
+    FIRST_EXPERIENCE = "first_experience"
+    PRACTICE = "practice"
+
+
 class DifficultyFeedbackStatus(StrEnum):
     PENDING = "pending"
     SUBMITTED = "submitted"
@@ -64,9 +69,15 @@ class NextTaskPlaceholder:
 @dataclass(frozen=True, slots=True)
 class CreateVerticalSliceRun:
     workflow_run_id: str
+    learner_id: str
     learner_profile: LearnerProfileSnapshot
     initial_task_id: str
+    initial_task_type: TaskType
+    initial_stage: RunStage
     initial_content_version_id: str
+    run_kind: RunKind
+    predecessor_run_id: str | None
+    initial_match_decision: MatchDecision | None
     now: datetime
 
 
@@ -81,6 +92,7 @@ class AdvanceVerticalSliceRun:
     next_content_version_id: str | None
     match_decision: MatchDecision | None
     now: datetime
+    ended_early: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,7 +137,10 @@ class RunTransition:
 @dataclass(frozen=True, slots=True)
 class VerticalSliceRun:
     workflow_run_id: str
+    learner_id: str
     learner_profile: LearnerProfileSnapshot
+    run_kind: RunKind
+    predecessor_run_id: str | None
     lifecycle: RunLifecycle
     stage: RunStage
     version: int
@@ -140,21 +155,51 @@ class VerticalSliceRun:
 
     @classmethod
     def create(cls, command: CreateVerticalSliceRun) -> RunTransition:
+        if command.run_kind is RunKind.FIRST_EXPERIENCE:
+            if (
+                command.initial_stage is not RunStage.CALIBRATION_A
+                or command.initial_task_type is not TaskType.CALIBRATION_READING
+                or command.predecessor_run_id is not None
+                or command.initial_match_decision is not None
+            ):
+                raise DomainError(
+                    PublicErrorCode.SAVE_NOT_CONFIRMED,
+                    "invalid_first_experience_initial_state",
+                )
+        elif (
+            command.initial_stage is not RunStage.MATCHED_READING
+            or command.initial_task_type is not TaskType.MATCHED_READING
+            or command.predecessor_run_id is None
+            or command.initial_match_decision is None
+            or command.initial_match_decision.selected_content_version_id
+            != command.initial_content_version_id
+        ):
+            raise DomainError(
+                PublicErrorCode.SAVE_NOT_CONFIRMED,
+                "invalid_practice_initial_state",
+            )
         initial = RunTaskRef(
             task_id=command.initial_task_id,
-            role=RunStage.CALIBRATION_A,
-            task_type=TaskType.CALIBRATION_READING,
+            role=command.initial_stage,
+            task_type=command.initial_task_type,
             content_version_id=command.initial_content_version_id,
             assigned_at=command.now,
         )
         run = cls(
             workflow_run_id=command.workflow_run_id,
+            learner_id=command.learner_id,
             learner_profile=command.learner_profile,
+            run_kind=command.run_kind,
+            predecessor_run_id=command.predecessor_run_id,
             lifecycle=RunLifecycle.RUNNING,
-            stage=RunStage.CALIBRATION_A,
+            stage=command.initial_stage,
             version=1,
             task_refs=(initial,),
-            match_decisions=(),
+            match_decisions=(
+                (command.initial_match_decision,)
+                if command.initial_match_decision is not None
+                else ()
+            ),
             calibration_fallback_approved=False,
             difficulty_feedback_status=DifficultyFeedbackStatus.PENDING,
             difficulty_rating=None,
@@ -165,7 +210,32 @@ class VerticalSliceRun:
         return RunTransition(
             run,
             (
-                run._event("vertical_slice_run_created", command.now),
+                run._event(
+                    "vertical_slice_run_created",
+                    command.now,
+                    {
+                        "run_kind": command.run_kind.value,
+                        "predecessor_run_id": command.predecessor_run_id,
+                    },
+                ),
+                *(
+                    (
+                        run._event(
+                            "material_match_decided",
+                            command.now,
+                            {
+                                "decision_id": command.initial_match_decision.decision_id,
+                                "selected_content_version_id": (
+                                    command.initial_match_decision.selected_content_version_id
+                                ),
+                                "policy_version": command.initial_match_decision.policy_version,
+                                "conservative": command.initial_match_decision.conservative,
+                            },
+                        ),
+                    )
+                    if command.initial_match_decision is not None
+                    else ()
+                ),
                 run._event(
                     "run_task_assigned",
                     command.now,
@@ -232,12 +302,17 @@ class VerticalSliceRun:
         refs = (*self.task_refs[:-1], completed)
         events = [
             self._event(
-                "run_task_completion_registered",
+                (
+                    "run_task_ended_early_registered"
+                    if command.ended_early
+                    else "run_task_completion_registered"
+                ),
                 command.now,
                 {
                     "task_id": completed.task_id,
                     "role": completed.role.value,
                     "task_version": command.completed_task_version,
+                    "outcome": "ended_early" if command.ended_early else "completed",
                 },
                 version=self.version + 1,
             )
@@ -445,7 +520,11 @@ class VerticalSliceRun:
             RunStage.CALIBRATION_A,
             RunStage.CALIBRATION_B,
         }.issubset(completed_roles)
-        if not calibration_complete and not self.calibration_fallback_approved:
+        if (
+            self.run_kind is RunKind.FIRST_EXPERIENCE
+            and not calibration_complete
+            and not self.calibration_fallback_approved
+        ):
             gaps.append("two_calibrations_or_approved_fallback")
         if RunStage.MATCHED_READING not in completed_roles:
             gaps.append("matched_reading_completed")

@@ -1,7 +1,7 @@
 from decimal import Decimal
 
 import pytest
-from binnagent_workflow.budget import BudgetDecision, ModelBudget, evaluate_model_budget
+from binnagent_agent.policies.budget import BudgetDecision, ModelBudget, evaluate_model_budget
 
 
 def test_budget_allows_a_call_within_both_limits() -> None:

@@ -56,7 +56,7 @@
   "allowed_annotations": ["claim", "evidence", "logic", "uncertain", "reusable_expression"],
   "main_question": {
     "question_id": "calibration_a_q1",
-    "prompt": "What was the main effect of the library's new booking rule? Choose an answer and explain it with evidence from the passage.",
+    "prompt": "What was the main effect of the library's new booking rule?",
     "answer_type": "single_choice_with_explanation",
     "options": [
       { "option_id": "A", "text": "It persuaded the library to build additional study rooms." },

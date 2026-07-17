@@ -9,6 +9,7 @@ from binnagent_domain.vertical_slice.commands import (
     AddAnnotation,
     CompleteTask,
     CreateTask,
+    EndTaskEarly,
     PauseTask,
     RecordIntervention,
     RecordRevision,
@@ -423,6 +424,25 @@ class LearningTask:
             ),
         )
 
+    def end_early(self, command: EndTaskEarly) -> Transition:
+        self._guard_mutation(command.expected_version)
+        gaps = self.completion_gaps()
+        task = self._advance(command.now, state=TaskState.ENDED_EARLY)
+        return Transition(
+            task,
+            (
+                task._event(
+                    "task_ended_early",
+                    command.now,
+                    {
+                        "reason_code": "learner_ended_early",
+                        "completion_gap_count": len(gaps),
+                        "highest_hint_level": task.highest_hint_level,
+                    },
+                ),
+            ),
+        )
+
     def completion_gaps(self) -> tuple[str, ...]:
         gaps: list[str] = []
         current_attempts = self.current_attempts
@@ -518,8 +538,8 @@ class LearningTask:
                 "expected_version_mismatch",
                 self.version,
             )
-        if self.state is TaskState.COMPLETED:
-            self._invalid_state("completed_task_is_immutable")
+        if self.state in {TaskState.COMPLETED, TaskState.ENDED_EARLY}:
+            self._invalid_state("terminal_task_is_immutable")
         if self.state is TaskState.PAUSED and not allow_paused:
             self._invalid_state("paused_task_requires_resume")
 

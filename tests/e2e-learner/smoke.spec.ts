@@ -62,6 +62,10 @@ const workspace = {
         paragraph_id: "calibration_a_p2",
         text: "After the change, more students found a place to work without creating more rooms.",
       },
+      {
+        paragraph_id: "calibration_a_p3",
+        text: "The result came from sharing the existing space more carefully, not from adding capacity.",
+      },
     ],
     allowed_annotations: ["claim", "evidence", "logic", "uncertain", "reusable_expression"],
     question: {
@@ -89,6 +93,18 @@ test.beforeEach(async ({ page }) => {
       subtree: true,
     });
     markExtensionMutation();
+  });
+  await page.route("**/api/learner/v1/auth/session", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        learner_id: "learner_synthetic_local",
+        nickname: "本地学习者",
+        email: "local@binnagent.invalid",
+        invite_code: "BINN-LOCAL",
+      }),
+    });
   });
   await page.addInitScript(() => {
     if (sessionStorage.getItem("binnagent:e2e-initialized")) return;
@@ -118,7 +134,7 @@ test("expired local resume pointer returns to onboarding without a red browser e
   await page.goto("/");
   await page.evaluate(() => {
     localStorage.setItem(
-      "binnagent:learner-resume:v1",
+      "binnagent:learner-resume:v1:learner_synthetic_local",
       JSON.stringify({ schemaVersion: 1, workflowRunId: "workflow_run_expired" }),
     );
   });
@@ -127,7 +143,11 @@ test("expired local resume pointer returns to onboarding without a red browser e
   await expect(page.getByRole("button", { name: "开始独立校准" })).toBeEnabled();
   await expect(page.locator(".global-error")).toHaveCount(0);
   await expect
-    .poll(() => page.evaluate(() => localStorage.getItem("binnagent:learner-resume:v1")))
+    .poll(() =>
+      page.evaluate(() =>
+        localStorage.getItem("binnagent:learner-resume:v1:learner_synthetic_local"),
+      ),
+    )
     .toBeNull();
 });
 
@@ -137,6 +157,95 @@ test("learner entry is desktop-focused and accessible", async ({ page }) => {
   await expect(page.getByRole("heading", { name: "语境实验室 × 表达实验室" })).toBeVisible();
   await expect(page.getByRole("button", { name: "开始独立校准" })).toBeEnabled();
   await expect(page.getByText(/伪精确能力分/)).toBeVisible();
+
+  const results = await new AxeBuilder({ page }).analyze();
+  expect(results.violations).toEqual([]);
+});
+
+test("known learner can inspect profile evidence and control assistance preferences", async ({
+  page,
+}) => {
+  await page.goto("/");
+  await page.evaluate(() => {
+    localStorage.setItem(
+      "binnagent:learner-experience:v1:learner_synthetic_local",
+      JSON.stringify({
+        schemaVersion: 1,
+        profile: {
+          exam_track: "english_1",
+          target_score: 70,
+          weekly_minutes: 420,
+          self_reported_level: "developing",
+          prior_exam_seen: false,
+          session_minutes: 45,
+          feedback_density: "minimal",
+          timed: false,
+          evidence_count: 0,
+          confidence_band: "low",
+        },
+        sessions: [],
+      }),
+    );
+  });
+  await page.reload();
+
+  await page.getByRole("button", { name: "查看学习画像" }).click();
+  await expect(page.getByRole("heading", { name: "你的读写学习画像" })).toBeVisible();
+  await expect(page.getByText("证据不足", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "偏好设置" }).click();
+  await expect(page.getByRole("heading", { name: "让辅助按你的节奏出现" })).toBeVisible();
+  await page.getByLabel(/行内辅助出现方式/).selectOption("proactive");
+  await page.getByLabel(/页面留白/).selectOption("spacious");
+  await page.getByRole("button", { name: "保存偏好" }).click();
+  await expect(page.getByLabel(/行内辅助出现方式/)).toHaveValue("proactive");
+
+  const results = await new AxeBuilder({ page }).analyze();
+  expect(results.violations).toEqual([]);
+});
+
+test("a completed stage stops at a calm checkpoint before advancing", async ({ page }) => {
+  const completedWorkspace = {
+    ...workspace,
+    task: {
+      ...workspace.task,
+      state: "completed",
+      version: 3,
+      attempts: [
+        {
+          attempt_version_id: "attempt_version_rest_checkpoint",
+          version: 1,
+          text: "选择 B。\nThe change helped more students use the existing rooms.",
+          content_hash: "d".repeat(64),
+          independence: "independent",
+          created_at: "2026-07-16T12:01:00Z",
+        },
+      ],
+      completion_gaps: [],
+    },
+  };
+  await page.route("**/api/learner/v1/runs", async (route) => {
+    await route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify(run),
+    });
+  });
+  await page.route("**/api/learner/v1/runs/workflow_run_browser_0001/workspace", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(completedWorkspace),
+    });
+  });
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "开始独立校准" }).click();
+
+  await expect(
+    page.getByRole("heading", { name: "第一段已经保存，先把注意力放下来" }),
+  ).toBeVisible();
+  await expect(page.getByText("这里没有倒计时")).toBeVisible();
+  await expect(page.getByRole("button", { name: "准备好后继续" })).toBeVisible();
 
   const results = await new AxeBuilder({ page }).analyze();
   expect(results.violations).toEqual([]);
@@ -199,6 +308,25 @@ test("first experience opens the reading and output workspace", async ({ page })
       body: JSON.stringify(responseTask),
     });
   });
+  await page.route(
+    "**/api/learner/v1/tasks/task_browser_0001/annotations/analyze",
+    async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          analysis_id: "annotation_analysis_browser_0001",
+          focus: "syntax",
+          diagnosis: "这个卡点更像是主干和修饰层级混在了一起。",
+          breakdown: ["先找谓语和主语。", "暂时拿掉修饰语。", "再逐层放回原句。"],
+          next_check: "去掉修饰后，你能否说出谁做了什么？",
+          source: "model",
+          reason_code: "annotation_analysis_model_validated",
+          boundary_note: "只分析这处卡点，不直接给题目答案。",
+        }),
+      });
+    },
+  );
   await page.route("**/api/learner/v1/tasks/task_browser_0001/attempts", async (route) => {
     const body = route.request().postDataJSON() as { expected_version: number; text: string };
     const isV2 = body.expected_version === 4;
@@ -342,13 +470,32 @@ test("first experience opens the reading and output workspace", async ({ page })
   await page.goto("/");
   await page.getByRole("button", { name: "开始独立校准" }).click();
 
-  await expect(page.getByRole("heading", { name: "先留下你的判断，再请求帮助" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "休息一下" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "A Quiet Hour at the Library" })).toBeVisible();
+  await expect(page.getByText(/阅读呼吸点/)).toBeVisible();
   await expect(page.getByLabel(/^我的解释/)).toBeVisible();
-  await expect(page.getByRole("heading", { name: "3 项必做动作" })).toBeVisible();
   await expect(page.getByText("看不懂时，选中原文并标出卡点")).toBeVisible();
   await expect(page.getByRole("button", { name: /不知道怎么想/ })).toBeVisible();
+  await expect(page.getByRole("tab", { name: /临时任务.*0.*0/ })).toBeVisible();
   await expect(page.getByText(/正确答案|完整解析/)).toHaveCount(0);
+
+  await page.getByRole("button", { name: "加入临时任务" }).click();
+  await expect(page.getByRole("heading", { name: "把突然出现的练习先接住" })).toBeVisible();
+  await expect(page.getByRole("list", { name: "临时任务列表" }).getByRole("listitem")).toHaveCount(
+    1,
+  );
+  await page.getByLabel("临时任务 1 的回答").fill("规则变化让更多学生使用现有空间。");
+  await page.getByRole("button", { name: "完成并查看自检" }).click();
+  await expect(page.getByText("迁移尝试已记录")).toBeVisible();
+  await page.getByRole("button", { name: "+ 新增一个临时任务" }).click();
+  await expect(page.getByRole("list", { name: "临时任务列表" }).getByRole("listitem")).toHaveCount(
+    2,
+  );
+  await expect(page.getByRole("tab", { name: /临时任务.*已完成 1 个，共 2 个/ })).toBeVisible();
+  await page.getByLabel("临时任务 2 的回答").fill("只有开放时段覆盖晚间，自习空间才真正可用。");
+  await page.getByRole("button", { name: "完成并查看自检" }).click();
+  await expect(page.getByRole("tab", { name: /临时任务.*已完成 2 个，共 2 个/ })).toBeVisible();
+  await page.getByRole("button", { name: "返回主任务" }).click();
 
   await page.getByRole("button", { name: /不知道怎么想/ }).click();
   await expect(page.getByText("方法示例，不对应当前题目；不会给出当前答案。")).toBeVisible();
@@ -368,11 +515,18 @@ test("first experience opens the reading and output workspace", async ({ page })
   await paragraph.dispatchEvent("mouseup");
 
   await expect(page.getByRole("toolbar", { name: "选区语义工具" })).toBeVisible();
+  await page.getByRole("button", { name: "拆结构" }).click();
+  await expect(page.getByText(/先找谓语|为边界拆成两层/)).toBeVisible();
   await page.getByRole("button", { name: "这句看不懂" }).click();
   await expect(page.getByRole("group", { name: "看不懂的原因" })).toBeVisible();
   await expect(page.getByRole("button", { name: "长句", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "AI 分析这处卡点" })).toBeDisabled();
   await page.getByRole("button", { name: "长句", exact: true }).click();
-  await page.getByRole("button", { name: "保存这条判断" }).click();
+  await page.getByRole("button", { name: "AI 分析这处卡点" }).click();
+  await expect(page.getByText("这个卡点更像是主干和修饰层级混在了一起。")).toBeVisible();
+  await expect(page.getByText("下一步自查", { exact: true })).toBeVisible();
+  await expect(page.getByText("AI 模型分析")).toBeVisible();
+  await page.getByRole("button", { name: "保存标注与分析" }).click();
 
   await expect(page.getByText("1 条 · 原文中的痕迹也已保留")).toBeVisible();
   await expect(page.getByText("我还没理清这个长句的主干和修饰关系。")).toBeVisible();
@@ -381,9 +535,13 @@ test("first experience opens the reading and output workspace", async ({ page })
   await page.getByRole("radio", { name: /B It helped/ }).check();
   await page.getByLabel(/^我的解释/).fill("The change helped more students use the rooms.");
   await page.getByRole("button", { name: "保存 V1（不结束本步）" }).click();
+  await expect(page.getByRole("heading", { name: "独立版本已保存" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "V1 已保存，尚未结束本步" })).toBeVisible();
-  await page.getByRole("button", { name: "领取 H1" }).click();
+  await page.getByRole("button", { name: "领取反馈后修改" }).click();
   await expect(page.getByText("Look for the result reported after the trial.")).toBeVisible();
+  await page.getByText("查看这条反馈为什么出现").click();
+  await expect(page.getByText("观察输入")).toBeVisible();
+  await expect(page.getByText(/不展示模型隐藏思维链/)).toBeVisible();
   await page
     .getByLabel(/^我的解释/)
     .fill("The result was broader access without building new rooms.");
@@ -575,7 +733,10 @@ test("expression workspace keeps V1, gives one priority check, and requires lear
 
   await page.goto("/");
   await page.getByRole("button", { name: "开始独立校准" }).click();
-  await expect(page.getByRole("heading", { name: "把读到的思路变成自己的表达" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Helpful Support Without Skill Replacement" }),
+  ).toBeVisible();
+  await expect(page.getByRole("tab", { name: /标注列表/ })).toHaveCount(0);
   await page.getByLabel(/^我的作品/).fill(v1Text);
   await page.getByRole("button", { name: "保存 V1（不结束本步）" }).click();
   await expect(page.getByRole("button", { name: "查看单项反馈" })).toBeVisible();
@@ -592,6 +753,122 @@ test("expression workspace keeps V1, gives one priority check, and requires lear
   const versions = page.locator(".attempt-versions article");
   await expect(versions.nth(0)).toContainText(v1Text);
   await expect(versions.nth(1)).toContainText(v2Text);
+
+  const results = await new AxeBuilder({ page }).analyze();
+  expect(results.violations).toEqual([]);
+});
+
+test("completed learner returns home and continues with a new practice material", async ({
+  page,
+}) => {
+  const predecessorRunId = "workflow_run_completed_browser_0001";
+  const practiceRun = {
+    ...run,
+    workflow_run_id: "workflow_run_practice_browser_0001",
+    run_kind: "practice",
+    predecessor_run_id: predecessorRunId,
+    stage: "matched_reading",
+    version: 1,
+    current_task_id: "task_practice_browser_0001",
+    task_refs: [
+      {
+        task_id: "task_practice_browser_0001",
+        role: "matched_reading",
+        task_type: "matched_reading",
+        content_version_id: "matched_reading_02_v1",
+        completed: false,
+        completed_task_version: null,
+        highest_hint_level: null,
+      },
+    ],
+    match_decisions: [
+      {
+        decision_id: "match_decision_practice_browser_0001",
+        selected_content_version_id: "matched_reading_02_v1",
+        policy_version: "continuous_practice_match_v1",
+        conservative: true,
+        reason_codes: ["recent_material_excluded"],
+      },
+    ],
+    created_at: "2026-07-16T15:00:00Z",
+    updated_at: "2026-07-16T15:00:00Z",
+  };
+  const practiceWorkspace = {
+    run: practiceRun,
+    task: {
+      ...workspace.task,
+      task_id: "task_practice_browser_0001",
+      workflow_run_id: practiceRun.workflow_run_id,
+      task_type: "matched_reading",
+      current_content_version_id: "matched_reading_02_v1",
+      completion_gaps: ["learner_attempt", "semantic_annotation"],
+    },
+    material: {
+      ...workspace.material,
+      content_type: "matched_reading",
+      content_version_id: "matched_reading_02_v1",
+      title: "A New Material for Transfer",
+    },
+  };
+
+  await page.route(`**/api/learner/v1/runs/${predecessorRunId}/continue`, async (route) => {
+    await route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify(practiceRun),
+    });
+  });
+  await page.route(
+    `**/api/learner/v1/runs/${practiceRun.workflow_run_id}/workspace`,
+    async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(practiceWorkspace),
+      });
+    },
+  );
+
+  await page.goto("/");
+  await page.evaluate((completedRunId) => {
+    localStorage.setItem(
+      "binnagent:learner-experience:v1:learner_synthetic_local",
+      JSON.stringify({
+        schemaVersion: 1,
+        profile: {
+          exam_track: "english_1",
+          target_score: 70,
+          weekly_minutes: 420,
+          self_reported_level: "developing",
+          prior_exam_seen: false,
+          session_minutes: 45,
+          feedback_density: "minimal",
+          timed: false,
+          evidence_count: 0,
+          confidence_band: "low",
+        },
+        sessions: [
+          {
+            workflowRunId: completedRunId,
+            runVersion: 10,
+            runKind: "first_experience",
+            completedAt: "2026-07-16T14:30:00Z",
+            difficultyRating: "matched",
+            completedTaskCount: 4,
+            supportedTaskCount: 0,
+            matchedContentVersionId: "matched_reading_01_v1",
+          },
+        ],
+      }),
+    );
+  }, predecessorRunId);
+  await page.reload();
+
+  await expect(page.getByRole("heading", { name: "换一篇新材料，继续验证读写迁移" })).toBeVisible();
+  await page.getByRole("button", { name: "开始下一次训练" }).click();
+  await expect(page.getByRole("heading", { name: "A New Material for Transfer" })).toBeVisible();
+  await expect(page.getByText("第 1 / 3 步")).toBeVisible();
+  await expect(page.getByText("校准 A", { exact: true })).toHaveCount(0);
 
   const results = await new AxeBuilder({ page }).analyze();
   expect(results.violations).toEqual([]);

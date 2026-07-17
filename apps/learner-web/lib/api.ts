@@ -4,6 +4,7 @@ import {
 } from "@binnagent/frontend-domain/public-errors";
 
 import type {
+  AnnotationAnalysisView,
   AnnotationKind,
   LearnerProfileInput,
   LearnerResumeWorkspaceView,
@@ -75,6 +76,15 @@ export function createRun(learnerProfile: LearnerProfileInput): Promise<LearnerR
   return command("/v1/runs", "create_run", { learner_profile: learnerProfile });
 }
 
+export function continueRun(
+  workflowRunId: string,
+  expectedVersion: number,
+): Promise<LearnerRunView> {
+  return command(`/v1/runs/${workflowRunId}/continue`, "continue_run", {
+    expected_version: expectedVersion,
+  });
+}
+
 export function getWorkspace(workflowRunId: string): Promise<LearnerWorkspaceView> {
   return request(`/v1/runs/${workflowRunId}/workspace`);
 }
@@ -106,6 +116,27 @@ export async function saveAnnotation(
       text_hash: await sha256Text(selection.textQuote),
     },
     user_explanation: explanation,
+  });
+}
+
+export async function analyzeAnnotation(
+  task: LearnerTaskView,
+  selection: TextSelection,
+  learnerQuestion: string,
+): Promise<AnnotationAnalysisView> {
+  return request(`/v1/tasks/${task.task_id}/annotations/analyze`, {
+    method: "POST",
+    body: JSON.stringify({
+      expected_version: task.version,
+      span: {
+        paragraph_id: selection.paragraphId,
+        start: selection.start,
+        end: selection.end,
+        text_quote: selection.textQuote,
+        text_hash: await sha256Text(selection.textQuote),
+      },
+      learner_question: learnerQuestion,
+    }),
   });
 }
 
@@ -158,6 +189,12 @@ export function saveRevision(
 
 export function completeTask(task: LearnerTaskView): Promise<LearnerTaskView> {
   return command(`/v1/tasks/${task.task_id}/complete`, "complete_task", {
+    expected_version: task.version,
+  });
+}
+
+export function endTaskEarly(task: LearnerTaskView): Promise<LearnerTaskView> {
+  return command(`/v1/tasks/${task.task_id}/end-early`, "end_task_early", {
     expected_version: task.version,
   });
 }

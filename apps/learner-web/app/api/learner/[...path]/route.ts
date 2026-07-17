@@ -19,8 +19,10 @@ async function forward(request: NextRequest, context: RouteContext): Promise<Res
   const headers = new Headers({ Accept: "application/json" });
   const contentType = request.headers.get("content-type");
   const idempotencyKey = request.headers.get("idempotency-key");
+  const cookie = request.headers.get("cookie");
   if (contentType) headers.set("Content-Type", contentType);
   if (idempotencyKey) headers.set("Idempotency-Key", idempotencyKey);
+  if (cookie) headers.set("Cookie", cookie);
   const body =
     request.method === "GET" || request.method === "HEAD" ? undefined : await request.text();
   try {
@@ -31,9 +33,14 @@ async function forward(request: NextRequest, context: RouteContext): Promise<Res
       cache: "no-store",
       signal: AbortSignal.timeout(20_000),
     });
+    const responseHeaders = new Headers({
+      "Content-Type": response.headers.get("content-type") ?? "application/json",
+    });
+    const setCookie = response.headers.get("set-cookie");
+    if (setCookie) responseHeaders.set("Set-Cookie", setCookie);
     return new Response(response.body, {
       status: response.status,
-      headers: { "Content-Type": response.headers.get("content-type") ?? "application/json" },
+      headers: responseHeaders,
     });
   } catch {
     return NextResponse.json(

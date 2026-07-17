@@ -203,6 +203,20 @@ class LocalContentCatalog:
                 "annotation_span_not_in_assigned_content",
             )
 
+    def paragraph_text(self, content_version_id: str, paragraph_id: str) -> str:
+        """Resolve a paragraph from eligible assigned content for bounded model context."""
+        item = self.learner_item(content_version_id)
+        paragraphs = item.get("paragraphs")
+        if isinstance(paragraphs, list):
+            for part in paragraphs:
+                if (
+                    isinstance(part, dict)
+                    and part.get("paragraph_id") == paragraph_id
+                    and isinstance(part.get("text"), str)
+                ):
+                    return str(part["text"])
+        self._not_eligible("annotation_paragraph_unavailable")
+
     def _entry(self, content_version_id: str) -> dict[str, Any] | None:
         return next(
             (

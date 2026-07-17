@@ -1,5 +1,5 @@
-import { LearningExperience } from "./learning-experience";
+import { AuthGate } from "./auth-gate";
 
 export default function LearnerHomePage() {
-  return <LearningExperience />;
+  return <AuthGate />;
 }

@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 from hashlib import sha256
 from typing import Annotated
@@ -16,6 +17,7 @@ from binnagent_domain.vertical_slice.matching import (
 )
 from binnagent_domain.vertical_slice.models import (
     ActorType,
+    AttemptIndependence,
     LearnerProfileSnapshot,
     MaterialRef,
     TaskState,
@@ -28,16 +30,19 @@ from binnagent_domain.vertical_slice.run import (
     CreateVerticalSliceRun,
     RecordDifficultyFeedback,
     ReserveNextTask,
+    RunKind,
+    RunLifecycle,
     RunStage,
     RunTransition,
     VerticalSliceRun,
 )
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends, Header, Request
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from binnagent_api.auth import ControlIdentity, require_control_identity
 from binnagent_api.database import get_engine
+from binnagent_api.learner_auth import LearnerIdentity, ensure_identity_learner
 from binnagent_api.vertical_slice import tables
 from binnagent_api.vertical_slice.content_catalog import LocalContentCatalog
 from binnagent_api.vertical_slice.repository import VerticalSliceRepository
@@ -46,6 +51,7 @@ from binnagent_api.vertical_slice.run_repository import RunNotFoundError, Vertic
 from binnagent_api.vertical_slice.schemas import (
     AdvanceRunRequest,
     CalibrationFallbackRequest,
+    ContinueRunRequest,
     ControlRunReplayView,
     CreateRunRequest,
     DifficultyFeedbackRequest,
@@ -97,12 +103,19 @@ async def _workspace_view(
 
 
 @learner_run_router.post("", response_model=LearnerRunView, status_code=201)
-async def create_run(body: CreateRunRequest, idempotency_key: RunIdempotencyKey) -> LearnerRunView:
+async def create_run(
+    request: Request,
+    body: CreateRunRequest,
+    idempotency_key: RunIdempotencyKey,
+) -> LearnerRunView:
+    identity: LearnerIdentity = request.state.learner_identity
+    scoped_idempotency_key = _learner_idempotency_key(identity.learner_id, idempotency_key)
     async with get_engine().begin() as connection:
-        replay = await _find_replay(connection, idempotency_key, body, "create_run")
+        replay = await _find_replay(connection, scoped_idempotency_key, body, "create_run")
         if replay is not None:
             return _run_view(replay, replayed=True)
         now = datetime.now(UTC)
+        await ensure_identity_learner(connection, identity, now)
         profile = _profile(body, now)
         run_id = _id("workflow_run")
         task_id = _id("task")
@@ -111,9 +124,134 @@ async def create_run(body: CreateRunRequest, idempotency_key: RunIdempotencyKey)
         run_transition = VerticalSliceRun.create(
             CreateVerticalSliceRun(
                 workflow_run_id=run_id,
+                learner_id=identity.learner_id,
                 learner_profile=profile,
                 initial_task_id=task_id,
+                initial_task_type=TaskType.CALIBRATION_READING,
+                initial_stage=RunStage.CALIBRATION_A,
                 initial_content_version_id=material.content_version_id,
+                run_kind=RunKind.FIRST_EXPERIENCE,
+                predecessor_run_id=None,
+                initial_match_decision=None,
+                now=now,
+            )
+        )
+        run, replayed = await run_repository.create_with_task(
+            connection,
+            run_transition,
+            task_transition,
+            idempotency_key=scoped_idempotency_key,
+            request_hash=_request_hash(body),
+            command_name="create_run",
+            actor=ActorType.LEARNER,
+        )
+    return _run_view(run, replayed=replayed)
+
+
+@learner_run_router.post(
+    "/{workflow_run_id}/continue",
+    response_model=LearnerRunView,
+    status_code=201,
+)
+async def continue_run(
+    workflow_run_id: str,
+    body: ContinueRunRequest,
+    idempotency_key: RunIdempotencyKey,
+) -> LearnerRunView:
+    async with get_engine().begin() as connection:
+        replay = await _find_replay(connection, idempotency_key, body, "continue_run")
+        if replay is not None:
+            return _run_view(replay, replayed=True)
+        predecessor = await run_repository.load(connection, workflow_run_id)
+        predecessor.require_version(body.expected_version)
+        if predecessor.lifecycle is not RunLifecycle.COMPLETED:
+            raise DomainError(
+                PublicErrorCode.SESSION_CONFLICT,
+                "practice_requires_completed_predecessor",
+                predecessor.version,
+            )
+        existing = await run_repository.load_successor(connection, workflow_run_id)
+        if existing is not None:
+            return _run_view(existing, replayed=True)
+
+        now = datetime.now(UTC)
+        terminal_tasks = {
+            item.task_id: await task_repository.load(connection, item.task_id)
+            for item in predecessor.task_refs
+            if item.completed_at is not None
+        }
+        completed_count = sum(task.state is TaskState.COMPLETED for task in terminal_tasks.values())
+        evidence_count = predecessor.learner_profile.evidence_count + completed_count
+        profile = replace(
+            predecessor.learner_profile,
+            learner_snapshot_id=_id("learner_snapshot"),
+            evidence_count=evidence_count,
+            confidence_band="medium" if evidence_count >= 2 else "low",
+            created_at=now,
+        )
+        candidates = content_catalog.candidates_for(TaskType.MATCHED_READING)
+        recent_versions = {
+            item.content_version_id
+            for item in predecessor.task_refs
+            if item.role is RunStage.MATCHED_READING
+        }
+        novel_candidates = tuple(
+            item for item in candidates if item.content_version_id not in recent_versions
+        )
+        selected_candidates = novel_candidates or candidates
+        observations = tuple(
+            CalibrationObservation(
+                task_id=item.task_id,
+                content_version_id=item.content_version_id,
+                highest_hint_level=item.highest_hint_level or 0,
+                latest_independence=(
+                    AttemptIndependence.INDEPENDENT
+                    if (item.highest_hint_level or 0) == 0
+                    else AttemptIndependence.HINTED_LOW
+                ),
+            )
+            for item in predecessor.task_refs
+            if (
+                item.completed_at is not None
+                and item.role is RunStage.MATCHED_READING
+                and terminal_tasks[item.task_id].state is TaskState.COMPLETED
+            )
+        )
+        decision = matcher.select(
+            decision_id=_id("match_decision"),
+            profile=profile,
+            observations=observations,
+            candidates=selected_candidates,
+            now=now,
+        )
+        decision = replace(
+            decision,
+            policy_version="continuous_practice_match_v1",
+            reason_codes=(*decision.reason_codes, "recent_material_excluded"),
+        )
+        material = content_catalog.material_by_version(decision.selected_content_version_id)
+        run_id = _id("workflow_run")
+        task_id = _id("task")
+        task_transition = _new_task(
+            run_id,
+            task_id,
+            profile,
+            material,
+            now,
+            task_type=TaskType.MATCHED_READING,
+        )
+        run_transition = VerticalSliceRun.create(
+            CreateVerticalSliceRun(
+                workflow_run_id=run_id,
+                learner_id=predecessor.learner_id,
+                learner_profile=profile,
+                initial_task_id=task_id,
+                initial_task_type=TaskType.MATCHED_READING,
+                initial_stage=RunStage.MATCHED_READING,
+                initial_content_version_id=material.content_version_id,
+                run_kind=RunKind.PRACTICE,
+                predecessor_run_id=workflow_run_id,
+                initial_match_decision=decision,
                 now=now,
             )
         )
@@ -123,7 +261,7 @@ async def create_run(body: CreateRunRequest, idempotency_key: RunIdempotencyKey)
             task_transition,
             idempotency_key=idempotency_key,
             request_hash=_request_hash(body),
-            command_name="create_run",
+            command_name="continue_run",
             actor=ActorType.LEARNER,
         )
     return _run_view(run, replayed=replayed)
@@ -210,6 +348,7 @@ async def advance_run(
                 ),
                 match_decision=decision,
                 now=now,
+                ended_early=current_task.state is TaskState.ENDED_EARLY,
             )
         )
         saved, replayed = await run_repository.save_with_task(
@@ -427,7 +566,10 @@ async def _match(
 
 
 def _require_completed_current_task(run: VerticalSliceRun, task: LearningTask) -> None:
-    if task.workflow_run_id != run.workflow_run_id or task.state is not TaskState.COMPLETED:
+    if task.workflow_run_id != run.workflow_run_id or task.state not in {
+        TaskState.COMPLETED,
+        TaskState.ENDED_EARLY,
+    }:
         raise DomainError(
             PublicErrorCode.SAVE_NOT_CONFIRMED,
             "current_run_task_is_not_completed",
@@ -605,6 +747,8 @@ def _run_view(run: VerticalSliceRun, *, replayed: bool = False) -> LearnerRunVie
     current = run.current_task
     return LearnerRunView(
         workflow_run_id=run.workflow_run_id,
+        run_kind=run.run_kind.value,
+        predecessor_run_id=run.predecessor_run_id,
         lifecycle=run.lifecycle.value,
         stage=run.stage.value,
         version=run.version,
@@ -642,6 +786,8 @@ def _run_view(run: VerticalSliceRun, *, replayed: bool = False) -> LearnerRunVie
             else None
         ),
         completion_gaps=list(run.completion_gaps()),
+        created_at=run.created_at,
+        updated_at=run.updated_at,
         replayed=replayed,
     )
 
@@ -685,6 +831,11 @@ async def _control_run_view(
 def _request_hash(body: BaseModel) -> str:
     value = json.dumps(body.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
     return sha256(value.encode("utf-8")).hexdigest()
+
+
+def _learner_idempotency_key(learner_id: str, idempotency_key: str) -> str:
+    digest = sha256(f"{learner_id}:{idempotency_key}".encode()).hexdigest()
+    return f"learner-create:{digest}"
 
 
 def _id(prefix: str) -> str:

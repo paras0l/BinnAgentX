@@ -3,6 +3,72 @@ from sqlalchemy.dialects import postgresql
 
 metadata = sa.MetaData()
 
+learners = sa.Table(
+    "learners",
+    metadata,
+    sa.Column("learner_id", sa.String(128), primary_key=True),
+    sa.Column("nickname", sa.String(100), nullable=False),
+    sa.Column("email", sa.String(255), nullable=False),
+    sa.Column("invite_code", sa.String(32), nullable=False, unique=True),
+    sa.Column("invited_by_learner_id", sa.String(128), nullable=True),
+    sa.Column(
+        "account_type",
+        sa.String(32),
+        nullable=False,
+        server_default=sa.text("'registered'"),
+    ),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+)
+experience_codes = sa.Table(
+    "experience_codes",
+    metadata,
+    sa.Column("code_id", sa.String(128), primary_key=True),
+    sa.Column("code_hash", sa.String(64), nullable=False, unique=True),
+    sa.Column("code_hint", sa.String(24), nullable=False),
+    sa.Column("label", sa.String(100), nullable=False),
+    sa.Column("max_uses", sa.Integer(), nullable=False),
+    sa.Column("used_count", sa.Integer(), nullable=False),
+    sa.Column("created_by_role", sa.String(64), nullable=False),
+    sa.Column("revoked_by_role", sa.String(64), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("last_used_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
+)
+experience_code_redemptions = sa.Table(
+    "experience_code_redemptions",
+    metadata,
+    sa.Column("redemption_id", sa.String(128), primary_key=True),
+    sa.Column("code_id", sa.String(128), nullable=False),
+    sa.Column("learner_id", sa.String(128), nullable=False, unique=True),
+    sa.Column("username", sa.String(100), nullable=False),
+    sa.Column("username_key", sa.String(100), nullable=False),
+    sa.Column("login_count", sa.Integer(), nullable=False),
+    sa.Column("redeemed_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("last_login_at", sa.DateTime(timezone=True), nullable=False),
+)
+email_verification_challenges = sa.Table(
+    "email_verification_challenges",
+    metadata,
+    sa.Column("challenge_id", sa.String(128), primary_key=True),
+    sa.Column("email", sa.String(255), nullable=False),
+    sa.Column("code_hash", sa.String(64), nullable=False),
+    sa.Column("code_salt", sa.String(32), nullable=False),
+    sa.Column("attempt_count", sa.SmallInteger(), nullable=False),
+    sa.Column("sent_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("verified_at", sa.DateTime(timezone=True), nullable=True),
+)
+learner_sessions = sa.Table(
+    "learner_sessions",
+    metadata,
+    sa.Column("token_hash", sa.String(64), primary_key=True),
+    sa.Column("learner_id", sa.String(128), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
+)
 learner_profile_snapshots = sa.Table(
     "learner_profile_snapshots",
     metadata,
@@ -15,6 +81,9 @@ workflow_runs = sa.Table(
     metadata,
     sa.Column("workflow_run_id", sa.String(128), primary_key=True),
     sa.Column("learner_snapshot_id", sa.String(128), nullable=True),
+    sa.Column("learner_id", sa.String(128), nullable=True),
+    sa.Column("run_kind", sa.String(32), nullable=False),
+    sa.Column("predecessor_run_id", sa.String(128), nullable=True, unique=True),
     sa.Column("workflow_version", sa.String(128), nullable=False),
     sa.Column("state", sa.String(32), nullable=False),
     sa.Column("stage", sa.String(32), nullable=True),

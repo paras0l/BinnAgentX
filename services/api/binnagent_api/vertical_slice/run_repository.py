@@ -12,6 +12,7 @@ from binnagent_domain.vertical_slice.run import (
     DifficultyFeedbackStatus,
     DifficultyRating,
     NextTaskPlaceholder,
+    RunKind,
     RunLifecycle,
     RunStage,
     RunTaskRef,
@@ -259,7 +260,10 @@ class VerticalSliceRunRepository:
             )
         return VerticalSliceRun(
             workflow_run_id=row["workflow_run_id"],
+            learner_id=row["learner_id"],
             learner_profile=_profile_from_json(profile_json),
+            run_kind=RunKind(row["run_kind"]),
+            predecessor_run_id=row["predecessor_run_id"],
             lifecycle=RunLifecycle(row["state"]),
             stage=RunStage(row["stage"]),
             version=row["version"],
@@ -278,6 +282,18 @@ class VerticalSliceRunRepository:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
+
+    async def load_successor(
+        self,
+        connection: AsyncConnection,
+        predecessor_run_id: str,
+    ) -> VerticalSliceRun | None:
+        workflow_run_id = await connection.scalar(
+            sa.select(tables.workflow_runs.c.workflow_run_id).where(
+                tables.workflow_runs.c.predecessor_run_id == predecessor_run_id
+            )
+        )
+        return await self.load(connection, workflow_run_id) if workflow_run_id else None
 
     async def _append_facts(
         self,
@@ -467,8 +483,11 @@ class VerticalSliceRunRepository:
     def _projection(run: VerticalSliceRun) -> dict[str, object]:
         return {
             "workflow_run_id": run.workflow_run_id,
+            "learner_id": run.learner_id,
             "learner_snapshot_id": run.learner_profile.learner_snapshot_id,
-            "workflow_version": "workflow_read_write_v1",
+            "workflow_version": "workflow_read_write_v2",
+            "run_kind": run.run_kind.value,
+            "predecessor_run_id": run.predecessor_run_id,
             "state": run.lifecycle.value,
             "stage": run.stage.value,
             "checkpoint_id": f"checkpoint_run_v{run.version}",

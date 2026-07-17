@@ -96,3 +96,9 @@ class ResumeTask:
 class CompleteTask:
     expected_version: int
     now: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class EndTaskEarly:
+    expected_version: int
+    now: datetime

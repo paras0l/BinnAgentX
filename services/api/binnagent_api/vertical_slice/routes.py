@@ -1,3 +1,5 @@
+# ruff: noqa: RUF001
+
 import json
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -6,11 +8,22 @@ from typing import Annotated, Any
 from uuid import uuid4
 
 import sqlalchemy as sa
+from binnagent_agent import (
+    AnnotationAnalysisGateway,
+    GatewayOutcome,
+    ModelBudget,
+    PriorityFeedbackGateway,
+    PriorityFeedbackRequest,
+)
+from binnagent_agent import (
+    AnnotationAnalysisRequest as GatewayAnnotationAnalysisRequest,
+)
 from binnagent_domain.public_errors import PublicErrorCode
 from binnagent_domain.vertical_slice.aggregate import LearningTask, Transition
 from binnagent_domain.vertical_slice.commands import (
     AddAnnotation,
     CompleteTask,
+    EndTaskEarly,
     PauseTask,
     RecordIntervention,
     RecordRevision,
@@ -26,21 +39,18 @@ from binnagent_domain.vertical_slice.models import (
     TaskType,
     TextSpan,
 )
-from binnagent_workflow import (
-    DeterministicPriorityFeedbackAdapter,
-    ModelBudget,
-    PriorityFeedbackGateway,
-    PriorityFeedbackRequest,
-)
 from fastapi import APIRouter, Depends, Header
 
 from binnagent_api.auth import ControlIdentity, require_control_identity
 from binnagent_api.database import get_engine
+from binnagent_api.model_adapters import annotation_analysis_adapter, priority_feedback_adapter
 from binnagent_api.settings import get_settings
 from binnagent_api.vertical_slice import tables
 from binnagent_api.vertical_slice.content_catalog import LocalContentCatalog
 from binnagent_api.vertical_slice.repository import VerticalSliceRepository
 from binnagent_api.vertical_slice.schemas import (
+    AnnotationAnalysisRequest,
+    AnnotationAnalysisView,
     AnnotationRequest,
     AnnotationSpanView,
     AnnotationView,
@@ -103,6 +113,121 @@ async def add_annotation(
             "add_annotation",
         )
     return learner_task_view(task, replayed)
+
+
+@learner_router.post(
+    "/tasks/{task_id}/annotations/analyze",
+    response_model=AnnotationAnalysisView,
+)
+async def analyze_annotation(
+    task_id: str,
+    body: AnnotationAnalysisRequest,
+) -> AnnotationAnalysisView:
+    async with get_engine().begin() as connection:
+        task = await repository.load(connection, task_id)
+        if body.expected_version != task.version:
+            raise DomainError(
+                PublicErrorCode.SESSION_CONFLICT,
+                "expected_version_mismatch",
+                task.version,
+            )
+        if task.task_type is TaskType.MICRO_EXPRESSION:
+            raise DomainError(
+                PublicErrorCode.SAVE_NOT_CONFIRMED,
+                "annotation_analysis_reading_only",
+            )
+
+        span = TextSpan(**body.span.model_dump())
+        content_version_id = task.current_material.content_version_id
+        content_catalog.validate_span(content_version_id, span)
+        paragraph_context = content_catalog.paragraph_text(content_version_id, span.paragraph_id)
+        fallback_focus, fallback_diagnosis, fallback_breakdown, fallback_next_check = (
+            _annotation_analysis_fallback(body.learner_question, span.text_quote)
+        )
+        settings = get_settings()
+        budget_row = (
+            (
+                await connection.execute(
+                    sa.select(
+                        tables.workflow_runs.c.model_call_count,
+                        tables.workflow_runs.c.cost_usd,
+                    ).where(tables.workflow_runs.c.workflow_run_id == task.workflow_run_id)
+                )
+            )
+            .mappings()
+            .one()
+        )
+        gateway = AnnotationAnalysisGateway(
+            annotation_analysis_adapter(settings),
+            timeout_seconds=settings.model_timeout_seconds,
+            allow_remote=bool(settings.enable_remote_model_calls),
+        )
+        result = await gateway.generate(
+            GatewayAnnotationAnalysisRequest(
+                workflow_run_id=task.workflow_run_id,
+                task_id=task.task_id,
+                content_version_id=content_version_id,
+                selected_text=span.text_quote,
+                paragraph_context=paragraph_context,
+                learner_question=body.learner_question,
+                fallback_focus=fallback_focus,
+                fallback_diagnosis=fallback_diagnosis,
+                fallback_breakdown=fallback_breakdown,
+                fallback_next_check=fallback_next_check,
+            ),
+            ModelBudget(
+                call_count=int(budget_row["model_call_count"]),
+                cost_usd=Decimal(str(budget_row["cost_usd"])),
+                max_calls=settings.model_max_calls_per_slice,
+                max_cost_usd=settings.model_max_cost_usd_per_slice,
+            ),
+        )
+        now = datetime.now(UTC)
+        request_digest = _request_hash(body)
+        await connection.execute(
+            tables.model_invocations.insert().values(
+                invocation_id=_id("model_invocation"),
+                workflow_run_id=task.workflow_run_id,
+                task_id=task.task_id,
+                input_attempt_version_id=f"annotation_analysis_{request_digest[:48]}",
+                purpose="annotation_confusion_analysis",
+                adapter=result.adapter,
+                prompt_version=result.prompt_version,
+                outcome=result.outcome.value,
+                is_remote=result.used_remote_call,
+                estimated_cost_usd=result.estimated_cost_usd,
+                actual_cost_usd=result.actual_cost_usd,
+                latency_ms=result.latency_ms,
+                output_hash=result.output_hash,
+                focus=result.focus,
+                evidence_start=result.evidence_start,
+                evidence_end=result.evidence_end,
+                evidence_hash=result.evidence_hash,
+                rejection_code=result.rejection_code,
+                created_at=now,
+            )
+        )
+        if result.used_remote_call:
+            await connection.execute(
+                tables.workflow_runs.update()
+                .where(tables.workflow_runs.c.workflow_run_id == task.workflow_run_id)
+                .values(
+                    model_call_count=tables.workflow_runs.c.model_call_count + 1,
+                    cost_usd=tables.workflow_runs.c.cost_usd + result.actual_cost_usd,
+                    updated_at=now,
+                )
+            )
+
+    return AnnotationAnalysisView(
+        analysis_id=_id("annotation_analysis"),
+        focus=result.focus,
+        diagnosis=result.diagnosis,
+        breakdown=list(result.breakdown),
+        next_check=result.next_check,
+        source=("model" if result.outcome is GatewayOutcome.VALIDATED_MODEL else "local_fallback"),
+        reason_code=result.reason_code,
+        boundary_note="只分析这处卡点，不直接给题目答案。",
+    )
 
 
 @learner_router.post("/tasks/{task_id}/attempts", response_model=LearnerTaskView)
@@ -242,9 +367,9 @@ async def request_priority_feedback(
             .one()
         )
         gateway = PriorityFeedbackGateway(
-            DeterministicPriorityFeedbackAdapter(),
+            priority_feedback_adapter(settings),
             timeout_seconds=settings.model_timeout_seconds,
-            allow_remote=settings.enable_remote_model_calls,
+            allow_remote=bool(settings.enable_remote_model_calls),
         )
         gateway_result = await gateway.generate(
             PriorityFeedbackRequest(
@@ -437,6 +562,22 @@ async def complete_task(
         transition = previous.complete(CompleteTask(body.expected_version, datetime.now(UTC)))
         task, replayed = await _save(
             connection, previous, transition, idempotency_key, body, "complete_task"
+        )
+    return learner_task_view(task, replayed)
+
+
+@learner_router.post("/tasks/{task_id}/end-early", response_model=LearnerTaskView)
+async def end_task_early(
+    task_id: str, body: VersionedCommandRequest, idempotency_key: IdempotencyKey
+) -> LearnerTaskView:
+    async with get_engine().begin() as connection:
+        replay = await _find_replay(connection, idempotency_key, body, "end_task_early")
+        if replay is not None:
+            return learner_task_view(replay, True)
+        previous = await repository.load(connection, task_id)
+        transition = previous.end_early(EndTaskEarly(body.expected_version, datetime.now(UTC)))
+        task, replayed = await _save(
+            connection, previous, transition, idempotency_key, body, "end_task_early"
         )
     return learner_task_view(task, replayed)
 
@@ -680,6 +821,79 @@ def learner_task_view(task: LearningTask, replayed: bool = False) -> LearnerTask
 def _request_hash(body: Any) -> str:
     value = json.dumps(body.model_dump(mode="json"), ensure_ascii=False, sort_keys=True)
     return sha256(value.encode("utf-8")).hexdigest()
+
+
+def _annotation_analysis_fallback(
+    learner_question: str,
+    selected_text: str,
+) -> tuple[str, str, tuple[str, ...], str]:
+    normalized = learner_question.lower()
+    quote = " ".join(selected_text.split())[:80]
+    if any(term in normalized for term in ("词", "搭配", "意思", "word", "meaning")):
+        return (
+            "vocabulary",
+            "你的描述更像是词义或搭配没有落到当前语境，而不是整句都无法理解。",
+            (
+                f"先只看选区“{quote}”，判断它在句中承担什么成分。",
+                "列出你已知的常见词义，再用前后搭配排除不合语境的一项。",
+                "把暂定词义放回原句，检查句意和语气是否同时通顺。",
+            ),
+            "你现在能否用一个更具体的中文短语替换它，并让前后句仍然连贯？",
+        )
+    if any(term in normalized for term in ("长句", "主干", "结构", "修饰", "从句", "grammar")):
+        return (
+            "syntax",
+            "你的卡点更可能来自句子主干与修饰层级混在一起，需要先拆结构再理解细节。",
+            (
+                f"在“{quote}”中先圈出谓语，再寻找与它配对的主语。",
+                "暂时拿掉介词短语、插入语和从句，只保留可以独立成立的主干。",
+                "按修饰对象把拿掉的部分逐层放回，观察哪一层改变了句意。",
+            ),
+            "去掉所有修饰后，你能否说出这句话最短的“谁做了什么”？",
+        )
+    if any(term in normalized for term in ("指代", "代词", "refer", "this", "they", " it ")):
+        return (
+            "reference",
+            "你的描述指向代词或概念指代不清，需要用语法一致和语义连贯双重验证。",
+            (
+                f"先定位选区“{quote}”中的指代表达。",
+                "向前寻找数、性或概念范围能够匹配的候选对象。",
+                "把候选对象逐一代回，排除让逻辑重复或含义断裂的解释。",
+            ),
+            "哪个候选对象代回后，既符合语法，又能解释作者为什么接着说下一句？",
+        )
+    if any(term in normalized for term in ("逻辑", "转折", "因果", "关系", "however", "because")):
+        return (
+            "logic",
+            "你的卡点更像是没有确认这处话语与前后内容的逻辑方向。",
+            (
+                f"先把“{quote}”概括成一个不超过十个字的命题。",
+                "寻找转折、因果、递进或举例信号，并确认信号连接的两端。",
+                "比较前后两个命题：作者是在支持、限制，还是反驳前一个判断。",
+            ),
+            "如果删掉连接词，前后两部分最合理的关系仍然是什么？",
+        )
+    if any(term in normalized for term in ("背景", "语境", "context")):
+        return (
+            "context",
+            "这处困难可能来自省略的背景或概念边界，但先用段内信息建立最低限度理解。",
+            (
+                f"先记录“{quote}”明确说了什么，不补充文外知识。",
+                "从同段寻找定义、例子或对比，确认作者怎样限定这个概念。",
+                "只在段内线索仍不足时，再列出需要补查的一个背景问题。",
+            ),
+            "不用外部知识时，你能从本段确定的最小结论是什么？",
+        )
+    return (
+        "mixed",
+        "你已经定位了具体选区，但卡点类型还不够明确；先从结构和上下文各做一次排查。",
+        (
+            f"先用自己的话复述“{quote}”目前能确定的部分。",
+            "标出最不确定的一个词、一个结构或一处逻辑连接，不要同时处理整段。",
+            "把这个最小卡点放回前后句，检查它改变的是字面意思还是作者论证。",
+        ),
+        "如果只能再问一个问题，最能推进理解的是词义、句子主干，还是前后逻辑？",
+    )
 
 
 def _id(prefix: str) -> str:

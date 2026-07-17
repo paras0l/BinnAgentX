@@ -48,6 +48,23 @@ class AnnotationRequest(BaseModel):
     user_explanation: Annotated[str, Field(min_length=1, max_length=2000)]
 
 
+class AnnotationAnalysisRequest(BaseModel):
+    expected_version: Annotated[int, Field(ge=1)]
+    span: SpanInput
+    learner_question: Annotated[str, Field(min_length=1, max_length=1200)]
+
+
+class AnnotationAnalysisView(BaseModel):
+    analysis_id: str
+    focus: Literal["vocabulary", "syntax", "reference", "logic", "context", "mixed"]
+    diagnosis: str
+    breakdown: list[str]
+    next_check: str
+    source: Literal["model", "local_fallback"]
+    reason_code: str
+    boundary_note: str
+
+
 class AttemptRequest(BaseModel):
     expected_version: Annotated[int, Field(ge=1)]
     text: Annotated[str, Field(min_length=1, max_length=20000)]
@@ -76,6 +93,10 @@ class RevisionRequest(BaseModel):
 
 class VersionedCommandRequest(BaseModel):
     expected_version: Annotated[int, Field(ge=1)]
+
+
+class ContinueRunRequest(VersionedCommandRequest):
+    pass
 
 
 class HintRequest(VersionedCommandRequest):
@@ -224,6 +245,8 @@ class MatchDecisionView(BaseModel):
 
 class LearnerRunView(BaseModel):
     workflow_run_id: str
+    run_kind: Literal["first_experience", "practice"]
+    predecessor_run_id: str | None
     lifecycle: str
     stage: str
     version: int
@@ -235,6 +258,8 @@ class LearnerRunView(BaseModel):
     difficulty_rating: str | None
     next_task_placeholder_id: str | None
     completion_gaps: list[str]
+    created_at: datetime
+    updated_at: datetime
     replayed: bool = False
 
 

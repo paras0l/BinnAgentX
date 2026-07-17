@@ -2,7 +2,7 @@ import asyncio
 from decimal import Decimal
 
 import pytest
-from binnagent_workflow import (
+from binnagent_agent import (
     DeterministicPriorityFeedbackAdapter,
     GatewayOutcome,
     ModelAdapterResponse,
