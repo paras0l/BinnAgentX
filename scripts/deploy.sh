@@ -31,6 +31,16 @@ run_cmd() {
   }
 }
 
+compose() {
+  local subcommand=$1
+  shift
+  if [[ "${DOCKER_COMPOSE_USE_PLUGIN:-true}" == "true" ]]; then
+    docker compose "$subcommand" -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT_NAME" "$@"
+  else
+    docker-compose -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT_NAME" "$subcommand" "$@"
+  fi
+}
+
 usage() {
   cat <<'USAGE'
 用法: scripts/deploy.sh [--skip-worker] [--with-frontend] [--seed-content [SEED]]
@@ -81,6 +91,12 @@ done
 run_cmd docker
 run_cmd uv
 run_cmd git
+if docker compose version >/dev/null 2>&1; then
+  export DOCKER_COMPOSE_USE_PLUGIN=true
+else
+  run_cmd docker-compose
+  export DOCKER_COMPOSE_USE_PLUGIN=false
+fi
 
 mkdir -p scripts logs
 
@@ -96,11 +112,11 @@ else
 fi
 
 echo "使用 Compose 项目: ${COMPOSE_PROJECT_NAME}"
-docker compose -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT_NAME" up -d postgres
+compose up -d postgres
 
 if command -v pg_isready >/dev/null 2>&1; then
   for _ in {1..30}; do
-    if docker compose -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT_NAME" exec -T postgres pg_isready \
+    if compose exec -T postgres pg_isready \
         -U "${POSTGRES_USER:-binnagent}" -d "${POSTGRES_DB:-binnagent}" >/dev/null 2>&1; then
       break
     fi
