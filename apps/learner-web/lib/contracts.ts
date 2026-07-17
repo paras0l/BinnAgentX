@@ -1,6 +1,7 @@
 export type ExamTrack = "english_1" | "english_2";
 export type SelfReportedLevel = "weak" | "developing" | "steady" | "unknown";
-export type AnnotationKind = "claim" | "evidence" | "logic" | "uncertain" | "reusable_expression";
+export type AnnotationKind =
+  "vocabulary" | "grammar" | "claim" | "evidence" | "logic" | "uncertain" | "reusable_expression";
 
 export interface LearnerProfileInput {
   exam_track: ExamTrack;
@@ -40,6 +41,10 @@ export interface AnnotationView {
 export interface AnnotationAnalysisView {
   analysis_id: string;
   focus: "vocabulary" | "syntax" | "reference" | "logic" | "context" | "mixed";
+  selection_scope: "word_or_phrase" | "sentence_or_paragraph";
+  translation: string | null;
+  vocabulary_note: string | null;
+  grammar_structure: string[];
   diagnosis: string;
   breakdown: string[];
   next_check: string;
@@ -139,6 +144,23 @@ export interface ReadingMaterialView {
     prompt: string;
     options: Array<{ option_id: string; text: string }>;
   };
+  grammar_challenge: GrammarChallengeView;
+}
+
+export interface GrammarChallengeView {
+  challenge_id: string;
+  status: "pending" | "resolved";
+  attempt_count: number;
+  hint_revealed: boolean;
+  error_type: string | null;
+  hint: string | null;
+}
+
+export interface GrammarChallengeUpdateView {
+  paragraphs: Array<{ paragraph_id: string; text: string }>;
+  grammar_challenge: GrammarChallengeView;
+  verification_correct: boolean | null;
+  feedback: string | null;
 }
 
 export interface ExpressionMaterialView {

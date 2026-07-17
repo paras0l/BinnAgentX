@@ -104,6 +104,7 @@ async def _clean() -> None:
         tables.ai_interventions,
         tables.attempt_versions,
         tables.material_assignment_invalidations,
+        tables.task_grammar_challenges,
         tables.task_annotations,
         tables.task_material_assignments,
         tables.learning_tasks,
@@ -448,9 +449,13 @@ async def test_annotation_question_can_request_audited_ai_analysis_without_mutat
         assert analysis.status_code == 200
         payload = analysis.json()
         assert payload["focus"] == "syntax"
+        assert payload["selection_scope"] == "sentence_or_paragraph"
+        assert payload["translation"] is None
+        assert payload["vocabulary_note"] is None
+        assert len(payload["grammar_structure"]) == 3
         assert payload["source"] == "local_fallback"
         assert len(payload["breakdown"]) == 3
-        assert "不直接给题目答案" in payload["boundary_note"]
+        assert "不回答题目" in payload["boundary_note"]
 
         unchanged = await client.get(f"/learner/v1/tasks/{task['task_id']}")
         assert unchanged.json()["version"] == task["version"]
@@ -580,6 +585,17 @@ async def test_h1_is_gated_auditable_and_requires_linked_learner_v2() -> None:
         revision_payload = revision.json()
         assert revision_payload["completion_gaps"] == []
         assert revision_payload["revisions"][0]["result_status"] == "needs_review"
+
+        challenge = content_catalog.grammar_challenge_for(
+            str(task_id),
+            "calibration_reading_a_v1",
+        )
+        grammar = await client.post(
+            f"/learner/v1/tasks/{task_id}/grammar-challenge/verify",
+            json={"correction": challenge.correct_text},
+        )
+        assert grammar.status_code == 200, grammar.text
+        assert grammar.json()["verification_correct"] is True
 
         completed = await client.post(
             f"/learner/v1/tasks/{task_id}/complete",

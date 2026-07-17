@@ -45,6 +45,11 @@ from binnagent_api.database import get_engine
 from binnagent_api.learner_auth import LearnerIdentity, ensure_identity_learner
 from binnagent_api.vertical_slice import tables
 from binnagent_api.vertical_slice.content_catalog import LocalContentCatalog
+from binnagent_api.vertical_slice.grammar_challenges import (
+    grammar_challenge_view,
+    load_grammar_challenge_state,
+    project_reading_paragraphs,
+)
 from binnagent_api.vertical_slice.repository import VerticalSliceRepository
 from binnagent_api.vertical_slice.routes import learner_task_view
 from binnagent_api.vertical_slice.run_repository import RunNotFoundError, VerticalSliceRunRepository
@@ -98,7 +103,7 @@ async def _workspace_view(
     return LearnerWorkspaceView(
         run=_run_view(run),
         task=learner_task_view(task),
-        material=_material_view(task),
+        material=await _material_view(connection, task),
     )
 
 
@@ -611,7 +616,8 @@ def _new_task(
     )
 
 
-def _material_view(
+async def _material_view(
+    connection: AsyncConnection,
     task: LearningTask,
 ) -> LearnerReadingMaterialView | LearnerExpressionMaterialView:
     item = content_catalog.learner_item(task.current_material.content_version_id)
@@ -630,6 +636,16 @@ def _material_view(
                 PublicErrorCode.CONTENT_NOT_ELIGIBLE,
                 "learner_reading_projection_missing",
             )
+        challenge = content_catalog.grammar_challenge_for(
+            task.task_id,
+            task.current_material.content_version_id,
+        )
+        challenge_state = await load_grammar_challenge_state(
+            connection,
+            task.task_id,
+            task.current_material.content_version_id,
+            challenge.challenge_id,
+        )
         return LearnerReadingMaterialView(
             content_type=(
                 "calibration_reading"
@@ -639,12 +655,12 @@ def _material_view(
             content_version_id=task.current_material.content_version_id,
             title=str(item.get("title", "")),
             paragraphs=[
-                LearnerParagraphView(
-                    paragraph_id=str(part.get("paragraph_id", "")),
-                    text=str(part.get("text", "")),
+                LearnerParagraphView(paragraph_id=paragraph_id, text=text)
+                for paragraph_id, text in project_reading_paragraphs(
+                    paragraphs,
+                    challenge,
+                    challenge_state,
                 )
-                for part in paragraphs
-                if isinstance(part, dict)
             ],
             allowed_annotations=[str(value) for value in annotations],
             question=LearnerReadingQuestionView(
@@ -659,6 +675,7 @@ def _material_view(
                     if isinstance(option, dict)
                 ],
             ),
+            grammar_challenge=grammar_challenge_view(challenge, challenge_state),
         )
     requirement = item.get("output_requirement")
     if not isinstance(requirement, dict):

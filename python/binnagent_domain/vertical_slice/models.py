@@ -54,6 +54,8 @@ class TaskState(StrEnum):
 
 
 class AnnotationKind(StrEnum):
+    VOCABULARY = "vocabulary"
+    GRAMMAR = "grammar"
     CLAIM = "claim"
     EVIDENCE = "evidence"
     LOGIC = "logic"

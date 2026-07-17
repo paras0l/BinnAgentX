@@ -57,6 +57,10 @@ class AnnotationAnalysisRequest(BaseModel):
 class AnnotationAnalysisView(BaseModel):
     analysis_id: str
     focus: Literal["vocabulary", "syntax", "reference", "logic", "context", "mixed"]
+    selection_scope: Literal["word_or_phrase", "sentence_or_paragraph"]
+    translation: str | None
+    vocabulary_note: str | None
+    grammar_structure: list[str]
     diagnosis: str
     breakdown: list[str]
     next_check: str
@@ -101,6 +105,10 @@ class ContinueRunRequest(VersionedCommandRequest):
 
 class HintRequest(VersionedCommandRequest):
     input_attempt_version_id: Identifier
+
+
+class GrammarCorrectionRequest(BaseModel):
+    correction: Annotated[str, Field(min_length=1, max_length=120)]
 
 
 class AttemptView(BaseModel):
@@ -283,6 +291,15 @@ class LearnerReadingQuestionView(BaseModel):
     options: list[LearnerQuestionOptionView]
 
 
+class GrammarChallengeView(BaseModel):
+    challenge_id: str
+    status: Literal["pending", "resolved"]
+    attempt_count: int
+    hint_revealed: bool
+    error_type: str | None
+    hint: str | None
+
+
 class LearnerReadingMaterialView(BaseModel):
     content_type: Literal["calibration_reading", "matched_reading"]
     content_version_id: str
@@ -290,6 +307,14 @@ class LearnerReadingMaterialView(BaseModel):
     paragraphs: list[LearnerParagraphView]
     allowed_annotations: list[str]
     question: LearnerReadingQuestionView
+    grammar_challenge: GrammarChallengeView
+
+
+class GrammarChallengeUpdateView(BaseModel):
+    paragraphs: list[LearnerParagraphView]
+    grammar_challenge: GrammarChallengeView
+    verification_correct: bool | None
+    feedback: str | None
 
 
 class LearnerOutputRequirementView(BaseModel):

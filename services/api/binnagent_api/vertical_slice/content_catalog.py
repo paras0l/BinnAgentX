@@ -6,6 +6,11 @@ from typing import Any, NoReturn
 
 from binnagent_domain.public_errors import PublicErrorCode
 from binnagent_domain.vertical_slice.errors import DomainError
+from binnagent_domain.vertical_slice.grammar_challenge import (
+    GrammarChallenge,
+    project_grammar_error,
+    select_grammar_challenge,
+)
 from binnagent_domain.vertical_slice.matching import MaterialCandidate
 from binnagent_domain.vertical_slice.models import (
     DifficultyStatus,
@@ -216,6 +221,49 @@ class LocalContentCatalog:
                 ):
                     return str(part["text"])
         self._not_eligible("annotation_paragraph_unavailable")
+
+    def grammar_challenge_for(
+        self,
+        task_id: str,
+        content_version_id: str,
+    ) -> GrammarChallenge:
+        """Select one reviewed challenge deterministically without exposing its answer."""
+        item = self.learner_item(content_version_id)
+        raw_candidates = item.get("grammar_challenges")
+        paragraphs = item.get("paragraphs")
+        if not isinstance(raw_candidates, list) or not isinstance(paragraphs, list):
+            self._not_eligible("grammar_challenge_candidates_missing")
+        paragraph_map = {
+            str(part["paragraph_id"]): str(part["text"])
+            for part in paragraphs
+            if isinstance(part, dict)
+            and isinstance(part.get("paragraph_id"), str)
+            and isinstance(part.get("text"), str)
+        }
+        candidates: list[GrammarChallenge] = []
+        try:
+            for raw in raw_candidates:
+                if not isinstance(raw, dict):
+                    raise ValueError("grammar_challenge_candidate_invalid")
+                candidate = GrammarChallenge(
+                    challenge_id=str(raw["challenge_id"]),
+                    paragraph_id=str(raw["paragraph_id"]),
+                    correct_text=str(raw["correct_text"]),
+                    incorrect_text=str(raw["incorrect_text"]),
+                    error_type=str(raw["error_type"]),
+                    hint=str(raw["hint"]),
+                )
+                paragraph = paragraph_map.get(candidate.paragraph_id)
+                if paragraph is None:
+                    raise ValueError("grammar_challenge_paragraph_missing")
+                project_grammar_error(paragraph, candidate)
+                candidates.append(candidate)
+            return select_grammar_challenge(task_id, content_version_id, tuple(candidates))
+        except (KeyError, ValueError) as exc:
+            raise DomainError(
+                PublicErrorCode.CONTENT_NOT_ELIGIBLE,
+                str(exc),
+            ) from exc
 
     def _entry(self, content_version_id: str) -> dict[str, Any] | None:
         return next(

@@ -57,7 +57,33 @@
       "text": "Good measures also have an expiration date. A signal chosen to solve one problem should be reviewed after people adapt to it. If it no longer guides the desired behavior, preserving it for the sake of historical consistency can be more misleading than changing it. Measurement is therefore a continuing act of judgment: define the purpose, select evidence that is difficult to fake, watch for unintended responses, and revise the system without pretending that the numbers speak for themselves. This review should include the people whose work is being measured. They often notice defensive routines before a dashboard reveals them. Their explanations are not replacements for data, but they can show why a promising number moved and whether that movement reflects genuine improvement. In that sense, interpretation remains part of responsible measurement practice."
     }
   ],
-  "allowed_annotations": ["claim", "evidence", "logic", "uncertain", "reusable_expression"],
+  "allowed_annotations": [
+    "vocabulary",
+    "grammar",
+    "claim",
+    "evidence",
+    "logic",
+    "uncertain",
+    "reusable_expression"
+  ],
+  "grammar_challenges": [
+    {
+      "challenge_id": "matched_02_grammar_01",
+      "paragraph_id": "matched_02_p2",
+      "correct_text": "simple",
+      "incorrect_text": "simply",
+      "error_type": "词性选择",
+      "hint": "修饰名词 tickets 时，应选择形容词还是副词？"
+    },
+    {
+      "challenge_id": "matched_02_grammar_02",
+      "paragraph_id": "matched_02_p4",
+      "correct_text": "responsible",
+      "incorrect_text": "responsibly",
+      "error_type": "词性选择",
+      "hint": "修饰名词 measurement practice 时，应选择形容词还是副词？"
+    }
+  ],
   "main_question": {
     "question_id": "matched_02_q1",
     "prompt": "What is the author's main warning about visible measures?",

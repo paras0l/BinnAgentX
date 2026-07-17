@@ -34,8 +34,32 @@ class AnnotationAnalysisOutput(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["1.0.0"]
+    schema_version: Literal["1.1.0"]
+    selection_scope: Literal["word_or_phrase", "sentence_or_paragraph"]
     focus: Literal["vocabulary", "syntax", "reference", "logic", "context", "mixed"]
+    translation: (
+        Annotated[
+            str,
+            StringConstraints(strip_whitespace=True, min_length=1, max_length=2000),
+        ]
+        | None
+    )
+    vocabulary_note: (
+        Annotated[
+            str,
+            StringConstraints(strip_whitespace=True, min_length=8, max_length=800),
+        ]
+        | None
+    )
+    grammar_structure: Annotated[
+        list[
+            Annotated[
+                str,
+                StringConstraints(strip_whitespace=True, min_length=4, max_length=320),
+            ]
+        ],
+        Field(max_length=5),
+    ]
     diagnosis: Annotated[
         str,
         StringConstraints(strip_whitespace=True, min_length=12, max_length=400),
@@ -78,11 +102,15 @@ class AnnotationAnalysisRequest:
     content_version_id: str
     selected_text: str
     paragraph_context: str
+    selection_scope: Literal["word_or_phrase", "sentence_or_paragraph"]
     learner_question: str
     fallback_focus: str
     fallback_diagnosis: str
     fallback_breakdown: tuple[str, ...]
     fallback_next_check: str
+    fallback_translation: str | None = None
+    fallback_vocabulary_note: str | None = None
+    fallback_grammar_structure: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,8 +199,12 @@ class DeterministicAnnotationAnalysisAdapter:
     async def generate(self, request: AnnotationAnalysisRequest) -> ModelAdapterResponse:
         return ModelAdapterResponse(
             payload={
-                "schema_version": "1.0.0",
+                "schema_version": "1.1.0",
+                "selection_scope": request.selection_scope,
                 "focus": request.fallback_focus,
+                "translation": request.fallback_translation,
+                "vocabulary_note": request.fallback_vocabulary_note,
+                "grammar_structure": list(request.fallback_grammar_structure),
                 "diagnosis": request.fallback_diagnosis,
                 "breakdown": list(request.fallback_breakdown),
                 "next_check": request.fallback_next_check,
@@ -355,6 +387,10 @@ class AnnotationAnalysisResult:
     outcome: GatewayOutcome
     reason_code: str
     focus: str
+    selection_scope: str
+    translation: str | None
+    vocabulary_note: str | None
+    grammar_structure: tuple[str, ...]
     diagnosis: str
     breakdown: tuple[str, ...]
     next_check: str
@@ -377,7 +413,7 @@ class AnnotationAnalysisResult:
 
 
 class AnnotationAnalysisGateway:
-    prompt_version = "prompt_annotation_confusion_analysis_v1"
+    prompt_version = "prompt_annotation_confusion_analysis_v2"
 
     def __init__(
         self,
@@ -459,6 +495,22 @@ class AnnotationAnalysisGateway:
                 actual_cost_usd=response.actual_cost_usd,
             )
 
+        output_matches_scope = output.selection_scope == request.selection_scope
+        output_has_primary_help = (
+            output.vocabulary_note is not None
+            if request.selection_scope == "word_or_phrase"
+            else output.translation is not None and len(output.grammar_structure) > 0
+        )
+        if not output_matches_scope or (self._adapter.is_remote and not output_has_primary_help):
+            return self._fallback(
+                request,
+                GatewayOutcome.INVALID_OUTPUT_FALLBACK,
+                "model_selection_assistance_mismatch",
+                latency_ms=latency_ms,
+                remote_attempted=self._adapter.is_remote,
+                actual_cost_usd=response.actual_cost_usd,
+            )
+
         evidence_start = request.paragraph_context.find(output.evidence_quote)
         if evidence_start < 0:
             return self._fallback(
@@ -471,7 +523,16 @@ class AnnotationAnalysisGateway:
             )
         evidence_end = evidence_start + len(output.evidence_quote)
         serialized = "\n".join(
-            [output.focus, output.diagnosis, *output.breakdown, output.next_check]
+            [
+                output.selection_scope,
+                output.focus,
+                output.translation or "",
+                output.vocabulary_note or "",
+                *output.grammar_structure,
+                output.diagnosis,
+                *output.breakdown,
+                output.next_check,
+            ]
         )
         return AnnotationAnalysisResult(
             adapter=self._adapter.name,
@@ -487,6 +548,10 @@ class AnnotationAnalysisGateway:
                 else "annotation_analysis_fixture"
             ),
             focus=output.focus,
+            selection_scope=output.selection_scope,
+            translation=output.translation,
+            vocabulary_note=output.vocabulary_note,
+            grammar_structure=tuple(output.grammar_structure),
             diagnosis=output.diagnosis,
             breakdown=tuple(output.breakdown),
             next_check=output.next_check,
@@ -521,6 +586,10 @@ class AnnotationAnalysisGateway:
         serialized = "\n".join(
             [
                 request.fallback_focus,
+                request.selection_scope,
+                request.fallback_translation or "",
+                request.fallback_vocabulary_note or "",
+                *request.fallback_grammar_structure,
                 request.fallback_diagnosis,
                 *request.fallback_breakdown,
                 request.fallback_next_check,
@@ -532,6 +601,10 @@ class AnnotationAnalysisGateway:
             outcome=outcome,
             reason_code="annotation_analysis_fallback",
             focus=request.fallback_focus,
+            selection_scope=request.selection_scope,
+            translation=request.fallback_translation,
+            vocabulary_note=request.fallback_vocabulary_note,
+            grammar_structure=request.fallback_grammar_structure,
             diagnosis=request.fallback_diagnosis,
             breakdown=request.fallback_breakdown,
             next_check=request.fallback_next_check,

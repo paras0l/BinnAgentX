@@ -57,7 +57,33 @@
       "text": "This principle changes how progress is displayed. Finishing many assisted tasks may show persistence, but it does not by itself show independent ability. Stronger evidence appears when a learner explains a new passage before receiving help, repairs an error after a minimal cue, and later performs the same reasoning in another context. The best learning tool therefore does not aim to make every moment effortless. It aims to place effort where thinking matters, remove effort where it does not, and gradually make its own support unnecessary. This approach also requires patience from designers. Immediate satisfaction is easy to measure, whereas independent performance may appear only on a later task. A responsible system must keep these signals separate instead of labeling every smooth interaction as learning."
     }
   ],
-  "allowed_annotations": ["claim", "evidence", "logic", "uncertain", "reusable_expression"],
+  "allowed_annotations": [
+    "vocabulary",
+    "grammar",
+    "claim",
+    "evidence",
+    "logic",
+    "uncertain",
+    "reusable_expression"
+  ],
+  "grammar_challenges": [
+    {
+      "challenge_id": "matched_01_grammar_01",
+      "paragraph_id": "matched_01_p1",
+      "correct_text": "valuable",
+      "incorrect_text": "valuably",
+      "error_type": "词性选择",
+      "hint": "系动词 are 后需要能作表语的词性。"
+    },
+    {
+      "challenge_id": "matched_01_grammar_02",
+      "paragraph_id": "matched_01_p4",
+      "correct_text": "requires",
+      "incorrect_text": "required",
+      "error_type": "时态与谓语形式",
+      "hint": "这里在陈述一般原则，留意上下文使用的主要时态。"
+    }
+  ],
   "main_question": {
     "question_id": "matched_01_q1",
     "prompt": "Which statement best expresses the author's view of productive friction in learning?",

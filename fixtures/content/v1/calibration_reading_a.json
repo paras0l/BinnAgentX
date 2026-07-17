@@ -53,7 +53,33 @@
       "text": "Some students initially disliked the shorter evening sessions. However, staff explained the reason for the trial and placed a clock outside each room. Most users then planned smaller tasks for busy periods and saved group discussions for quieter hours. The experiment suggests that a resource can become more useful when access rules reflect how people actually use it. Fairness does not always mean giving everyone the same amount at every moment; it may mean reducing waste so that more people can participate."
     }
   ],
-  "allowed_annotations": ["claim", "evidence", "logic", "uncertain", "reusable_expression"],
+  "allowed_annotations": [
+    "vocabulary",
+    "grammar",
+    "claim",
+    "evidence",
+    "logic",
+    "uncertain",
+    "reusable_expression"
+  ],
+  "grammar_challenges": [
+    {
+      "challenge_id": "calibration_a_grammar_01",
+      "paragraph_id": "calibration_a_p1",
+      "correct_text": "reserved",
+      "incorrect_text": "reserves",
+      "error_type": "主谓一致",
+      "hint": "复数主语 people 后的谓语形式需要与主语一致。"
+    },
+    {
+      "challenge_id": "calibration_a_grammar_02",
+      "paragraph_id": "calibration_a_p2",
+      "correct_text": "found",
+      "incorrect_text": "finds",
+      "error_type": "时态与谓语形式",
+      "hint": "留意 After two weeks 所在句与上下文的叙事时态。"
+    }
+  ],
   "main_question": {
     "question_id": "calibration_a_q1",
     "prompt": "What was the main effect of the library's new booking rule?",

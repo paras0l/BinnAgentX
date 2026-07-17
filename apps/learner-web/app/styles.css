@@ -571,8 +571,8 @@ textarea:disabled {
   border-radius: 3px;
   padding: 1px 0;
   color: inherit;
-  background: #f5e5b9;
-  box-shadow: inset 0 -2px #c99b3f;
+  background: #e4eddc;
+  box-shadow: inset 0 -2px #6f8955;
   font: inherit;
   line-height: inherit;
   text-align: left;
@@ -580,9 +580,19 @@ textarea:disabled {
 
 .inline-annotation:hover,
 .inline-annotation:focus-visible {
-  outline: 2px solid #8d6723;
+  outline: 2px solid #385f4a;
   outline-offset: 2px;
-  background: #f1db9e;
+  filter: saturate(1.08) brightness(0.98);
+}
+
+.inline-annotation.annotation-kind-vocabulary {
+  background: #f4e6b8;
+  box-shadow: inset 0 -2px #a66b1c;
+}
+
+.inline-annotation.annotation-kind-grammar {
+  background: #f2ddd8;
+  box-shadow: inset 0 -2px #a95447;
 }
 
 .inline-annotation.annotation-kind-claim {
@@ -596,13 +606,13 @@ textarea:disabled {
 }
 
 .inline-annotation.annotation-kind-uncertain {
-  background: #f8dfd6;
-  box-shadow: inset 0 -2px #bd745a;
+  background: #e9e5e3;
+  box-shadow: inset 0 -2px #786b67;
 }
 
 .inline-annotation.annotation-kind-reusable_expression {
-  background: #dfeaf3;
-  box-shadow: inset 0 -2px #6f91ac;
+  background: #ddebf4;
+  box-shadow: inset 0 -2px #3b7597;
 }
 
 .reading-copy ::selection {
@@ -770,6 +780,138 @@ textarea:disabled {
   font-size: 21px;
   line-height: 1.5;
   letter-spacing: -0.015em;
+}
+
+.grammar-challenge-card {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 16px;
+  border: 1px solid #d8a08f;
+  border-left: 4px solid #b85f4d;
+  border-radius: 12px;
+  padding: 15px 16px;
+  color: #513b35;
+  background: #fff7f3;
+}
+
+.grammar-challenge-card > p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.grammar-challenge-heading {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.grammar-challenge-heading h2 {
+  margin: 3px 0 0;
+  color: #5d3028;
+  font-size: 17px;
+  line-height: 1.4;
+}
+
+.grammar-challenge-heading > svg {
+  flex: 0 0 auto;
+  color: #337054;
+}
+
+.grammar-challenge-count {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 50%;
+  color: #fff;
+  background: #a95142;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.grammar-correction-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 9px;
+  align-items: end;
+}
+
+.grammar-correction-form label {
+  display: grid;
+  gap: 5px;
+  color: #66443c;
+  font-size: 11px;
+  font-weight: 750;
+}
+
+.grammar-correction-form input {
+  width: 100%;
+  min-height: 40px;
+  border: 1px solid #cfa89c;
+  border-radius: 8px;
+  padding: 8px 10px;
+  color: #302724;
+  background: #fff;
+  font: inherit;
+  font-size: 13px;
+}
+
+.grammar-correction-form input:focus-visible {
+  border-color: #8f4639;
+  outline: 2px solid rgb(184 95 77 / 24%);
+  outline-offset: 1px;
+}
+
+.grammar-hint-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.grammar-hint-row > small {
+  flex: 0 0 auto;
+  color: #765e57;
+  font-size: 10px;
+}
+
+.grammar-hint {
+  display: grid;
+  gap: 3px;
+  border-radius: 8px;
+  padding: 9px 11px;
+  color: #644036;
+  background: #f8e5df;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.grammar-feedback {
+  margin: 0;
+  border-radius: 8px;
+  padding: 9px 11px;
+  color: #743e33;
+  background: #f7e2dc;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.grammar-challenge-resolved {
+  border-color: #9dbda9;
+  border-left-color: #3f7d5e;
+  color: #355747;
+  background: #f1f8f3;
+}
+
+.grammar-challenge-resolved .grammar-challenge-heading h2 {
+  color: #285b43;
+}
+
+.grammar-challenge-success {
+  color: #3d6450;
 }
 
 .task-checklist {
@@ -1081,10 +1223,20 @@ textarea:disabled {
 
 .saved-annotation-card {
   padding: 11px 12px;
-  border: 1px solid #e2d4b6;
-  border-left: 3px solid #c99b3f;
+  border: 1px solid #d9e3d2;
+  border-left: 3px solid #6f8955;
   border-radius: 8px;
   background: #fffdf8;
+}
+
+.saved-annotation-card.annotation-kind-vocabulary {
+  border-left-color: #a66b1c;
+  background: #fffdf5;
+}
+
+.saved-annotation-card.annotation-kind-grammar {
+  border-left-color: #a95447;
+  background: #fffafa;
 }
 
 .saved-annotation-card:focus {
@@ -1101,11 +1253,11 @@ textarea:disabled {
 }
 
 .saved-annotation-card.annotation-kind-uncertain {
-  border-left-color: #bd745a;
+  border-left-color: #786b67;
 }
 
 .saved-annotation-card.annotation-kind-reusable_expression {
-  border-left-color: #6f91ac;
+  border-left-color: #3b7597;
 }
 
 .saved-annotation-card > div {
@@ -1367,6 +1519,98 @@ textarea:disabled {
   line-height: 1.55;
 }
 
+.selection-recommendation {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 9px;
+  align-items: center;
+  margin: -2px 0 10px;
+  padding: 9px 10px;
+  border: 1px solid #d8c58f;
+  border-radius: 9px;
+  color: #62480e;
+  background: #fff8e4;
+}
+
+.selection-recommendation.selection-scope-sentence_or_paragraph {
+  border-color: #dfb8af;
+  color: #703d34;
+  background: #fff4f1;
+}
+
+.selection-recommendation > span {
+  border-radius: 999px;
+  padding: 3px 7px;
+  color: #fff;
+  background: #a66b1c;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.selection-recommendation.selection-scope-sentence_or_paragraph > span {
+  background: #a95447;
+}
+
+.selection-recommendation p {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.annotation-color-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin: 0 0 11px;
+  color: #636b66;
+  font-size: 10px;
+}
+
+.annotation-color-legend span {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+}
+
+.annotation-color-legend span::before,
+.annotation-types button::before {
+  width: 9px;
+  height: 9px;
+  flex: 0 0 auto;
+  border-radius: 3px;
+  background: #e4eddc;
+  box-shadow: inset 0 -2px #6f8955;
+  content: "";
+}
+
+.annotation-color-legend .annotation-kind-vocabulary::before,
+.annotation-types .annotation-kind-vocabulary::before {
+  background: #f4e6b8;
+  box-shadow: inset 0 -2px #a66b1c;
+}
+
+.annotation-color-legend .annotation-kind-reusable_expression::before,
+.annotation-types .annotation-kind-reusable_expression::before {
+  background: #ddebf4;
+  box-shadow: inset 0 -2px #3b7597;
+}
+
+.annotation-color-legend .annotation-kind-grammar::before,
+.annotation-types .annotation-kind-grammar::before {
+  background: #f2ddd8;
+  box-shadow: inset 0 -2px #a95447;
+}
+
+.annotation-types .annotation-kind-logic::before {
+  background: #e7e3f1;
+  box-shadow: inset 0 -2px #8a7aa8;
+}
+
+.annotation-types .annotation-kind-uncertain::before {
+  background: #e9e5e3;
+  box-shadow: inset 0 -2px #786b67;
+}
+
 .annotation-types {
   display: flex;
   flex-wrap: wrap;
@@ -1375,6 +1619,9 @@ textarea:disabled {
 }
 
 .annotation-types button {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
   border: 1px solid #d3c6a6;
   border-radius: 999px;
   padding: 6px 10px;
@@ -1388,6 +1635,27 @@ textarea:disabled {
   color: #5a4214;
   background: #f5e9ce;
   box-shadow: inset 0 0 0 1px #b58b3c;
+}
+
+.annotation-types button.annotation-kind-vocabulary.selected {
+  border-color: #a66b1c;
+  color: #68420e;
+  background: #f8edc8;
+  box-shadow: inset 0 0 0 1px #c38b37;
+}
+
+.annotation-types button.annotation-kind-grammar.selected {
+  border-color: #a95447;
+  color: #70352d;
+  background: #f8e6e2;
+  box-shadow: inset 0 0 0 1px #c5786b;
+}
+
+.annotation-types button.annotation-kind-reusable_expression.selected {
+  border-color: #3b7597;
+  color: #285874;
+  background: #e8f2f8;
+  box-shadow: inset 0 0 0 1px #70a1bc;
 }
 
 .uncertainty-reasons {
@@ -1525,6 +1793,49 @@ textarea:disabled {
   padding-left: 20px;
 }
 
+.annotation-primary-help,
+.annotation-grammar-structure {
+  padding: 10px 11px;
+  border-radius: 8px;
+  background: rgb(255 255 255 / 70%);
+}
+
+.annotation-primary-help strong,
+.annotation-grammar-structure > strong {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 11px;
+}
+
+.annotation-primary-help p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.vocabulary-help {
+  border-left: 3px solid #a66b1c;
+  color: #60430e;
+  background: #fff9e9;
+}
+
+.translation-help,
+.annotation-grammar-structure {
+  border-left: 3px solid #a95447;
+  color: #653b34;
+  background: #fff7f5;
+}
+
+.translation-unavailable {
+  border-left: 3px solid #8c837f;
+  color: #5f5753;
+  background: #f7f5f4;
+}
+
+.annotation-grammar-structure ol {
+  margin: 0;
+}
+
 .annotation-next-check {
   padding: 9px 10px;
   border-radius: 8px;
@@ -1654,6 +1965,21 @@ textarea:disabled {
   color: #714718;
   background: #fff8eb;
   font-weight: 800;
+}
+
+.selection-toolbar button.annotation-kind-vocabulary {
+  color: #68420e;
+  background: #fff8e4;
+}
+
+.selection-toolbar button.annotation-kind-grammar {
+  color: #70352d;
+  background: #fff2ef;
+}
+
+.selection-toolbar button.annotation-kind-reusable_expression {
+  color: #285874;
+  background: #f0f7fb;
 }
 
 .workspace-footer {
@@ -4207,6 +4533,10 @@ textarea:disabled {
   order: -1;
 }
 
+.training-frame .task-tab-panel > .grammar-challenge-card {
+  order: -1;
+}
+
 .training-frame .task-tab-panel > .step-label {
   order: 0;
   color: #315f49;
@@ -4463,6 +4793,18 @@ textarea:disabled {
 
 .training-frame .selection-toolbar button {
   background: #f8f7f3;
+}
+
+.training-frame .selection-toolbar button.annotation-kind-vocabulary {
+  background: #fff8e4;
+}
+
+.training-frame .selection-toolbar button.annotation-kind-grammar {
+  background: #fff2ef;
+}
+
+.training-frame .selection-toolbar button.annotation-kind-reusable_expression {
+  background: #f0f7fb;
 }
 
 .training-frame .global-error {

@@ -44,6 +44,7 @@ async def _clean() -> None:
         tables.ai_interventions,
         tables.attempt_versions,
         tables.material_assignment_invalidations,
+        tables.task_grammar_challenges,
         tables.task_annotations,
         tables.task_material_assignments,
         tables.learning_tasks,

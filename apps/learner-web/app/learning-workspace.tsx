@@ -24,6 +24,7 @@ import {
   LearnerApiError,
   pauseTask,
   recordDifficulty,
+  revealGrammarChallengeHint,
   requestH1Hint,
   requestPriorityFeedback,
   reserveNextTask,
@@ -31,6 +32,7 @@ import {
   saveAnnotation,
   saveAttempt,
   saveRevision,
+  verifyGrammarChallenge,
 } from "../lib/api";
 import type {
   AnnotationAnalysisView,
@@ -58,14 +60,32 @@ import {
   type LearnerPreferences,
 } from "../lib/experience-storage";
 import type { LearningAssetInput, LearningAssetKind } from "../lib/learning-assets-storage";
+import {
+  classifySelection,
+  defaultAnalysisQuestion,
+  recommendedAnnotationKind,
+  selectionScope,
+  type SelectionScale,
+} from "../lib/annotation-selection";
 
 const ANNOTATION_LABELS: Record<AnnotationKind, string> = {
+  vocabulary: "生词 / 短语",
+  grammar: "语法重点",
   claim: "作者观点",
   evidence: "论证证据",
   logic: "逻辑关系",
   uncertain: "看不懂 / 不确定",
   reusable_expression: "可迁移表达",
 };
+
+const SELECTION_SCALE_LABELS: Record<SelectionScale, string> = {
+  word: "单词",
+  phrase: "短语",
+  sentence: "句子",
+  paragraph: "段落",
+};
+
+const ANALYZABLE_ANNOTATION_KINDS = new Set<AnnotationKind>(["vocabulary", "grammar", "uncertain"]);
 
 const UNCERTAINTY_REASONS = [
   ["词义", "我不确定这个词或词组在这里的意思。"],
@@ -328,6 +348,7 @@ interface ActiveTaskWorkspaceProps extends Omit<LearningWorkspaceProps, "workspa
 
 function ActiveTaskWorkspace({
   workspace,
+  onWorkspaceChange,
   onTaskChange,
   onError,
   preferences,
@@ -355,7 +376,7 @@ function ActiveTaskWorkspace({
   const [selection, setSelection] = useState<TextSelection | null>(null);
   const [selectionAnchor, setSelectionAnchor] = useState<SelectionAnchor | null>(null);
   const [showSelectionToolbar, setShowSelectionToolbar] = useState(false);
-  const [annotationKind, setAnnotationKind] = useState<AnnotationKind>("evidence");
+  const [annotationKind, setAnnotationKind] = useState<AnnotationKind>("vocabulary");
   const [annotationExplanation, setAnnotationExplanation] = useState("");
   const [annotationAnalysis, setAnnotationAnalysis] = useState<AnnotationAnalysisView | null>(null);
   const [annotationAnalysisError, setAnnotationAnalysisError] = useState<string | null>(null);
@@ -381,6 +402,9 @@ function ActiveTaskWorkspace({
   const [showEarlyEndConfirm, setShowEarlyEndConfirm] = useState(false);
   const [showRevisionEditor, setShowRevisionEditor] = useState(false);
   const [isComposing, setIsComposing] = useState(false);
+  const [grammarCorrection, setGrammarCorrection] = useState("");
+  const [grammarFeedback, setGrammarFeedback] = useState<string | null>(null);
+  const [isGrammarPending, setIsGrammarPending] = useState(false);
   const [isPending, startTransition] = useTransition();
   const materialRef = useRef<HTMLElement>(null);
   const responsePaneRef = useRef<HTMLElement>(null);
@@ -512,6 +536,8 @@ function ActiveTaskWorkspace({
     prefix.setEnd(range.startContainer, range.startOffset);
     const start = prefix.toString().length;
     const selectionRect = range.getBoundingClientRect();
+    const scale = classifySelection(textQuote, startParagraph.textContent ?? "");
+    const recommendedKind = recommendedAnnotationKind(scale);
     setSelection({
       paragraphId: startParagraph.dataset.paragraphId ?? "",
       start,
@@ -520,13 +546,22 @@ function ActiveTaskWorkspace({
     });
     setAnnotationAnalysis(null);
     setAnnotationAnalysisError(null);
+    if (allowedAnnotations.includes(recommendedKind)) setAnnotationKind(recommendedKind);
     setSelectionAnchor({
       left: Math.min(Math.max(16, selectionRect.left), Math.max(16, window.innerWidth - 520)),
       top: Math.min(Math.max(16, selectionRect.bottom + 10), Math.max(16, window.innerHeight - 72)),
     });
     setShowSelectionToolbar(true);
-    setProgressMessage("已选中文本。就近选择它的作用；完整说明已移到右侧顶部。");
-    if (preferences.assistanceMode === "proactive") setInlineAssistanceFocus("structure");
+    setProgressMessage(
+      selectionScope(scale) === "word_or_phrase"
+        ? "识别为单词或短语：已优先推荐生词解释与语境义。"
+        : "识别为句子或段落：已优先推荐整句翻译与语法结构。",
+    );
+    if (preferences.assistanceMode === "proactive") {
+      setInlineAssistanceFocus(
+        selectionScope(scale) === "word_or_phrase" ? "meaning" : "structure",
+      );
+    }
     window.requestAnimationFrame(() => {
       responsePaneRef.current?.scrollTo({ top: 0, behavior: "smooth" });
     });
@@ -534,10 +569,8 @@ function ActiveTaskWorkspace({
 
   const chooseAnnotationKind = (kind: AnnotationKind) => {
     setAnnotationKind(kind);
-    if (kind !== "uncertain") {
-      setAnnotationAnalysis(null);
-      setAnnotationAnalysisError(null);
-    }
+    setAnnotationAnalysis(null);
+    setAnnotationAnalysisError(null);
     setShowSelectionToolbar(false);
     responsePaneRef.current?.scrollTo({ top: 0, behavior: "smooth" });
     window.requestAnimationFrame(() => annotationExplanationRef.current?.focus());
@@ -545,7 +578,7 @@ function ActiveTaskWorkspace({
 
   const promptUncertainSelection = () => {
     setAnnotationKind("uncertain");
-    setProgressMessage("先在左侧选中看不懂的最小原文，再点选区旁的“这句看不懂”。");
+    setProgressMessage("先在左侧选中看不懂的原文，再点选区旁的“仍没看懂”。");
     materialRef.current?.focus();
   };
 
@@ -591,13 +624,25 @@ function ActiveTaskWorkspace({
   };
 
   const requestAnnotationAnalysis = async () => {
-    if (!selection || annotationKind !== "uncertain" || !annotationExplanation.trim()) return;
+    if (!selection || !ANALYZABLE_ANNOTATION_KINDS.has(annotationKind)) return;
+    const paragraphText = isReading
+      ? ((material as ReadingMaterialView).paragraphs.find(
+          (paragraph) => paragraph.paragraph_id === selection.paragraphId,
+        )?.text ?? "")
+      : "";
+    const scale = classifySelection(selection.textQuote, paragraphText);
+    const learnerQuestion = annotationExplanation.trim() || defaultAnalysisQuestion(scale);
     setAnnotationAnalysisError(null);
     setIsAnnotationAnalysisPending(true);
     try {
-      const result = await analyzeAnnotation(task, selection, annotationExplanation.trim());
+      const result = await analyzeAnnotation(task, selection, learnerQuestion);
       setAnnotationAnalysis(result);
-      setProgressMessage("AI 已完成这处卡点分析。你可以先按“下一步自查”验证，再保存标注。");
+      if (!annotationExplanation.trim()) setAnnotationExplanation(learnerQuestion);
+      setProgressMessage(
+        result.selection_scope === "word_or_phrase"
+          ? "已优先整理语境义、词性与搭配。请放回原句验证后再保存。"
+          : "已优先整理整句翻译与语法结构。请沿主干和修饰层级核对后再保存。",
+      );
     } catch (error) {
       setAnnotationAnalysis(null);
       setAnnotationAnalysisError(messageFor(error));
@@ -607,28 +652,34 @@ function ActiveTaskWorkspace({
   };
 
   const submitAnnotation = () => {
-    if (!selection || !annotationExplanation.trim()) {
+    if (!selection || (!annotationExplanation.trim() && !annotationAnalysis)) {
       setProgressMessage("先选择原文并写下你的解释，标记才有学习意义。");
       return;
     }
+    const paragraphText = isReading
+      ? ((material as ReadingMaterialView).paragraphs.find(
+          (paragraph) => paragraph.paragraph_id === selection.paragraphId,
+        )?.text ?? "")
+      : "";
+    const scale = classifySelection(selection.textQuote, paragraphText);
+    const explanation = annotationExplanation.trim() || defaultAnalysisQuestion(scale);
     onError(null);
     startTransition(async () => {
       try {
-        const updated = await saveAnnotation(
-          task,
-          annotationKind,
-          selection,
-          annotationExplanation,
-        );
+        const updated = await saveAnnotation(task, annotationKind, selection, explanation);
         onTaskChange(updated);
         const assetKind: LearningAssetKind =
-          annotationKind === "reusable_expression"
-            ? "writing_expression"
-            : annotationKind === "uncertain"
-              ? /词|词组|搭配/u.test(annotationExplanation)
-                ? "vocabulary"
-                : "grammar"
-              : "reading_skill";
+          annotationKind === "vocabulary"
+            ? "vocabulary"
+            : annotationKind === "grammar"
+              ? "grammar"
+              : annotationKind === "reusable_expression"
+                ? "writing_expression"
+                : annotationKind === "uncertain"
+                  ? /词|词组|搭配/u.test(annotationExplanation)
+                    ? "vocabulary"
+                    : "grammar"
+                  : "reading_skill";
         onLearningAssetCapture({
           kind: assetKind,
           title:
@@ -638,12 +689,23 @@ function ActiveTaskWorkspace({
           content: selection.textQuote,
           note: annotationAnalysis
             ? [
-                annotationExplanation,
+                explanation,
+                annotationAnalysis.vocabulary_note
+                  ? `语境义与用法：${annotationAnalysis.vocabulary_note}`
+                  : null,
+                annotationAnalysis.translation
+                  ? `选区翻译：${annotationAnalysis.translation}`
+                  : null,
+                annotationAnalysis.grammar_structure.length > 0
+                  ? `语法结构：${annotationAnalysis.grammar_structure.join("；")}`
+                  : null,
                 `卡点诊断：${annotationAnalysis.diagnosis}`,
                 `拆解：${annotationAnalysis.breakdown.join("；")}`,
                 `下一步自查：${annotationAnalysis.next_check}`,
-              ].join("\n")
-            : annotationExplanation,
+              ]
+                .filter((item): item is string => Boolean(item))
+                .join("\n")
+            : explanation,
           sourceTitle: material.title,
         });
         setShowSavedAnnotations(true);
@@ -663,6 +725,10 @@ function ActiveTaskWorkspace({
   };
 
   const outputIsValid = () => {
+    if (isReading && (material as ReadingMaterialView).grammar_challenge.status !== "resolved") {
+      setProgressMessage("先找出文章中的 1 处语法错误并修改正确，再保存本步判断。");
+      return false;
+    }
     if (isReading && (!choice || !text.trim())) {
       setProgressMessage("先选择一个判断，并用自己的话解释原文怎样支持它。");
       responseRef.current?.focus();
@@ -685,6 +751,57 @@ function ActiveTaskWorkspace({
       return false;
     }
     return true;
+  };
+
+  const applyGrammarChallengeUpdate = (
+    update: Awaited<ReturnType<typeof verifyGrammarChallenge>>,
+  ) => {
+    const readingMaterial = material as ReadingMaterialView;
+    onWorkspaceChange({
+      ...workspace,
+      material: {
+        ...readingMaterial,
+        paragraphs: update.paragraphs,
+        grammar_challenge: update.grammar_challenge,
+      },
+    });
+  };
+
+  const revealGrammarHint = async () => {
+    if (!isReading || isGrammarPending) return;
+    onError(null);
+    setIsGrammarPending(true);
+    try {
+      const update = await revealGrammarChallengeHint(task.task_id);
+      applyGrammarChallengeUpdate(update);
+    } catch (error) {
+      onError(messageFor(error));
+    } finally {
+      setIsGrammarPending(false);
+    }
+  };
+
+  const submitGrammarCorrection = async () => {
+    if (!isReading || !grammarCorrection.trim() || isGrammarPending) {
+      if (!grammarCorrection.trim()) setGrammarFeedback("先输入你认为正确的英文写法。");
+      return;
+    }
+    onError(null);
+    setGrammarFeedback(null);
+    setIsGrammarPending(true);
+    try {
+      const update = await verifyGrammarChallenge(task.task_id, grammarCorrection.trim());
+      applyGrammarChallengeUpdate(update);
+      setGrammarFeedback(update.feedback);
+      if (update.verification_correct) {
+        setGrammarCorrection("");
+        setProgressMessage("语法找茬已通过，文章中的错误已改回正确原文。");
+      }
+    } catch (error) {
+      onError(messageFor(error));
+    } finally {
+      setIsGrammarPending(false);
+    }
   };
 
   const submitTask = () => {
@@ -889,6 +1006,10 @@ function ActiveTaskWorkspace({
 
   const requiredSteps = isReading
     ? [
+        {
+          label: "找出并改正文章中的 1 处语法错误",
+          complete: (material as ReadingMaterialView).grammar_challenge.status === "resolved",
+        },
         { label: "选择一个判断", complete: Boolean(choice) || hasAttempt },
         {
           label: "用自己的话解释证据关系",
@@ -936,6 +1057,19 @@ function ActiveTaskWorkspace({
       ];
 
   const allowedAnnotations = isReading ? (material as ReadingMaterialView).allowed_annotations : [];
+  const selectedParagraphText =
+    selection && isReading
+      ? ((material as ReadingMaterialView).paragraphs.find(
+          (paragraph) => paragraph.paragraph_id === selection.paragraphId,
+        )?.text ?? "")
+      : "";
+  const selectedScale = selection
+    ? classifySelection(selection.textQuote, selectedParagraphText)
+    : null;
+  const selectedScope = selectedScale ? selectionScope(selectedScale) : null;
+  const canAnalyzeAnnotation = ANALYZABLE_ANNOTATION_KINDS.has(annotationKind);
+  const annotationAnalysisButtonLabel =
+    selectedScope === "word_or_phrase" ? "AI 查语境义与搭配" : "整句翻译 + 语法结构";
   const savedAnnotations = task.annotations ?? [];
   const selectedOption = isReading
     ? (material as ReadingMaterialView).question.options.find(
@@ -1123,12 +1257,27 @@ function ActiveTaskWorkspace({
                         ×
                       </button>
                     </div>
+                    {selectedScale && selectedScope ? (
+                      <div className={`selection-recommendation selection-scope-${selectedScope}`}>
+                        <span>{SELECTION_SCALE_LABELS[selectedScale]}</span>
+                        <p>
+                          {selectedScope === "word_or_phrase"
+                            ? "优先查生词：看当前语境义、词性和搭配。"
+                            : "优先拆长句：先看完整译文，再看主干、从句和修饰层级。"}
+                        </p>
+                      </div>
+                    ) : null}
+                    <div className="annotation-color-legend" aria-label="高亮颜色语义">
+                      <span className="annotation-kind-vocabulary">暖黄 · 生词</span>
+                      <span className="annotation-kind-reusable_expression">雾蓝 · 好表达</span>
+                      <span className="annotation-kind-grammar">珊瑚 · 语法重点</span>
+                    </div>
                     <div className="annotation-types" role="group" aria-label="标记类型">
                       {allowedAnnotations.map((kind) => (
                         <button
                           key={kind}
                           type="button"
-                          className={annotationKind === kind ? "selected" : ""}
+                          className={`annotation-kind-${kind}${annotationKind === kind ? " selected" : ""}`}
                           onClick={() => chooseAnnotationKind(kind)}
                         >
                           {ANNOTATION_LABELS[kind]}
@@ -1167,9 +1316,7 @@ function ActiveTaskWorkspace({
                       </div>
                     ) : null}
                     <label>
-                      <span>
-                        {annotationKind === "uncertain" ? "具体哪里没懂？" : "为什么这样标？"}
-                      </span>
+                      <span>{canAnalyzeAnnotation ? "你想重点解决什么？" : "为什么这样标？"}</span>
                       <textarea
                         ref={annotationExplanationRef}
                         value={annotationExplanation}
@@ -1179,28 +1326,34 @@ function ActiveTaskWorkspace({
                           setAnnotationAnalysisError(null);
                         }}
                         placeholder={
-                          annotationKind === "uncertain"
-                            ? "选一个卡点作为开头，再补充具体词、结构或关系。"
-                            : "写下你的判断。标记数量不算进步，解释才让思考可见。"
+                          annotationKind === "vocabulary"
+                            ? "可选：写下你猜的语境义，或直接点击下方查词。"
+                            : annotationKind === "grammar"
+                              ? "可选：写下没理清的主干、从句或修饰关系。"
+                              : annotationKind === "uncertain"
+                                ? "选一个卡点作为开头，再补充具体词、结构或关系。"
+                                : "写下你的判断。标记数量不算进步，解释才让思考可见。"
                         }
                       />
                     </label>
-                    {annotationKind === "uncertain" ? (
+                    {canAnalyzeAnnotation ? (
                       <div className="annotation-analysis-flow">
                         <div className="annotation-analysis-action">
                           <button
                             className="analysis-button"
                             type="button"
                             onClick={requestAnnotationAnalysis}
-                            disabled={
-                              !annotationExplanation.trim() ||
-                              isAnnotationAnalysisPending ||
-                              isPending
-                            }
+                            disabled={isAnnotationAnalysisPending || isPending}
                           >
-                            {isAnnotationAnalysisPending ? "正在分析这处卡点…" : "AI 分析这处卡点"}
+                            {isAnnotationAnalysisPending
+                              ? "正在分析当前选区…"
+                              : annotationAnalysisButtonLabel}
                           </button>
-                          <small>填写后可分析 · 只看选区、所在段落和你的问题</small>
+                          <small>
+                            {selectedScope === "word_or_phrase"
+                              ? "默认优先语境义，不把短语误当整句"
+                              : "只翻译当前选区，不回答题目、不代读全文"}
+                          </small>
                         </div>
                         {annotationAnalysisError ? (
                           <p className="annotation-analysis-error" role="alert">
@@ -1217,6 +1370,33 @@ function ActiveTaskWorkspace({
                                   : "本地保守分析 · 模型暂不可用"}
                               </small>
                             </header>
+                            {annotationAnalysis.vocabulary_note ? (
+                              <div className="annotation-primary-help vocabulary-help">
+                                <strong>语境义、词性与搭配</strong>
+                                <p>{annotationAnalysis.vocabulary_note}</p>
+                              </div>
+                            ) : null}
+                            {annotationAnalysis.translation ? (
+                              <div className="annotation-primary-help translation-help">
+                                <strong>当前选区完整翻译</strong>
+                                <p>{annotationAnalysis.translation}</p>
+                              </div>
+                            ) : annotationAnalysis.selection_scope === "sentence_or_paragraph" ? (
+                              <div className="annotation-primary-help translation-unavailable">
+                                <strong>完整翻译暂不可用</strong>
+                                <p>当前为本地保守分析；启用受约束模型后才会生成选区译文。</p>
+                              </div>
+                            ) : null}
+                            {annotationAnalysis.grammar_structure.length > 0 ? (
+                              <div className="annotation-grammar-structure">
+                                <strong>语法结构</strong>
+                                <ol>
+                                  {annotationAnalysis.grammar_structure.map((item) => (
+                                    <li key={item}>{item}</li>
+                                  ))}
+                                </ol>
+                              </div>
+                            ) : null}
                             <p>{annotationAnalysis.diagnosis}</p>
                             <ol>
                               {annotationAnalysis.breakdown.map((step) => (
@@ -1244,6 +1424,108 @@ function ActiveTaskWorkspace({
                         {annotationAnalysis ? "保存标注与分析" : "保存这条判断"}
                       </button>
                     </div>
+                  </section>
+                ) : null}
+
+                {isReading ? (
+                  <section
+                    className={
+                      "grammar-challenge-card grammar-challenge-" +
+                      (material as ReadingMaterialView).grammar_challenge.status
+                    }
+                    aria-labelledby="grammar-challenge-title"
+                  >
+                    <div className="grammar-challenge-heading">
+                      <div>
+                        <p className="step-label">语法找茬 · 随机 1 处</p>
+                        <h2 id="grammar-challenge-title">
+                          {(material as ReadingMaterialView).grammar_challenge.status === "resolved"
+                            ? "已找出并改正，原文已恢复"
+                            : "文章中藏着 1 处语法错误"}
+                        </h2>
+                      </div>
+                      {(material as ReadingMaterialView).grammar_challenge.status === "resolved" ? (
+                        <CheckCircle size={24} weight="fill" aria-hidden="true" />
+                      ) : (
+                        <span className="grammar-challenge-count" aria-label="一处错误">
+                          1
+                        </span>
+                      )}
+                    </div>
+                    {(material as ReadingMaterialView).grammar_challenge.status === "resolved" ? (
+                      <p className="grammar-challenge-success" role="status">
+                        验证通过后，文章中的错误片段已经替换为正确写法；刷新页面也会保留正确原文。
+                      </p>
+                    ) : (
+                      <>
+                        <p>
+                          通读左侧文章，找出错误后，只输入需要替换的正确英文片段。系统不会提前标出位置。
+                        </p>
+                        <form
+                          className="grammar-correction-form"
+                          onSubmit={(event) => {
+                            event.preventDefault();
+                            void submitGrammarCorrection();
+                          }}
+                        >
+                          <label>
+                            <span>正确写法</span>
+                            <input
+                              type="text"
+                              value={grammarCorrection}
+                              onChange={(event) => {
+                                setGrammarCorrection(event.target.value);
+                                setGrammarFeedback(null);
+                              }}
+                              placeholder="例如：may show"
+                              autoComplete="off"
+                              spellCheck={false}
+                              disabled={isGrammarPending}
+                            />
+                          </label>
+                          <button
+                            type="submit"
+                            className="secondary-button"
+                            disabled={isGrammarPending || !grammarCorrection.trim()}
+                          >
+                            {isGrammarPending ? "正在验证…" : "验证修改"}
+                          </button>
+                        </form>
+                        <div className="grammar-hint-row">
+                          {(material as ReadingMaterialView).grammar_challenge.hint_revealed ? (
+                            <div className="grammar-hint" role="status">
+                              <strong>
+                                错误类型：
+                                {(material as ReadingMaterialView).grammar_challenge.error_type}
+                              </strong>
+                              <span>
+                                {(material as ReadingMaterialView).grammar_challenge.hint}
+                              </span>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              className="quiet-button"
+                              onClick={() => void revealGrammarHint()}
+                              disabled={isGrammarPending}
+                            >
+                              查看提示（错误类型）
+                            </button>
+                          )}
+                          {(material as ReadingMaterialView).grammar_challenge.attempt_count > 0 ? (
+                            <small>
+                              已验证{" "}
+                              {(material as ReadingMaterialView).grammar_challenge.attempt_count} 次
+                            </small>
+                          ) : null}
+                        </div>
+                        {grammarFeedback ? (
+                          <p className="grammar-feedback" role="status">
+                            {grammarFeedback}
+                          </p>
+                        ) : null}
+                      </>
+                    )}
                   </section>
                 ) : null}
 
@@ -1649,17 +1931,17 @@ function ActiveTaskWorkspace({
         >
           {(
             [
-              ["evidence", "这是证据"],
-              ["claim", "这是观点"],
-              ["logic", "逻辑关系"],
-              ["uncertain", "这句看不懂"],
+              ["vocabulary", "生词 / 短语"],
+              ["grammar", "语法重点"],
+              ["reusable_expression", "好表达"],
+              ["uncertain", "仍没看懂"],
             ] as const
           ).map(([kind, label]) =>
             allowedAnnotations.includes(kind) ? (
               <button
                 key={kind}
                 type="button"
-                className={kind === "uncertain" ? "uncertain-action" : ""}
+                className={`annotation-kind-${kind}${kind === "uncertain" ? " uncertain-action" : ""}`}
                 onClick={() => chooseAnnotationKind(kind)}
               >
                 {label}
@@ -1872,9 +2154,11 @@ function InlineAssistancePanel({
   const paragraph = material.paragraphs.find(
     (item) => item.paragraph_id === selection.paragraphId,
   )?.text;
+  const scale = classifySelection(selection.textQuote, paragraph ?? "");
+  const scope = selectionScope(scale);
   const labels = {
-    meaning: "语境义",
-    structure: "拆结构",
+    meaning: scope === "word_or_phrase" ? "查语境义" : "关键词义",
+    structure: scope === "word_or_phrase" ? "看词组结构" : "翻译 + 拆结构",
     logic: "看逻辑",
     evidence: "证据作用",
   } as const;
@@ -1884,7 +2168,9 @@ function InlineAssistancePanel({
       <div className="inline-assistance-heading">
         <div>
           <p className="step-label">Inline Assistance · 绑定当前选区</p>
-          <h4 id="inline-assistance-title">你想从哪个角度拆这句话？</h4>
+          <h4 id="inline-assistance-title">
+            {scope === "word_or_phrase" ? "先把这个词或短语放回语境" : "先理解整句，再看结构层级"}
+          </h4>
         </div>
         {focus ? (
           <button type="button" onClick={() => onFocus(null)}>

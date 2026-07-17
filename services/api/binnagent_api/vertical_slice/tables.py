@@ -193,6 +193,20 @@ task_annotations = sa.Table(
     sa.Column("user_explanation", sa.Text(), nullable=False),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
 )
+task_grammar_challenges = sa.Table(
+    "task_grammar_challenges",
+    metadata,
+    sa.Column("task_id", sa.String(128), primary_key=True),
+    sa.Column("content_version_id", sa.String(128), nullable=False),
+    sa.Column("challenge_id", sa.String(128), nullable=False),
+    sa.Column("hint_revealed", sa.Boolean(), nullable=False),
+    sa.Column("attempt_count", sa.Integer(), nullable=False),
+    sa.Column("resolved", sa.Boolean(), nullable=False),
+    sa.Column("last_submission_hash", sa.String(64), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("resolved_at", sa.DateTime(timezone=True), nullable=True),
+)
 material_assignment_invalidations = sa.Table(
     "material_assignment_invalidations",
     metadata,

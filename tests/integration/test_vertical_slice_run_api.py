@@ -9,8 +9,10 @@ import sqlalchemy as sa
 from binnagent_api.database import dispose_engine, get_engine
 from binnagent_api.main import create_app
 from binnagent_api.vertical_slice import tables
+from binnagent_api.vertical_slice.content_catalog import LocalContentCatalog
 
 pytestmark = pytest.mark.integration
+content_catalog = LocalContentCatalog()
 
 
 @pytest.mark.asyncio
@@ -21,6 +23,107 @@ async def test_resume_workspace_treats_an_expired_browser_pointer_as_absent() ->
 
     assert response.status_code == 200, response.text
     assert response.json() == {"available": False, "workspace": None}
+
+
+@pytest.mark.asyncio
+async def test_reading_grammar_challenge_hides_answer_and_restores_original_after_success() -> None:
+    transport = httpx2.ASGITransport(app=create_app())
+    async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
+        created = await client.post(
+            "/learner/v1/runs",
+            headers={"Idempotency-Key": "grammar-run-create-0001"},
+            json={
+                "learner_profile": {
+                    "exam_track": "english_1",
+                    "target_score": 70,
+                    "weekly_minutes": 420,
+                    "self_reported_level": "developing",
+                    "prior_exam_seen": False,
+                    "session_minutes": 45,
+                    "feedback_density": "minimal",
+                    "timed": False,
+                    "evidence_count": 0,
+                    "confidence_band": "low",
+                }
+            },
+        )
+        assert created.status_code == 201, created.text
+        run = created.json()
+        run_id = run["workflow_run_id"]
+        task_id = run["current_task_id"]
+        workspace = await client.get(f"/learner/v1/runs/{run_id}/workspace")
+        assert workspace.status_code == 200, workspace.text
+        payload = workspace.json()
+        material = payload["material"]
+        challenge = content_catalog.grammar_challenge_for(
+            task_id,
+            material["content_version_id"],
+        )
+        item = content_catalog.learner_item(material["content_version_id"])
+        correct_paragraphs = {
+            paragraph["paragraph_id"]: paragraph["text"] for paragraph in item["paragraphs"]
+        }
+        displayed_paragraphs = {
+            paragraph["paragraph_id"]: paragraph["text"] for paragraph in material["paragraphs"]
+        }
+
+        assert material["grammar_challenge"] == {
+            "challenge_id": challenge.challenge_id,
+            "status": "pending",
+            "attempt_count": 0,
+            "hint_revealed": False,
+            "error_type": None,
+            "hint": None,
+        }
+        assert (
+            displayed_paragraphs[challenge.paragraph_id]
+            != correct_paragraphs[challenge.paragraph_id]
+        )
+        assert challenge.incorrect_text in displayed_paragraphs[challenge.paragraph_id]
+        assert "correct_text" not in workspace.text
+        assert "incorrect_text" not in workspace.text
+
+        premature = await client.post(
+            f"/learner/v1/tasks/{task_id}/complete",
+            headers={"Idempotency-Key": "grammar-premature-complete-0001"},
+            json={"expected_version": payload["task"]["version"]},
+        )
+        assert premature.status_code == 422
+        assert premature.json()["reason"] == "grammar_challenge_not_resolved"
+
+        hint = await client.post(f"/learner/v1/tasks/{task_id}/grammar-challenge/hint")
+        assert hint.status_code == 200, hint.text
+        assert hint.json()["grammar_challenge"]["error_type"] == challenge.error_type
+        assert challenge.correct_text not in hint.text
+
+        wrong = await client.post(
+            f"/learner/v1/tasks/{task_id}/grammar-challenge/verify",
+            json={"correction": "definitely wrong"},
+        )
+        assert wrong.status_code == 200, wrong.text
+        assert wrong.json()["verification_correct"] is False
+        assert wrong.json()["paragraphs"] == material["paragraphs"]
+
+        corrected = await client.post(
+            f"/learner/v1/tasks/{task_id}/grammar-challenge/verify",
+            json={"correction": challenge.correct_text},
+        )
+        assert corrected.status_code == 200, corrected.text
+        assert corrected.json()["verification_correct"] is True
+        assert corrected.json()["grammar_challenge"]["status"] == "resolved"
+        assert {
+            paragraph["paragraph_id"]: paragraph["text"]
+            for paragraph in corrected.json()["paragraphs"]
+        } == correct_paragraphs
+
+        resumed = await client.get(f"/learner/v1/runs/{run_id}/resume-workspace")
+        assert resumed.status_code == 200, resumed.text
+        resumed_material = resumed.json()["workspace"]["material"]
+        assert resumed_material["grammar_challenge"]["status"] == "resolved"
+        assert {
+            paragraph["paragraph_id"]: paragraph["text"]
+            for paragraph in resumed_material["paragraphs"]
+        } == correct_paragraphs
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -48,6 +151,7 @@ async def _clean() -> None:
         tables.ai_interventions,
         tables.attempt_versions,
         tables.material_assignment_invalidations,
+        tables.task_grammar_challenges,
         tables.task_annotations,
         tables.task_material_assignments,
         tables.learning_tasks,
@@ -89,6 +193,17 @@ async def _complete_task(
     task_version: int,
     key: str,
 ) -> Any:
+    task = (await client.get(f"/learner/v1/tasks/{task_id}")).json()
+    if task["task_type"] in {"calibration_reading", "matched_reading"}:
+        challenge = content_catalog.grammar_challenge_for(
+            task_id,
+            task["current_content_version_id"],
+        )
+        verified = await client.post(
+            f"/learner/v1/tasks/{task_id}/grammar-challenge/verify",
+            json={"correction": challenge.correct_text},
+        )
+        assert verified.status_code == 200, verified.text
     response = await client.post(
         f"/learner/v1/tasks/{task_id}/complete",
         headers={"Idempotency-Key": key},

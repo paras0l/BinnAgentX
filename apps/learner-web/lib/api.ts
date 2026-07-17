@@ -6,6 +6,7 @@ import {
 import type {
   AnnotationAnalysisView,
   AnnotationKind,
+  GrammarChallengeUpdateView,
   LearnerProfileInput,
   LearnerResumeWorkspaceView,
   LearnerRunView,
@@ -91,6 +92,19 @@ export function getWorkspace(workflowRunId: string): Promise<LearnerWorkspaceVie
 
 export function getResumeWorkspace(workflowRunId: string): Promise<LearnerResumeWorkspaceView> {
   return request(`/v1/runs/${workflowRunId}/resume-workspace`);
+}
+
+export function revealGrammarChallengeHint(taskId: string): Promise<GrammarChallengeUpdateView> {
+  return command(`/v1/tasks/${taskId}/grammar-challenge/hint`, "grammar_challenge_hint", {});
+}
+
+export function verifyGrammarChallenge(
+  taskId: string,
+  correction: string,
+): Promise<GrammarChallengeUpdateView> {
+  return command(`/v1/tasks/${taskId}/grammar-challenge/verify`, "grammar_challenge_verify", {
+    correction,
+  });
 }
 
 export async function sha256Text(value: string): Promise<string> {

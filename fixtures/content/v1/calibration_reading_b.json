@@ -53,7 +53,33 @@
       "text": "The team therefore returned to eight essential checks and moved optional advice into a separate guide. Presentations improved, not because every choice became uniform, but because the short list protected the few steps that could ruin an otherwise thoughtful talk. The lesson is not that detailed guidance is useless. Detail is valuable when people need to learn a method or diagnose a failure. Yet at the moment of performance, guidance should preserve attention rather than consume it. A checklist works best when it supports the main task without pretending to be the task itself. This distinction also made revision easier. After a weak presentation, students could ask whether they had missed an essential check or needed to consult the longer guide. The two resources served different moments instead of competing for attention at the same time. Each had a clear purpose."
     }
   ],
-  "allowed_annotations": ["claim", "evidence", "logic", "uncertain", "reusable_expression"],
+  "allowed_annotations": [
+    "vocabulary",
+    "grammar",
+    "claim",
+    "evidence",
+    "logic",
+    "uncertain",
+    "reusable_expression"
+  ],
+  "grammar_challenges": [
+    {
+      "challenge_id": "calibration_b_grammar_01",
+      "paragraph_id": "calibration_b_p3",
+      "correct_text": "valuable",
+      "incorrect_text": "valuably",
+      "error_type": "词性选择",
+      "hint": "系动词 is 后需要能作表语的词性。"
+    },
+    {
+      "challenge_id": "calibration_b_grammar_02",
+      "paragraph_id": "calibration_b_p3",
+      "correct_text": "preserve",
+      "incorrect_text": "reserved",
+      "error_type": "情态动词后的谓语形式",
+      "hint": "should 后的谓语动词应使用什么形式？"
+    }
+  ],
   "main_question": {
     "question_id": "calibration_b_q1",
     "prompt": "Why did the team shorten its presentation checklist?",

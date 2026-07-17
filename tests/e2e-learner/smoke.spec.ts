@@ -67,7 +67,15 @@ const workspace = {
         text: "The result came from sharing the existing space more carefully, not from adding capacity.",
       },
     ],
-    allowed_annotations: ["claim", "evidence", "logic", "uncertain", "reusable_expression"],
+    allowed_annotations: [
+      "vocabulary",
+      "grammar",
+      "claim",
+      "evidence",
+      "logic",
+      "uncertain",
+      "reusable_expression",
+    ],
     question: {
       question_id: "calibration_a_q1",
       prompt: "What was the main effect of the library's new booking rule?",
@@ -76,6 +84,14 @@ const workspace = {
         { option_id: "B", text: "It helped more students use existing rooms." },
         { option_id: "C", text: "It removed all booking limits." },
       ],
+    },
+    grammar_challenge: {
+      challenge_id: "calibration_a_grammar_02",
+      status: "resolved",
+      attempt_count: 1,
+      hint_revealed: false,
+      error_type: null,
+      hint: null,
     },
   },
 };
@@ -251,6 +267,109 @@ test("a completed stage stops at a calm checkpoint before advancing", async ({ p
   expect(results.violations).toEqual([]);
 });
 
+test("grammar challenge reveals only the error type and restores the original after success", async ({
+  page,
+}) => {
+  const incorrectParagraphs = workspace.material.paragraphs.map((paragraph) =>
+    paragraph.paragraph_id === "calibration_a_p2"
+      ? { ...paragraph, text: paragraph.text.replace("found", "finds") }
+      : paragraph,
+  );
+  const pendingWorkspace = {
+    ...workspace,
+    material: {
+      ...workspace.material,
+      paragraphs: incorrectParagraphs,
+      grammar_challenge: {
+        challenge_id: "calibration_a_grammar_02",
+        status: "pending",
+        attempt_count: 0,
+        hint_revealed: false,
+        error_type: null,
+        hint: null,
+      },
+    },
+  };
+  await page.route("**/api/learner/v1/runs", async (route) => {
+    await route.fulfill({
+      status: 201,
+      contentType: "application/json",
+      body: JSON.stringify(run),
+    });
+  });
+  await page.route("**/api/learner/v1/runs/workflow_run_browser_0001/workspace", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(pendingWorkspace),
+    });
+  });
+  await page.route(
+    "**/api/learner/v1/tasks/task_browser_0001/grammar-challenge/hint",
+    async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          paragraphs: incorrectParagraphs,
+          grammar_challenge: {
+            ...pendingWorkspace.material.grammar_challenge,
+            hint_revealed: true,
+            error_type: "时态与谓语形式",
+            hint: "留意上下文的叙事时态。",
+          },
+          verification_correct: null,
+          feedback: null,
+        }),
+      });
+    },
+  );
+  await page.route(
+    "**/api/learner/v1/tasks/task_browser_0001/grammar-challenge/verify",
+    async (route) => {
+      const body = route.request().postDataJSON() as { correction: string };
+      const correct = body.correction === "found";
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          paragraphs: correct ? workspace.material.paragraphs : incorrectParagraphs,
+          grammar_challenge: {
+            challenge_id: "calibration_a_grammar_02",
+            status: correct ? "resolved" : "pending",
+            attempt_count: 1,
+            hint_revealed: true,
+            error_type: "时态与谓语形式",
+            hint: "留意上下文的叙事时态。",
+          },
+          verification_correct: correct,
+          feedback: correct
+            ? "修改正确，文章已恢复为正确原文。"
+            : "还不正确，文章暂未修改。请结合句子结构再检查一次。",
+        }),
+      });
+    },
+  );
+
+  await page.goto("/");
+  await page.getByRole("button", { name: "开始独立校准" }).click();
+
+  await expect(page.getByRole("heading", { name: "文章中藏着 1 处语法错误" })).toBeVisible();
+  await expect(page.getByText(/more students finds a place/)).toBeVisible();
+  await page.getByRole("button", { name: "查看提示（错误类型）" }).click();
+  await expect(page.getByText(/错误类型：.*时态与谓语形式/)).toBeVisible();
+  await page.getByLabel("正确写法").fill("find");
+  await page.getByRole("button", { name: "验证修改" }).click();
+  await expect(page.getByText(/还不正确，文章暂未修改/)).toBeVisible();
+  await expect(page.getByText(/more students finds a place/)).toBeVisible();
+  await page.getByLabel("正确写法").fill("found");
+  await page.getByRole("button", { name: "验证修改" }).click();
+
+  await expect(page.getByRole("heading", { name: "已找出并改正，原文已恢复" })).toBeVisible();
+  await expect(page.getByText(/more students found a place/)).toBeVisible();
+  await expect(page.getByText(/more students finds a place/)).toHaveCount(0);
+});
+
 test("first experience opens the reading and output workspace", async ({ page }) => {
   let persistedTask: Record<string, unknown> = workspace.task;
   await page.route("**/api/learner/v1/runs", async (route) => {
@@ -281,7 +400,7 @@ test("first experience opens the reading and output workspace", async ({ page })
     },
   );
   await page.route("**/api/learner/v1/tasks/task_browser_0001/annotations", async (route) => {
-    const quote = workspace.material.paragraphs[0].text.slice(2, 24);
+    const quote = workspace.material.paragraphs[0].text;
     const responseTask = {
       ...workspace.task,
       version: 2,
@@ -289,14 +408,14 @@ test("first experience opens the reading and output workspace", async ({ page })
       annotations: [
         {
           annotation_id: "annotation_browser_0001",
-          kind: "uncertain",
+          kind: "grammar",
           span: {
             paragraph_id: "calibration_a_p1",
-            start: 2,
-            end: 24,
+            start: 0,
+            end: quote.length,
             text_quote: quote,
           },
-          user_explanation: "我还没理清这个长句的主干和修饰关系。",
+          user_explanation: "请优先给出当前选区的完整中文翻译，并展示句子主干、从句和修饰关系。",
           created_at: "2026-07-16T12:00:00Z",
         },
       ],
@@ -317,12 +436,20 @@ test("first experience opens the reading and output workspace", async ({ page })
         body: JSON.stringify({
           analysis_id: "annotation_analysis_browser_0001",
           focus: "syntax",
+          selection_scope: "sentence_or_paragraph",
+          translation: "一家社区图书馆改变了最繁忙时段自习室的共享方式。",
+          vocabulary_note: null,
+          grammar_structure: [
+            "主干：A neighborhood library changed how...",
+            "宾语从句：how its study rooms were shared",
+            "时间状语：during the busiest hour",
+          ],
           diagnosis: "这个卡点更像是主干和修饰层级混在了一起。",
           breakdown: ["先找谓语和主语。", "暂时拿掉修饰语。", "再逐层放回原句。"],
           next_check: "去掉修饰后，你能否说出谁做了什么？",
           source: "model",
           reason_code: "annotation_analysis_model_validated",
-          boundary_note: "只分析这处卡点，不直接给题目答案。",
+          boundary_note: "只解释当前选区，不回答题目；整句翻译不会扩展为全文代读。",
         }),
       });
     },
@@ -506,8 +633,8 @@ test("first experience opens the reading and output workspace", async ({ page })
     const textNode = walker.nextNode();
     if (!textNode) throw new Error("Expected paragraph text node");
     const range = document.createRange();
-    range.setStart(textNode, 2);
-    range.setEnd(textNode, 24);
+    range.setStart(textNode, 0);
+    range.setEnd(textNode, textNode.textContent?.length ?? 0);
     const selection = window.getSelection();
     selection?.removeAllRanges();
     selection?.addRange(range);
@@ -515,22 +642,21 @@ test("first experience opens the reading and output workspace", async ({ page })
   await paragraph.dispatchEvent("mouseup");
 
   await expect(page.getByRole("toolbar", { name: "选区语义工具" })).toBeVisible();
-  await page.getByRole("button", { name: "拆结构" }).click();
+  await page.getByRole("button", { name: "翻译 + 拆结构" }).click();
   await expect(page.getByText(/先找谓语|为边界拆成两层/)).toBeVisible();
-  await page.getByRole("button", { name: "这句看不懂" }).click();
-  await expect(page.getByRole("group", { name: "看不懂的原因" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "长句", exact: true })).toBeVisible();
-  await expect(page.getByRole("button", { name: "AI 分析这处卡点" })).toBeDisabled();
-  await page.getByRole("button", { name: "长句", exact: true }).click();
-  await page.getByRole("button", { name: "AI 分析这处卡点" }).click();
+  await page.getByRole("button", { name: "语法重点", exact: true }).first().click();
+  await page.getByRole("button", { name: "整句翻译 + 语法结构" }).click();
+  await expect(page.getByText("一家社区图书馆改变了最繁忙时段自习室的共享方式。")).toBeVisible();
+  await expect(page.getByText("宾语从句：how its study rooms were shared")).toBeVisible();
   await expect(page.getByText("这个卡点更像是主干和修饰层级混在了一起。")).toBeVisible();
   await expect(page.getByText("下一步自查", { exact: true })).toBeVisible();
   await expect(page.getByText("AI 模型分析")).toBeVisible();
   await page.getByRole("button", { name: "保存标注与分析" }).click();
 
   await expect(page.getByText("1 条 · 原文中的痕迹也已保留")).toBeVisible();
-  await expect(page.getByText("我还没理清这个长句的主干和修饰关系。")).toBeVisible();
-  await expect(page.getByRole("button", { name: /看不懂.*标记/ })).toBeVisible();
+  await expect(page.getByText(/请优先给出当前选区的完整中文翻译/)).toBeVisible();
+  await expect(page.getByRole("button", { name: /语法重点.*标记/ })).toBeVisible();
+  await page.getByRole("button", { name: "返回本步任务" }).click();
 
   await page.getByRole("radio", { name: /B It helped/ }).check();
   await page.getByLabel(/^我的解释/).fill("The change helped more students use the rooms.");

@@ -1,10 +1,11 @@
 # ruff: noqa: RUF001
 
 import json
+import re
 from datetime import UTC, datetime
 from decimal import Decimal
 from hashlib import sha256
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from uuid import uuid4
 
 import sqlalchemy as sa
@@ -32,6 +33,7 @@ from binnagent_domain.vertical_slice.commands import (
     SaveAttempt,
 )
 from binnagent_domain.vertical_slice.errors import DomainError
+from binnagent_domain.vertical_slice.grammar_challenge import GrammarChallenge
 from binnagent_domain.vertical_slice.models import (
     ActorType,
     InterventionResult,
@@ -47,6 +49,14 @@ from binnagent_api.model_adapters import annotation_analysis_adapter, priority_f
 from binnagent_api.settings import get_settings
 from binnagent_api.vertical_slice import tables
 from binnagent_api.vertical_slice.content_catalog import LocalContentCatalog
+from binnagent_api.vertical_slice.grammar_challenges import (
+    GrammarChallengeState,
+    grammar_challenge_view,
+    load_grammar_challenge_state,
+    project_reading_paragraphs,
+    reveal_grammar_challenge_hint,
+    verify_grammar_correction,
+)
 from binnagent_api.vertical_slice.repository import VerticalSliceRepository
 from binnagent_api.vertical_slice.schemas import (
     AnnotationAnalysisRequest,
@@ -57,9 +67,12 @@ from binnagent_api.vertical_slice.schemas import (
     AttemptRequest,
     AttemptView,
     ControlReplayView,
+    GrammarChallengeUpdateView,
+    GrammarCorrectionRequest,
     HintRequest,
     InterventionRequest,
     InterventionView,
+    LearnerParagraphView,
     LearnerTaskView,
     RevisionRequest,
     RevisionView,
@@ -81,6 +94,54 @@ async def get_task(task_id: str) -> LearnerTaskView:
     async with get_engine().connect() as connection:
         task = await repository.load(connection, task_id)
     return learner_task_view(task)
+
+
+@learner_router.post(
+    "/tasks/{task_id}/grammar-challenge/hint",
+    response_model=GrammarChallengeUpdateView,
+)
+async def reveal_grammar_hint(task_id: str) -> GrammarChallengeUpdateView:
+    async with get_engine().begin() as connection:
+        task = await repository.load(connection, task_id)
+        challenge = _reading_grammar_challenge(task)
+        state = await reveal_grammar_challenge_hint(
+            connection,
+            task.task_id,
+            task.current_material.content_version_id,
+            challenge.challenge_id,
+        )
+        return _grammar_challenge_update(task, challenge, state)
+
+
+@learner_router.post(
+    "/tasks/{task_id}/grammar-challenge/verify",
+    response_model=GrammarChallengeUpdateView,
+)
+async def verify_grammar_challenge(
+    task_id: str,
+    body: GrammarCorrectionRequest,
+) -> GrammarChallengeUpdateView:
+    async with get_engine().begin() as connection:
+        task = await repository.load(connection, task_id)
+        challenge = _reading_grammar_challenge(task)
+        state, correct = await verify_grammar_correction(
+            connection,
+            task.task_id,
+            task.current_material.content_version_id,
+            challenge,
+            body.correction,
+        )
+        return _grammar_challenge_update(
+            task,
+            challenge,
+            state,
+            verification_correct=correct,
+            feedback=(
+                "修改正确，文章已恢复为正确原文。"
+                if correct
+                else "还不正确，文章暂未修改。请结合句子结构再检查一次。"
+            ),
+        )
 
 
 @learner_router.post("/tasks/{task_id}/annotations", response_model=LearnerTaskView)
@@ -141,9 +202,16 @@ async def analyze_annotation(
         content_version_id = task.current_material.content_version_id
         content_catalog.validate_span(content_version_id, span)
         paragraph_context = content_catalog.paragraph_text(content_version_id, span.paragraph_id)
-        fallback_focus, fallback_diagnosis, fallback_breakdown, fallback_next_check = (
-            _annotation_analysis_fallback(body.learner_question, span.text_quote)
-        )
+        scope = _selection_scope(span.text_quote, paragraph_context)
+        (
+            fallback_focus,
+            fallback_diagnosis,
+            fallback_breakdown,
+            fallback_next_check,
+            fallback_translation,
+            fallback_vocabulary_note,
+            fallback_grammar_structure,
+        ) = _annotation_analysis_fallback(body.learner_question, span.text_quote, scope)
         settings = get_settings()
         budget_row = (
             (
@@ -169,11 +237,15 @@ async def analyze_annotation(
                 content_version_id=content_version_id,
                 selected_text=span.text_quote,
                 paragraph_context=paragraph_context,
+                selection_scope=scope,
                 learner_question=body.learner_question,
                 fallback_focus=fallback_focus,
                 fallback_diagnosis=fallback_diagnosis,
                 fallback_breakdown=fallback_breakdown,
                 fallback_next_check=fallback_next_check,
+                fallback_translation=fallback_translation,
+                fallback_vocabulary_note=fallback_vocabulary_note,
+                fallback_grammar_structure=fallback_grammar_structure,
             ),
             ModelBudget(
                 call_count=int(budget_row["model_call_count"]),
@@ -221,12 +293,16 @@ async def analyze_annotation(
     return AnnotationAnalysisView(
         analysis_id=_id("annotation_analysis"),
         focus=result.focus,
+        selection_scope=result.selection_scope,
+        translation=result.translation,
+        vocabulary_note=result.vocabulary_note,
+        grammar_structure=list(result.grammar_structure),
         diagnosis=result.diagnosis,
         breakdown=list(result.breakdown),
         next_check=result.next_check,
         source=("model" if result.outcome is GatewayOutcome.VALIDATED_MODEL else "local_fallback"),
         reason_code=result.reason_code,
-        boundary_note="只分析这处卡点，不直接给题目答案。",
+        boundary_note="只解释当前选区，不回答题目；整句翻译不会扩展为全文代读。",
     )
 
 
@@ -559,6 +635,20 @@ async def complete_task(
         if replay is not None:
             return learner_task_view(replay, True)
         previous = await repository.load(connection, task_id)
+        if previous.task_type in {TaskType.CALIBRATION_READING, TaskType.MATCHED_READING}:
+            challenge = _reading_grammar_challenge(previous)
+            challenge_state = await load_grammar_challenge_state(
+                connection,
+                previous.task_id,
+                previous.current_material.content_version_id,
+                challenge.challenge_id,
+            )
+            if not challenge_state.resolved:
+                raise DomainError(
+                    PublicErrorCode.SAVE_NOT_CONFIRMED,
+                    "grammar_challenge_not_resolved",
+                    previous.version,
+                )
         transition = previous.complete(CompleteTask(body.expected_version, datetime.now(UTC)))
         task, replayed = await _save(
             connection, previous, transition, idempotency_key, body, "complete_task"
@@ -631,6 +721,49 @@ async def get_control_replay(
     async with get_engine().connect() as connection:
         task = await repository.load(connection, task_id)
         return await _control_view(connection, task)
+
+
+def _reading_grammar_challenge(task: LearningTask) -> GrammarChallenge:
+    if task.task_type not in {TaskType.CALIBRATION_READING, TaskType.MATCHED_READING}:
+        raise DomainError(
+            PublicErrorCode.SAVE_NOT_CONFIRMED,
+            "grammar_challenge_requires_reading_task",
+            task.version,
+        )
+    return content_catalog.grammar_challenge_for(
+        task.task_id,
+        task.current_material.content_version_id,
+    )
+
+
+def _grammar_challenge_update(
+    task: LearningTask,
+    challenge: GrammarChallenge,
+    state: GrammarChallengeState,
+    *,
+    verification_correct: bool | None = None,
+    feedback: str | None = None,
+) -> GrammarChallengeUpdateView:
+    item = content_catalog.learner_item(task.current_material.content_version_id)
+    paragraphs = item.get("paragraphs")
+    if not isinstance(paragraphs, list):
+        raise DomainError(
+            PublicErrorCode.CONTENT_NOT_ELIGIBLE,
+            "grammar_challenge_paragraphs_missing",
+        )
+    return GrammarChallengeUpdateView(
+        paragraphs=[
+            LearnerParagraphView(paragraph_id=paragraph_id, text=text)
+            for paragraph_id, text in project_reading_paragraphs(
+                paragraphs,
+                challenge,
+                state,
+            )
+        ],
+        grammar_challenge=grammar_challenge_view(challenge, state),
+        verification_correct=verification_correct,
+        feedback=feedback,
+    )
 
 
 async def _save(
@@ -826,30 +959,42 @@ def _request_hash(body: Any) -> str:
 def _annotation_analysis_fallback(
     learner_question: str,
     selected_text: str,
-) -> tuple[str, str, tuple[str, ...], str]:
+    selection_scope: str,
+) -> tuple[str, str, tuple[str, ...], str, str | None, str | None, tuple[str, ...]]:
     normalized = learner_question.lower()
     quote = " ".join(selected_text.split())[:80]
-    if any(term in normalized for term in ("词", "搭配", "意思", "word", "meaning")):
+    if selection_scope == "word_or_phrase" or any(
+        term in normalized for term in ("词", "搭配", "意思", "word", "meaning")
+    ):
         return (
             "vocabulary",
-            "你的描述更像是词义或搭配没有落到当前语境，而不是整句都无法理解。",
+            "这是词或短语级选区，先确认当前语境义、词性和搭配，再放回原句验证。",
             (
                 f"先只看选区“{quote}”，判断它在句中承担什么成分。",
                 "列出你已知的常见词义，再用前后搭配排除不合语境的一项。",
                 "把暂定词义放回原句，检查句意和语气是否同时通顺。",
             ),
             "你现在能否用一个更具体的中文短语替换它，并让前后句仍然连贯？",
+            None,
+            "本地模式不会猜测具体词义；请先依据词性、固定搭配和上下文缩小语境义。",
+            (),
         )
-    if any(term in normalized for term in ("长句", "主干", "结构", "修饰", "从句", "grammar")):
+    if selection_scope == "sentence_or_paragraph" or any(
+        term in normalized for term in ("长句", "主干", "结构", "修饰", "从句", "grammar")
+    ):
+        structure = (
+            "主干：先找有限谓语，再确认与它配对的主语和宾语或补语。",
+            "从句：用连接词确定名词性、定语或状语从句的边界。",
+            "修饰：暂时拿掉介词短语、非谓语和插入成分，再逐层放回。",
+        )
         return (
             "syntax",
-            "你的卡点更可能来自句子主干与修饰层级混在一起，需要先拆结构再理解细节。",
-            (
-                f"在“{quote}”中先圈出谓语，再寻找与它配对的主语。",
-                "暂时拿掉介词短语、插入语和从句，只保留可以独立成立的主干。",
-                "按修饰对象把拿掉的部分逐层放回，观察哪一层改变了句意。",
-            ),
+            "这是句子或段落级选区，应先看完整译意，再用主干、从句和修饰层级解释译意怎样形成。",
+            structure,
             "去掉所有修饰后，你能否说出这句话最短的“谁做了什么”？",
+            None,
+            None,
+            structure,
         )
     if any(term in normalized for term in ("指代", "代词", "refer", "this", "they", " it ")):
         return (
@@ -861,6 +1006,9 @@ def _annotation_analysis_fallback(
                 "把候选对象逐一代回，排除让逻辑重复或含义断裂的解释。",
             ),
             "哪个候选对象代回后，既符合语法，又能解释作者为什么接着说下一句？",
+            None,
+            None,
+            (),
         )
     if any(term in normalized for term in ("逻辑", "转折", "因果", "关系", "however", "because")):
         return (
@@ -872,6 +1020,9 @@ def _annotation_analysis_fallback(
                 "比较前后两个命题：作者是在支持、限制，还是反驳前一个判断。",
             ),
             "如果删掉连接词，前后两部分最合理的关系仍然是什么？",
+            None,
+            None,
+            (),
         )
     if any(term in normalized for term in ("背景", "语境", "context")):
         return (
@@ -883,6 +1034,9 @@ def _annotation_analysis_fallback(
                 "只在段内线索仍不足时，再列出需要补查的一个背景问题。",
             ),
             "不用外部知识时，你能从本段确定的最小结论是什么？",
+            None,
+            None,
+            (),
         )
     return (
         "mixed",
@@ -893,7 +1047,24 @@ def _annotation_analysis_fallback(
             "把这个最小卡点放回前后句，检查它改变的是字面意思还是作者论证。",
         ),
         "如果只能再问一个问题，最能推进理解的是词义、句子主干，还是前后逻辑？",
+        None,
+        None,
+        (),
     )
+
+
+def _selection_scope(
+    selected_text: str,
+    paragraph_context: str,
+) -> Literal["word_or_phrase", "sentence_or_paragraph"]:
+    normalized = selected_text.strip()
+    words = re.findall(r"[A-Za-z]+(?:['’-][A-Za-z]+)*", normalized)
+    is_short_phrase = len(words) <= 5 and not re.search(r"[.!?;:]", normalized)
+    if len(words) <= 1 or is_short_phrase:
+        return "word_or_phrase"
+    if normalized == paragraph_context.strip() or len(words) >= 28:
+        return "sentence_or_paragraph"
+    return "sentence_or_paragraph"
 
 
 def _id(prefix: str) -> str:

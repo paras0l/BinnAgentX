@@ -36,7 +36,23 @@
       "type": "array",
       "minItems": 1,
       "uniqueItems": true,
-      "items": { "enum": ["claim", "evidence", "logic", "uncertain", "reusable_expression"] }
+      "items": {
+        "enum": [
+          "vocabulary",
+          "grammar",
+          "claim",
+          "evidence",
+          "logic",
+          "uncertain",
+          "reusable_expression"
+        ]
+      }
+    },
+    "grammar_challenges": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 8,
+      "items": { "$ref": "#/$defs/grammar_challenge" }
     },
     "main_question": { "$ref": "#/$defs/main_question" },
     "parallel_reconstruction": { "$ref": "#/$defs/parallel_reconstruction" },
@@ -102,7 +118,7 @@
         "required": ["content_type"]
       },
       "then": {
-        "required": ["paragraphs", "allowed_annotations", "main_question", "parallel_reconstruction", "transferable_expressions"]
+        "required": ["paragraphs", "allowed_annotations", "grammar_challenges", "main_question", "parallel_reconstruction", "transferable_expressions"]
       }
     },
     {
@@ -241,6 +257,19 @@
       "properties": {
         "paragraph_id": { "$ref": "#/$defs/id" },
         "text": { "type": "string", "minLength": 20, "maxLength": 4000 }
+      },
+      "additionalProperties": false
+    },
+    "grammar_challenge": {
+      "type": "object",
+      "required": ["challenge_id", "paragraph_id", "correct_text", "incorrect_text", "error_type", "hint"],
+      "properties": {
+        "challenge_id": { "$ref": "#/$defs/id" },
+        "paragraph_id": { "$ref": "#/$defs/id" },
+        "correct_text": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "incorrect_text": { "type": "string", "minLength": 2, "maxLength": 120 },
+        "error_type": { "type": "string", "minLength": 2, "maxLength": 80 },
+        "hint": { "type": "string", "minLength": 4, "maxLength": 200 }
       },
       "additionalProperties": false
     },
