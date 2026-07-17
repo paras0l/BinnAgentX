@@ -30,6 +30,7 @@
   "devDependencies": {
     "@axe-core/playwright": "4.12.1",
     "@playwright/test": "1.61.1",
+    "@types/node": "24.10.13",
     "prettier": "3.9.5",
     "typescript": "5.9.3"
   }

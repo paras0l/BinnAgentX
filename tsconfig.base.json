@@ -2,6 +2,7 @@
   "compilerOptions": {
     "allowJs": false,
     "esModuleInterop": true,
+    "types": ["node"],
     "forceConsistentCasingInFileNames": true,
     "isolatedModules": true,
     "module": "ESNext",
