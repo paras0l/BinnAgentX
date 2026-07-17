@@ -1,6 +1,6 @@
 # OpenWiki 使用手册
 
-> 适用项目：BinnAgent 考研英语读写训练  
+> 适用项目：BinnAgentX 考研英语读写训练  
 > 安装日期：2026-07-15  
 > OpenWiki：0.1.2  
 > 当前模式：Code  
@@ -57,7 +57,7 @@ npm install -g openwiki@0.1.2
 所有命令都应先进入项目根目录：
 
 ```bash
-cd "/Users/binge/Documents/BinnAgent-Grad-ReadWrite"
+cd "/Users/binge/Documents/BinnAgentX"
 ```
 
 ### 3.1 打开交互式 Code 模式
@@ -182,7 +182,7 @@ OPENWIKI_PROVIDER=openai-chatgpt openwiki code --init
 完成浏览器授权后，确认仓库路径为：
 
 ```text
-/Users/binge/Documents/BinnAgent-Grad-ReadWrite
+/Users/binge/Documents/BinnAgentX
 ```
 
 不要在终端历史或项目文件中手工填写 OAuth 令牌。
@@ -266,7 +266,7 @@ git rev-parse --show-toplevel
 结果应为：
 
 ```text
-/Users/binge/Documents/BinnAgent-Grad-ReadWrite
+/Users/binge/Documents/BinnAgentX
 ```
 
 ### Wiki 把计划写成已经实现
