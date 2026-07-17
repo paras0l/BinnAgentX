@@ -4,6 +4,16 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+REPO_DIR="${ROOT_DIR}"
+
+if [[ ! -f "${REPO_DIR}/pyproject.toml" || ! -d "${REPO_DIR}/services/api/binnagent_api" ]]; then
+  echo "错误：当前脚本未解析到 BinnAgent 仓库根目录。请确认路径为 scripts/ 所在目录。"
+  exit 1
+fi
+
+export PYTHONPATH="${REPO_DIR}/python:${REPO_DIR}/services/api:${REPO_DIR}/services/worker:${PYTHONPATH:-}"
+
+echo "部署入口目录: ${REPO_DIR}"
 
 RUN_WORKER=true
 RUN_FRONTEND=false
@@ -105,12 +115,12 @@ if [[ "$GENERATE_CONTENT" == "true" ]]; then
 fi
 
 echo "启动 API..."
-nohup uv run binnagent-api > logs/api.log 2>&1 &
+nohup env PYTHONPATH="$PYTHONPATH" uv run python -m binnagent_api.main > logs/api.log 2>&1 &
 PIDS+=("$!")
 
 if [[ "$RUN_WORKER" == "true" ]]; then
   echo "启动 Worker..."
-  nohup uv run binnagent-worker > logs/worker.log 2>&1 &
+  nohup env PYTHONPATH="$PYTHONPATH" uv run python -m binnagent_worker.main > logs/worker.log 2>&1 &
   PIDS+=("$!")
 fi
 
