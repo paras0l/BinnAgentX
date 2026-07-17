@@ -168,6 +168,10 @@ if [[ "$RUN_FRONTEND" == "true" ]]; then
 fi
 
 cleanup() {
+  if [[ "${#PIDS[@]}" -eq 0 ]]; then
+    return
+  fi
+
   echo
   echo "退出部署守护：正在回收子进程..."
   for pid in "${PIDS[@]:-}"; do
@@ -177,7 +181,22 @@ cleanup() {
   done
 }
 
-trap cleanup EXIT INT TERM
+on_exit() {
+  local exit_code=$?
+  if [[ $exit_code -eq 130 ]]; then
+    echo
+    echo "脚本已接收中断信号（SIGINT/SIGTERM），正在停止。"
+  elif [[ $exit_code -ne 0 ]]; then
+    echo
+    echo "脚本异常退出，退出码：$exit_code。建议先查看：
+1) 上下文错误日志（当前窗口输出）
+2) logs/api.log / logs/worker.log"
+  fi
+
+  cleanup
+}
+
+trap on_exit EXIT INT TERM
 
 echo
 echo "启动完成："
