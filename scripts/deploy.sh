@@ -35,7 +35,7 @@ compose() {
   local subcommand=$1
   shift
   if [[ "${DOCKER_COMPOSE_USE_PLUGIN:-true}" == "true" ]]; then
-    docker compose "$subcommand" -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT_NAME" "$@"
+    docker compose -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT_NAME" "$subcommand" "$@"
   else
     docker-compose -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT_NAME" "$subcommand" "$@"
   fi
