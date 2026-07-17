@@ -13,7 +13,14 @@ fi
 
 export PYTHONPATH="${REPO_DIR}/python:${REPO_DIR}/services/api:${REPO_DIR}/services/worker:${PYTHONPATH:-}"
 export COMPOSE_FILE="${REPO_DIR}/compose.yaml"
-export COMPOSE_PROJECT_NAME="binnagent_$(basename "$REPO_DIR" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_' '_' | sed 's/^_\\+//;s/_\\+$//')"
+BASE_COMPOSE_NAME="${REPO_DIR##*/}"
+SANITIZED_COMPOSE_NAME="$(printf '%s' "$BASE_COMPOSE_NAME" \
+  | tr '[:upper:]' '[:lower:]' \
+  | sed 's/[^a-z0-9]/-/g; s/--*/-/g; s/^-//; s/-$//')"
+if [[ -z "$SANITIZED_COMPOSE_NAME" ]]; then
+  SANITIZED_COMPOSE_NAME="binnagent"
+fi
+export COMPOSE_PROJECT_NAME="binnagent_${SANITIZED_COMPOSE_NAME}"
 export DOCKER_BUILDKIT="${DOCKER_BUILDKIT:-0}"
 
 echo "部署入口目录: ${REPO_DIR}"
