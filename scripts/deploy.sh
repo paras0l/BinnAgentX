@@ -12,6 +12,12 @@ if [[ ! -f "${REPO_DIR}/pyproject.toml" || ! -d "${REPO_DIR}/services/api/binnag
 fi
 
 export PYTHONPATH="${REPO_DIR}/python:${REPO_DIR}/services/api:${REPO_DIR}/services/worker:${PYTHONPATH:-}"
+
+if [[ -n "${VIRTUAL_ENV:-}" && "${VIRTUAL_ENV}" != "${REPO_DIR}/.venv" ]]; then
+  echo "检测到当前激活环境与仓库路径不一致，已忽略：${VIRTUAL_ENV}"
+  echo "当前项目环境: ${REPO_DIR}/.venv"
+  unset VIRTUAL_ENV
+fi
 export COMPOSE_FILE="${REPO_DIR}/compose.yaml"
 BASE_COMPOSE_NAME="${REPO_DIR##*/}"
 SANITIZED_COMPOSE_NAME="$(printf '%s' "$BASE_COMPOSE_NAME" \
@@ -131,7 +137,7 @@ if command -v pg_isready >/dev/null 2>&1; then
   done
 fi
 
-uv run alembic -c services/api/alembic.ini upgrade head
+uv run python -m alembic -c services/api/alembic.ini upgrade head
 
 if [[ "$GENERATE_CONTENT" == "true" ]]; then
   if [[ "${#SEED[@]}" -gt 0 ]]; then
