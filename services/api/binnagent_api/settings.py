@@ -128,6 +128,8 @@ class Settings(BaseSettings):
     )
 
     content_manifest: str = "fixtures/content/v1/manifest.json"
+    content_generation_output_directory: str = "fixtures/content/v1/generated"
+    content_generation_manifest: str = "fixtures/content/v1/generated/manifest.json"
     min_content_rights_status: Literal["eligible_dev", "eligible_pilot", "eligible_release"] = (
         "eligible_dev"
     )

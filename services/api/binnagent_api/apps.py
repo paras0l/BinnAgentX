@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 
 from binnagent_api.auth import ControlIdentity, require_control_identity
 from binnagent_api.auth_routes import auth_router
+from binnagent_api.content_generation import content_generation_router
 from binnagent_api.database import get_engine
 from binnagent_api.experience_routes import experience_control_router
 from binnagent_api.learner_auth import resolve_request_identity
@@ -129,6 +130,7 @@ def create_control_app() -> FastAPI:
 
     control.include_router(control_router)
     control.include_router(control_run_router)
+    control.include_router(content_generation_router)
     control.include_router(experience_control_router)
     _register_error_handlers(control)
     return control

@@ -14,6 +14,7 @@
     "db:up": "docker compose up -d postgres",
     "dev:control": "pnpm --filter @binnagent/control-cockpit dev",
     "dev:learner": "pnpm --filter @binnagent/learner-web dev",
+    "deploy": "bash scripts/deploy.sh",
     "dev:reset": "uv run python scripts/reset_development.py",
     "format": "prettier --write . && uv run ruff format",
     "format:check": "prettier --check . && uv run ruff format --check",

@@ -35,6 +35,7 @@ playwright-report/
 test-results/
 artifacts/
 openwiki/
+fixtures/content/v1/generated/
 
 # Logs and temporary files
 *.log
