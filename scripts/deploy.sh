@@ -18,9 +18,9 @@ SANITIZED_COMPOSE_NAME="$(printf '%s' "$BASE_COMPOSE_NAME" \
   | tr '[:upper:]' '[:lower:]' \
   | sed 's/[^a-z0-9]/-/g; s/--*/-/g; s/^-//; s/-$//')"
 if [[ -z "$SANITIZED_COMPOSE_NAME" ]]; then
-  SANITIZED_COMPOSE_NAME="binnagent"
+  SANITIZED_COMPOSE_NAME="binnagentx"
 fi
-export COMPOSE_PROJECT_NAME="binnagent_${SANITIZED_COMPOSE_NAME}"
+export COMPOSE_PROJECT_NAME="${SANITIZED_COMPOSE_NAME}"
 export DOCKER_BUILDKIT="${DOCKER_BUILDKIT:-0}"
 
 echo "部署入口目录: ${REPO_DIR}"
@@ -131,7 +131,10 @@ if command -v pg_isready >/dev/null 2>&1; then
   done
 fi
 
-run_cmd alembic
+if ! uv run python -c "import alembic" >/dev/null 2>&1; then
+  echo "错误：当前 uv 项目环境中未安装 alembic，或虚拟环境未准备好。请先执行：uv sync"
+  exit 1
+fi
 uv run alembic -c services/api/alembic.ini upgrade head
 
 if [[ "$GENERATE_CONTENT" == "true" ]]; then
