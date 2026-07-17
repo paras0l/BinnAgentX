@@ -12,6 +12,9 @@ if [[ ! -f "${REPO_DIR}/pyproject.toml" || ! -d "${REPO_DIR}/services/api/binnag
 fi
 
 export PYTHONPATH="${REPO_DIR}/python:${REPO_DIR}/services/api:${REPO_DIR}/services/worker:${PYTHONPATH:-}"
+export COMPOSE_FILE="${REPO_DIR}/compose.yaml"
+export COMPOSE_PROJECT_NAME="binnagent_$(basename "$REPO_DIR" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_' '_' | sed 's/^_\\+//;s/_\\+$//')"
+export DOCKER_BUILDKIT="${DOCKER_BUILDKIT:-0}"
 
 echo "部署入口目录: ${REPO_DIR}"
 
@@ -92,11 +95,13 @@ else
   echo "启动数据库并等待就绪..."
 fi
 
-docker compose up -d postgres
+echo "使用 Compose 项目: ${COMPOSE_PROJECT_NAME}"
+docker compose -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT_NAME" up -d postgres
 
 if command -v pg_isready >/dev/null 2>&1; then
   for _ in {1..30}; do
-    if docker compose exec -T postgres pg_isready -U "${POSTGRES_USER:-binnagent}" -d "${POSTGRES_DB:-binnagent}" >/dev/null 2>&1; then
+    if docker compose -f "$COMPOSE_FILE" -p "$COMPOSE_PROJECT_NAME" exec -T postgres pg_isready \
+        -U "${POSTGRES_USER:-binnagent}" -d "${POSTGRES_DB:-binnagent}" >/dev/null 2>&1; then
       break
     fi
     sleep 1
