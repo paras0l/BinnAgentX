@@ -11,7 +11,7 @@ const REFERENCE_HEADING_FONT_SIZE = 80;
 const MAX_HEADING_FONT_SIZE = 84;
 const MIN_HEADING_FONT_SIZE = 32;
 const MAX_HEADING_PARTICLES = 6000;
-const MAX_BUBBLES = 150;
+const MAX_BUBBLES = 48;
 
 interface CollectorEffectOptions {
   particleHeadings: boolean;
@@ -50,8 +50,6 @@ interface HeadingScene {
   visible: boolean;
   startedAt: number;
   particleFontSize: number;
-  targetFont: string;
-  underlayLines: Array<{ text: string; x: number; y: number }>;
   hasComplexGlyphs: boolean;
   removePointerListeners: () => void;
 }
@@ -65,6 +63,11 @@ interface BubbleParticle {
   life: number;
   maxLife: number;
   wobble: number;
+  wobbleSpeed: number;
+  tilt: number;
+  willBurst: boolean;
+  burstAge: number;
+  burstAngle: number;
 }
 
 function randomCharacter(complexGlyphs = false): string {
@@ -136,7 +139,8 @@ function prepareHeadingScene(scene: HeadingScene) {
     scene.preparedKey = preparedKey;
   }
 
-  const lines = layoutWithLines(scene.prepared, width, lineHeight).lines;
+  const layoutWidth = style.whiteSpace.includes("nowrap") ? Number.MAX_SAFE_INTEGER : width;
+  const lines = layoutWithLines(scene.prepared, layoutWidth, lineHeight).lines;
   const height = Math.max(scene.naturalHeight, Math.ceil(lines.length * lineHeight + 8));
   const source = document.createElement("canvas");
   source.width = Math.ceil(width);
@@ -151,7 +155,7 @@ function prepareHeadingScene(scene: HeadingScene) {
   if ("letterSpacing" in sourceContext) sourceContext.letterSpacing = `${letterSpacing}px`;
   const totalTextHeight = Math.max(lineHeight, lines.length * lineHeight);
   const firstBaseline = (height - totalTextHeight) / 2 + lineHeight / 2;
-  const underlayLines = lines.map((line, index) => {
+  lines.forEach((line, index) => {
     const x =
       style.textAlign === "center"
         ? (width - line.width) / 2
@@ -160,7 +164,6 @@ function prepareHeadingScene(scene: HeadingScene) {
           : 0;
     const y = firstBaseline + index * lineHeight;
     sourceContext.fillText(line.text, x, y);
-    return { text: line.text, x, y };
   });
 
   const pixels = sourceContext.getImageData(0, 0, source.width, source.height).data;
@@ -201,8 +204,6 @@ function prepareHeadingScene(scene: HeadingScene) {
   scene.devicePixelRatio = Math.min(window.devicePixelRatio || 1, 2);
   scene.startedAt = performance.now();
   scene.particleFontSize = window.innerWidth <= 600 || hasComplexGlyphs ? 3 : 6;
-  scene.targetFont = font;
-  scene.underlayLines = underlayLines;
   scene.hasComplexGlyphs = hasComplexGlyphs;
   heading.style.setProperty("--collector-particle-heading-height", `${height}px`);
   setCanvasSize(canvas, context, width, height, scene.devicePixelRatio);
@@ -237,8 +238,6 @@ function createHeadingScene(heading: HTMLHeadingElement): HeadingScene | null {
     visible: true,
     startedAt: performance.now(),
     particleFontSize: 6,
-    targetFont: "",
-    underlayLines: [],
     hasComplexGlyphs: false,
     removePointerListeners: () => undefined,
   };
@@ -280,15 +279,6 @@ function drawHeadingScene(scene: HeadingScene, now: number) {
   const { context, particles } = scene;
   context.clearRect(0, 0, scene.width, scene.height);
   context.fillStyle = scene.color;
-  if (scene.hasComplexGlyphs) {
-    context.globalAlpha = 0.3;
-    context.font = scene.targetFont;
-    context.textAlign = "left";
-    context.textBaseline = "middle";
-    for (const line of scene.underlayLines) {
-      context.fillText(line.text, line.x, line.y);
-    }
-  }
   context.font = `600 ${scene.particleFontSize}px ui-monospace, "SFMono-Regular", Consolas, monospace`;
   context.textAlign = "center";
   context.textBaseline = "middle";
@@ -346,6 +336,7 @@ export function mountCollectorEffects(options: CollectorEffectOptions): () => vo
   let lastTrailAt = 0;
   let lastScrollY = window.scrollY;
   let pendingWheelDelta = 0;
+  const elementScrollPositions = new WeakMap<EventTarget, number>();
 
   const headingObserver = new IntersectionObserver((entries) => {
     entries.forEach((entry) => {
@@ -423,19 +414,24 @@ export function mountCollectorEffects(options: CollectorEffectOptions): () => vo
   };
 
   const emitBubbles = (x: number, y: number, scrollDelta: number) => {
-    const speed = Math.min(Math.abs(scrollDelta), 200);
-    const direction = scrollDelta > 0 ? -1 : 1;
-    for (let index = 0; index < 3; index += 1) {
-      const maxLife = 0.6 + Math.random() * 0.2;
+    const speed = Math.min(Math.abs(scrollDelta), 140);
+    const bubbleCount = Math.random() < Math.min(0.36, speed / 360) ? 2 : 1;
+    for (let index = 0; index < bubbleCount; index += 1) {
+      const maxLife = 1.25 + Math.random() * 0.65;
       bubbles.push({
-        x: x + (Math.random() - 0.5) * 10,
-        y: y + (Math.random() - 0.5) * 10,
-        velocityX: (Math.random() - 0.5) * 60,
-        velocityY: direction * (60 + speed * 0.8 + Math.random() * 40),
-        radius: 3 + Math.random() * 5,
+        x: x + (Math.random() - 0.5) * 12,
+        y: y + (Math.random() - 0.5) * 8,
+        velocityX: (Math.random() - 0.5) * 22,
+        velocityY: -(30 + speed * 0.22 + Math.random() * 18),
+        radius: 5 + Math.random() * 7,
         life: maxLife,
         maxLife,
         wobble: Math.random() * Math.PI * 2,
+        wobbleSpeed: 2.1 + Math.random() * 1.6,
+        tilt: (Math.random() - 0.5) * 0.18,
+        willBurst: Math.random() < 0.3,
+        burstAge: 0,
+        burstAngle: Math.random() * Math.PI * 2,
       });
     }
     if (bubbles.length > MAX_BUBBLES) bubbles.splice(0, bubbles.length - MAX_BUBBLES);
@@ -457,12 +453,15 @@ export function mountCollectorEffects(options: CollectorEffectOptions): () => vo
   };
   const emitThrottledTrail = (scrollDelta: number) => {
     const now = performance.now();
-    if (now - lastTrailAt < 30 || pagePointerX < 0) return;
+    if (now - lastTrailAt < 85 || pagePointerX < 0) return;
     lastTrailAt = now;
     emitBubbles(pagePointerX, pagePointerY, scrollDelta);
   };
   const handleWheel = (event: WheelEvent) => {
-    if (pagePointerX < 0) return;
+    if (Number.isFinite(event.clientX) && Number.isFinite(event.clientY)) {
+      pagePointerX = event.clientX;
+      pagePointerY = event.clientY;
+    }
     pendingWheelDelta = event.deltaY;
     if (wheelFrame) return;
     wheelFrame = requestAnimationFrame(() => {
@@ -470,18 +469,21 @@ export function mountCollectorEffects(options: CollectorEffectOptions): () => vo
       const scrollDelta = pendingWheelDelta;
       pendingWheelDelta = 0;
       if (scrollDelta === 0) return;
-      const atTopBoundary = window.scrollY <= 0 && scrollDelta < 0;
-      const atBottomBoundary =
-        window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 1 &&
-        scrollDelta > 0;
-      if (atTopBoundary || atBottomBoundary) return;
       emitThrottledTrail(scrollDelta);
     });
   };
-  const handleScroll = () => {
+  const handleScroll = (event: Event) => {
     if (pagePointerX < 0) return;
-    const scrollDelta = window.scrollY - lastScrollY;
-    lastScrollY = window.scrollY;
+    const target = event.target;
+    let scrollDelta = 0;
+    if (target === document) {
+      scrollDelta = window.scrollY - lastScrollY;
+      lastScrollY = window.scrollY;
+    } else if (target instanceof HTMLElement) {
+      const previousScrollTop = elementScrollPositions.get(target) ?? 0;
+      scrollDelta = target.scrollTop - previousScrollTop;
+      elementScrollPositions.set(target, target.scrollTop);
+    }
     if (Math.abs(scrollDelta) < 2) return;
     emitThrottledTrail(scrollDelta);
   };
@@ -499,9 +501,44 @@ export function mountCollectorEffects(options: CollectorEffectOptions): () => vo
     window.addEventListener("touchend", clearPagePointer);
     document.addEventListener("mouseleave", clearPagePointer);
     window.addEventListener("wheel", handleWheel, { passive: true });
-    window.addEventListener("scroll", handleScroll, { passive: true });
+    document.addEventListener("scroll", handleScroll, { capture: true, passive: true });
     window.addEventListener("blur", clearPagePointer);
   }
+
+  const drawBubbleBurst = (bubble: BubbleParticle) => {
+    if (!trailContext) return;
+    const duration = 0.28;
+    const progress = Math.min(1, bubble.burstAge / duration);
+    const opacity = (1 - progress) ** 2;
+    const ringRadius = bubble.radius * (0.9 + progress * 1.45);
+
+    trailContext.save();
+    trailContext.translate(bubble.x, bubble.y);
+    trailContext.beginPath();
+    trailContext.arc(0, 0, ringRadius, 0, Math.PI * 2);
+    trailContext.globalAlpha = opacity * 0.62;
+    trailContext.strokeStyle = trailColor;
+    trailContext.lineWidth = Math.max(0.8, bubble.radius * 0.12 * (1 - progress * 0.5));
+    trailContext.stroke();
+
+    for (let index = 0; index < 6; index += 1) {
+      const angle = bubble.burstAngle + (index / 6) * Math.PI * 2;
+      const distance = bubble.radius * (0.6 + progress * (1.15 + (index % 2) * 0.24));
+      const dropletRadius = Math.max(0.45, bubble.radius * 0.1 * (1 - progress * 0.55));
+      trailContext.beginPath();
+      trailContext.arc(
+        Math.cos(angle) * distance,
+        Math.sin(angle) * distance,
+        dropletRadius,
+        0,
+        Math.PI * 2,
+      );
+      trailContext.globalAlpha = opacity * (index % 2 === 0 ? 0.82 : 0.58);
+      trailContext.fillStyle = index % 2 === 0 ? trailHighlight : trailColor;
+      trailContext.fill();
+    }
+    trailContext.restore();
+  };
 
   const drawBubbles = (deltaSeconds: number) => {
     if (!trailContext) return;
@@ -511,31 +548,70 @@ export function mountCollectorEffects(options: CollectorEffectOptions): () => vo
       if (!bubble) continue;
       bubble.life -= deltaSeconds;
       if (bubble.life <= 0) {
-        bubbles.splice(index, 1);
+        if (!bubble.willBurst) {
+          bubbles.splice(index, 1);
+          continue;
+        }
+        bubble.burstAge += deltaSeconds;
+        if (bubble.burstAge >= 0.28) {
+          bubbles.splice(index, 1);
+          continue;
+        }
+        drawBubbleBurst(bubble);
         continue;
       }
-      bubble.wobble += deltaSeconds * 4;
-      bubble.x += (bubble.velocityX + Math.sin(bubble.wobble) * 9) * deltaSeconds;
+      bubble.wobble += deltaSeconds * bubble.wobbleSpeed;
+      bubble.x += (bubble.velocityX + Math.sin(bubble.wobble) * 7) * deltaSeconds;
       bubble.y += bubble.velocityY * deltaSeconds;
-      bubble.velocityX *= 0.985;
-      bubble.velocityY *= 0.992;
-      const progress = bubble.life / bubble.maxLife;
-      trailContext.globalAlpha = Math.max(0, progress * progress * 0.82);
-      trailContext.beginPath();
-      trailContext.arc(bubble.x, bubble.y, bubble.radius, 0, Math.PI * 2);
-      trailContext.strokeStyle = trailColor;
-      trailContext.lineWidth = Math.max(1, bubble.radius * 0.22);
-      trailContext.stroke();
-      trailContext.beginPath();
-      trailContext.arc(
-        bubble.x - bubble.radius * 0.28,
-        bubble.y - bubble.radius * 0.3,
-        Math.max(0.8, bubble.radius * 0.18),
+      bubble.velocityX *= 0.988;
+      bubble.velocityY -= 3.5 * deltaSeconds;
+      bubble.velocityY *= 0.996;
+      const age = bubble.maxLife - bubble.life;
+      const fadeOut = bubble.willBurst ? 1 : Math.min(1, bubble.life / 0.38);
+      const opacity = Math.min(1, age * 7) * fadeOut;
+      const radius = bubble.radius * (1 + Math.min(age / bubble.maxLife, 1) * 0.08);
+      const squash = 1 + Math.sin(bubble.wobble * 0.7) * 0.035;
+
+      trailContext.save();
+      trailContext.translate(bubble.x, bubble.y);
+      trailContext.rotate(bubble.tilt + Math.sin(bubble.wobble) * 0.035);
+      trailContext.scale(squash, 2 - squash);
+
+      const membrane = trailContext.createRadialGradient(
+        -radius * 0.34,
+        -radius * 0.38,
+        radius * 0.08,
         0,
-        Math.PI * 2,
+        0,
+        radius,
       );
-      trailContext.fillStyle = trailHighlight;
+      membrane.addColorStop(0, trailHighlight);
+      membrane.addColorStop(0.38, trailColor);
+      membrane.addColorStop(1, trailHighlight);
+      trailContext.beginPath();
+      trailContext.arc(0, 0, radius, 0, Math.PI * 2);
+      trailContext.globalAlpha = opacity * 0.13;
+      trailContext.fillStyle = membrane;
       trailContext.fill();
+      trailContext.globalAlpha = opacity * 0.68;
+      trailContext.strokeStyle = trailColor;
+      trailContext.lineWidth = Math.max(1, radius * 0.13);
+      trailContext.stroke();
+
+      trailContext.beginPath();
+      trailContext.arc(0, 0, radius * 0.78, Math.PI * 0.98, Math.PI * 1.48);
+      trailContext.globalAlpha = opacity * 0.9;
+      trailContext.strokeStyle = trailHighlight;
+      trailContext.lineWidth = Math.max(1.2, radius * 0.16);
+      trailContext.lineCap = "round";
+      trailContext.stroke();
+
+      trailContext.beginPath();
+      trailContext.arc(radius * 0.32, radius * 0.38, radius * 0.1, 0, Math.PI * 2);
+      trailContext.globalAlpha = opacity * 0.42;
+      trailContext.fillStyle = trailColor;
+      trailContext.fill();
+      trailContext.restore();
     }
     trailContext.globalAlpha = 1;
   };
@@ -590,7 +666,7 @@ export function mountCollectorEffects(options: CollectorEffectOptions): () => vo
     window.removeEventListener("touchend", clearPagePointer);
     document.removeEventListener("mouseleave", clearPagePointer);
     window.removeEventListener("wheel", handleWheel);
-    window.removeEventListener("scroll", handleScroll);
+    document.removeEventListener("scroll", handleScroll, true);
     window.removeEventListener("blur", clearPagePointer);
     trailCanvas?.remove();
     bubbles.length = 0;

@@ -173,8 +173,8 @@ export const THEME_REGISTRY = {
       },
       hero: {
         src: "/themes/seal-summer/hero.jpg",
-        width: 1440,
-        height: 810,
+        width: 3840,
+        height: 2160,
         preload: true,
         mimeType: "image/jpeg",
         fit: "cover",

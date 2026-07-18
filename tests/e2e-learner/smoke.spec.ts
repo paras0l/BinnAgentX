@@ -182,7 +182,7 @@ test("learner entry is desktop-focused and accessible", async ({ page }) => {
 test("collector skin forms a readable h1 hero and paints bubbles while scrolling", async ({
   page,
 }) => {
-  await page.setViewportSize({ width: 1440, height: 600 });
+  await page.setViewportSize({ width: 1440, height: 900 });
   await page.addInitScript(() => {
     const preferences = {
       assistanceMode: "ask_first",
@@ -216,6 +216,7 @@ test("collector skin forms a readable h1 hero and paints bubbles while scrolling
   await expect
     .poll(async () => (await heading.boundingBox())?.height ?? 0)
     .toBeGreaterThanOrEqual(48);
+  await expect.poll(async () => (await heading.boundingBox())?.height ?? 0).toBeLessThan(70);
   await expect
     .poll(() =>
       headingCanvas.evaluate((element) => {
@@ -240,7 +241,9 @@ test("collector skin forms a readable h1 hero and paints bubbles while scrolling
   await expect(trailCanvas).toBeVisible();
   const trailPixels = await trailCanvas.evaluate((element) => {
     const canvas = element as HTMLCanvasElement;
-    const pixels = canvas.getContext("2d")?.getImageData(0, 0, canvas.width, canvas.height).data;
+    const context = canvas.getContext("2d");
+    const scale = canvas.width / window.innerWidth;
+    const pixels = context?.getImageData(500 * scale, 300 * scale, 180 * scale, 180 * scale).data;
     if (!pixels) return 0;
     let painted = 0;
     for (let index = 3; index < pixels.length; index += 4) {
@@ -695,7 +698,9 @@ test("first experience opens the reading and output workspace", async ({ page })
   await page.getByRole("button", { name: "开始独立校准" }).click();
 
   await expect(page.getByRole("button", { name: "休息一下" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "A Quiet Hour at the Library" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "A Quiet Hour at the Library", level: 2 }),
+  ).toBeVisible();
   await expect(page.getByText(/阅读呼吸点/)).toBeVisible();
   await expect(page.getByLabel(/^我的解释/)).toBeVisible();
   await expect(page.getByText("看不懂时，选中原文并标出卡点")).toBeVisible();
@@ -957,9 +962,153 @@ test("expression workspace keeps V1, gives one priority check, and requires lear
   await page.goto("/");
   await page.getByRole("button", { name: "开始独立校准" }).click();
   await expect(
-    page.getByRole("heading", { name: "Helpful Support Without Skill Replacement" }),
+    page.getByRole("heading", { name: "Helpful Support Without Skill Replacement", level: 2 }),
   ).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Helpful Support Without Skill Replacement" }),
+  ).toHaveCount(1);
   await expect(page.getByRole("tab", { name: /标注列表/ })).toHaveCount(0);
+
+  const leftTabs = page.locator('[data-movable-tab-strip="left"]');
+  const rightTabs = page.locator('[data-movable-tab-strip="right"]');
+  const boardTab = leftTabs.getByRole("tab", { name: /白板/ });
+  const boardBox = await boardTab.boundingBox();
+  const leftTabsBox = await leftTabs.boundingBox();
+  const rightTabsBox = await rightTabs.boundingBox();
+  expect(boardBox).not.toBeNull();
+  expect(leftTabsBox).not.toBeNull();
+  expect(rightTabsBox).not.toBeNull();
+  expect(Math.abs(leftTabsBox!.y - rightTabsBox!.y)).toBeLessThan(1);
+  expect(Math.abs(leftTabsBox!.height - rightTabsBox!.height)).toBeLessThan(1);
+  await page.mouse.move(boardBox!.x + boardBox!.width / 2, boardBox!.y + boardBox!.height / 2);
+  await page.mouse.down();
+  await page.waitForTimeout(350);
+  await expect(boardTab).toHaveClass(/dragging/);
+  await expect(boardTab).toHaveCSS("cursor", "grabbing");
+  await page.mouse.move(
+    rightTabsBox!.x + rightTabsBox!.width - 18,
+    rightTabsBox!.y + rightTabsBox!.height / 2,
+    { steps: 8 },
+  );
+  await page.mouse.up();
+  await expect(leftTabs.getByRole("tab", { name: /白板/ })).toHaveCount(0);
+  await expect(rightTabs.getByRole("tab", { name: /白板/ })).toHaveAttribute(
+    "aria-selected",
+    "true",
+  );
+  await expect(page.locator(".expression-lab-board")).toHaveCSS("overflow", "hidden");
+  await expect(page.locator(".expression-board")).toHaveCSS("overflow", "auto");
+  await page.getByRole("button", { name: "论点", exact: true }).click();
+  const note = page.locator(".expression-note-claim");
+  const noteHandle = page.getByRole("button", { name: "拖动论点便签" });
+  const noteHandleBox = await noteHandle.boundingBox();
+  expect(noteHandleBox).not.toBeNull();
+  const noteTransformBefore = await note.getAttribute("style");
+  await page.mouse.move(
+    noteHandleBox!.x + noteHandleBox!.width / 2,
+    noteHandleBox!.y + noteHandleBox!.height / 2,
+  );
+  await page.mouse.down();
+  await expect(note).toHaveClass(/dragging/);
+  await expect(noteHandle).toHaveCSS("cursor", "grabbing");
+  await page.mouse.move(noteHandleBox!.x + 70, noteHandleBox!.y + 45, { steps: 5 });
+  await page.mouse.up();
+  await expect(note).not.toHaveClass(/dragging/);
+  await expect(note).not.toHaveAttribute("style", noteTransformBefore ?? "");
+
+  const readExpressionTheme = () =>
+    page.evaluate(() => {
+      const styleOf = (selector: string) => getComputedStyle(document.querySelector(selector)!);
+      const lab = styleOf(".expression-lab-board");
+      const board = styleOf(".expression-board");
+      const noteStyle = styleOf(".expression-note-claim");
+      const title = styleOf(".expression-workspace-shared-heading h2");
+      const tab = styleOf('[data-movable-tab="board"]');
+      const pane = styleOf('[data-ui-anchor="workspace-pane"]');
+      return {
+        labBackground: lab.backgroundColor,
+        boardBackground: board.backgroundColor,
+        noteBackground: noteStyle.backgroundColor,
+        titleFont: title.fontFamily,
+        tabRadius: tab.borderRadius,
+        paneBackground: pane.backgroundColor,
+      };
+    });
+  const paperTheme = await readExpressionTheme();
+  await page.locator("html").evaluate((element) => {
+    element.setAttribute("data-theme", "ragdoll");
+  });
+  const ragdollTheme = await readExpressionTheme();
+  expect(ragdollTheme.labBackground).not.toBe(paperTheme.labBackground);
+  expect(ragdollTheme.boardBackground).not.toBe(paperTheme.boardBackground);
+  expect(ragdollTheme.noteBackground).not.toBe(paperTheme.noteBackground);
+  expect(ragdollTheme.titleFont).not.toBe(paperTheme.titleFont);
+  expect(ragdollTheme.tabRadius).not.toBe(paperTheme.tabRadius);
+  expect(ragdollTheme.paneBackground).not.toBe(paperTheme.paneBackground);
+  await page.locator("html").evaluate((element) => {
+    element.setAttribute("data-theme", "paper");
+  });
+
+  await rightTabs.getByRole("tab", { name: /随时记/ }).click();
+  const readNotesTheme = () =>
+    page.evaluate(() => {
+      const textarea = getComputedStyle(document.querySelector(".anytime-notes textarea")!);
+      const starter = getComputedStyle(document.querySelector(".note-starters button")!);
+      const heading = getComputedStyle(document.querySelector(".workspace-panel-intro h2")!);
+      return {
+        background: textarea.backgroundColor,
+        borderColor: textarea.borderColor,
+        font: textarea.fontFamily,
+        starterRadius: starter.borderRadius,
+        headingFont: heading.fontFamily,
+      };
+    });
+  const paperNotesTheme = await readNotesTheme();
+  await page.locator("html").evaluate((element) => {
+    element.setAttribute("data-theme", "ragdoll");
+  });
+  const ragdollNotesTheme = await readNotesTheme();
+  expect(ragdollNotesTheme.background).not.toBe(paperNotesTheme.background);
+  expect(ragdollNotesTheme.borderColor).not.toBe(paperNotesTheme.borderColor);
+  expect(ragdollNotesTheme.font).not.toBe(paperNotesTheme.font);
+  expect(ragdollNotesTheme.starterRadius).not.toBe(paperNotesTheme.starterRadius);
+  expect(ragdollNotesTheme.headingFont).not.toBe(paperNotesTheme.headingFont);
+  await page.locator("html").evaluate((element) => {
+    element.setAttribute("data-theme", "paper");
+  });
+
+  await rightTabs.getByRole("tab", { name: /临时任务/ }).click();
+  const readTemporaryTaskTheme = () =>
+    page.evaluate(() => {
+      const panel = getComputedStyle(document.querySelector(".temporary-task-panel")!);
+      const empty = getComputedStyle(document.querySelector(".temporary-task-empty")!);
+      const heading = getComputedStyle(document.querySelector(".temporary-task-panel h2")!);
+      return {
+        background: panel.backgroundColor,
+        borderColor: panel.borderColor,
+        radius: panel.borderRadius,
+        emptyBackground: empty.backgroundColor,
+        headingFont: heading.fontFamily,
+      };
+    });
+  const paperTemporaryTaskTheme = await readTemporaryTaskTheme();
+  await page.locator("html").evaluate((element) => {
+    element.setAttribute("data-theme", "ragdoll");
+  });
+  const ragdollTemporaryTaskTheme = await readTemporaryTaskTheme();
+  expect(ragdollTemporaryTaskTheme.background).not.toBe(paperTemporaryTaskTheme.background);
+  expect(ragdollTemporaryTaskTheme.borderColor).not.toBe(paperTemporaryTaskTheme.borderColor);
+  expect(ragdollTemporaryTaskTheme.radius).not.toBe(paperTemporaryTaskTheme.radius);
+  expect(ragdollTemporaryTaskTheme.emptyBackground).not.toBe(
+    paperTemporaryTaskTheme.emptyBackground,
+  );
+  expect(ragdollTemporaryTaskTheme.headingFont).not.toBe(paperTemporaryTaskTheme.headingFont);
+  await page.locator("html").evaluate((element) => {
+    element.setAttribute("data-theme", "paper");
+  });
+
+  await rightTabs.getByRole("tab", { name: /本步任务/ }).click();
+
   await page.getByLabel(/^我的作品/).fill(v1Text);
   await page.getByRole("button", { name: "保存 V1（不结束本步）" }).click();
   await expect(page.getByRole("button", { name: "查看单项反馈" })).toBeVisible();
@@ -1089,7 +1238,9 @@ test("completed learner returns home and continues with a new practice material"
 
   await expect(page.getByRole("heading", { name: "换一篇新材料，继续验证读写迁移" })).toBeVisible();
   await page.getByRole("button", { name: "开始下一次训练" }).click();
-  await expect(page.getByRole("heading", { name: "A New Material for Transfer" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "A New Material for Transfer", level: 2 }),
+  ).toBeVisible();
   await expect(page.getByText("第 1 / 3 步")).toBeVisible();
   await expect(page.getByText("校准 A", { exact: true })).toHaveCount(0);
 

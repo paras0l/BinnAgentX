@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   ArrowsOutCardinal,
   Brain,
@@ -29,7 +30,7 @@ import {
 } from "../lib/expression-lab-storage";
 import type { LearningAsset, LearningAssetInput } from "../lib/learning-assets-storage";
 
-type LabTab = "brief" | "board" | "review";
+export type LabTab = "brief" | "board" | "review";
 
 const NOTE_KIND_COPY: Record<ExpressionNoteKind, { label: string; placeholder: string }> = {
   claim: { label: "论点", placeholder: "我真正想表达的判断是…" },
@@ -56,8 +57,11 @@ interface ExpressionLabProps {
   task: LearnerTaskView;
   learningAssets: LearningAsset[];
   reducedMotion: boolean;
-  materialRef: React.RefObject<HTMLElement | null>;
   onLearningAssetCapture: (input: LearningAssetInput) => void;
+  activeTabs: LabTab[];
+  panelTargets: Partial<Record<LabTab, HTMLElement | null>>;
+  onRequestTab: (tab: LabTab) => void;
+  onNoteCountChange: (count: number) => void;
 }
 
 export function ExpressionLab({
@@ -65,10 +69,12 @@ export function ExpressionLab({
   task,
   learningAssets,
   reducedMotion,
-  materialRef,
   onLearningAssetCapture,
+  activeTabs,
+  panelTargets,
+  onRequestTab,
+  onNoteCountChange,
 }: ExpressionLabProps) {
-  const [tab, setTab] = useState<LabTab>("brief");
   const [lab, setLab] = useState<ExpressionLabState>(() =>
     loadExpressionLab(task.task_id, task.current_content_version_id),
   );
@@ -79,6 +85,7 @@ export function ExpressionLab({
   const [activeStyle, setActiveStyle] = useState<"logic_mirror" | "academic" | "news">("academic");
   const [split, setSplit] = useState(50);
   const [capturedStyle, setCapturedStyle] = useState<string | null>(null);
+  const [draggedNoteId, setDraggedNoteId] = useState<string | null>(null);
   const dragRef = useRef<DragState | null>(null);
   const boardRef = useRef<HTMLDivElement>(null);
 
@@ -86,6 +93,8 @@ export function ExpressionLab({
     const timer = window.setTimeout(() => saveExpressionLab(lab), 350);
     return () => window.clearTimeout(timer);
   }, [lab]);
+
+  useEffect(() => onNoteCountChange(lab.notes.length), [lab.notes.length, onNoteCountChange]);
 
   useEffect(() => {
     const move = (event: PointerEvent) => {
@@ -107,7 +116,9 @@ export function ExpressionLab({
       }));
     };
     const finish = (event: PointerEvent) => {
-      if (dragRef.current?.pointerId === event.pointerId) dragRef.current = null;
+      if (dragRef.current?.pointerId !== event.pointerId) return;
+      dragRef.current = null;
+      setDraggedNoteId(null);
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", finish);
@@ -134,7 +145,7 @@ export function ExpressionLab({
         { ...createExpressionNote(kind, current.notes.length), text: initialText },
       ],
     }));
-    setTab("board");
+    onRequestTab("board");
   };
 
   const updateNote = (noteId: string, patch: Partial<ExpressionBoardNote>) => {
@@ -164,43 +175,13 @@ export function ExpressionLab({
     }
   };
 
-  return (
+  const renderLabPanel = (tab: LabTab) => (
     <article
-      className="expression-lab"
-      ref={materialRef}
+      className={`expression-lab expression-lab-${tab}`}
       tabIndex={-1}
-      aria-labelledby="expression-lab-title"
+      aria-label={`表达实验室${tab === "brief" ? "任务" : tab === "board" ? "白板" : "写后复盘"}面板`}
+      data-ui-anchor="expression-surface"
     >
-      <header className="expression-lab-header">
-        <div>
-          <p className="step-label">表达实验室 · 自主输出优先</p>
-          <h1 id="expression-lab-title">{material.title}</h1>
-        </div>
-        <nav aria-label="表达实验室工具">
-          <button
-            className={tab === "brief" ? "selected" : ""}
-            type="button"
-            onClick={() => setTab("brief")}
-          >
-            任务
-          </button>
-          <button
-            className={tab === "board" ? "selected" : ""}
-            type="button"
-            onClick={() => setTab("board")}
-          >
-            白板 <span>{lab.notes.length}</span>
-          </button>
-          <button
-            className={tab === "review" ? "selected" : ""}
-            type="button"
-            onClick={() => setTab("review")}
-          >
-            写后复盘
-          </button>
-        </nav>
-      </header>
-
       {tab === "brief" ? (
         <div className="expression-brief-content">
           <div className="situation-card">
@@ -226,7 +207,11 @@ export function ExpressionLab({
             <p>{material.optional_active_resource}</p>
             <small>可以借用思路或结构，但不要原句照搬。</small>
           </section>
-          <button className="expression-open-board" type="button" onClick={() => setTab("board")}>
+          <button
+            className="expression-open-board"
+            type="button"
+            onClick={() => onRequestTab("board")}
+          >
             <CardsThree size={18} /> 先去白板摊开思路
           </button>
         </div>
@@ -234,7 +219,7 @@ export function ExpressionLab({
 
       {tab === "board" ? (
         <div className="expression-board-shell">
-          <div className="expression-board-tools" aria-label="白板工具">
+          <div className="expression-board-tools" aria-label="白板工具" data-ui-anchor="toolbar">
             {(Object.keys(NOTE_KIND_COPY) as ExpressionNoteKind[]).map((kind) => (
               <button key={kind} type="button" onClick={() => addNote(kind)}>
                 <Plus size={15} /> {NOTE_KIND_COPY[kind].label}
@@ -253,7 +238,9 @@ export function ExpressionLab({
               {lab.notes.map((note) => (
                 <section
                   key={note.id}
-                  className={`expression-note expression-note-${note.kind}`}
+                  className={`expression-note expression-note-${note.kind}${
+                    draggedNoteId === note.id ? " dragging" : ""
+                  }`}
                   style={{ transform: `translate(${note.x}px, ${note.y}px)` }}
                 >
                   <header>
@@ -272,6 +259,7 @@ export function ExpressionLab({
                           offsetX: event.clientX - rect.left,
                           offsetY: event.clientY - rect.top,
                         };
+                        setDraggedNoteId(note.id);
                       }}
                     >
                       <ArrowsOutCardinal size={14} /> {NOTE_KIND_COPY[note.kind].label}
@@ -299,7 +287,11 @@ export function ExpressionLab({
               ))}
             </div>
           </div>
-          <section className="expression-assist" aria-labelledby="expression-assist-title">
+          <section
+            className="expression-assist"
+            aria-labelledby="expression-assist-title"
+            data-ui-anchor="card"
+          >
             <div>
               <Brain size={19} />
               <span>
@@ -322,7 +314,7 @@ export function ExpressionLab({
             {assistFocus ? (
               <div className="expression-suggestions" aria-live="polite">
                 {suggestions.map((suggestion) => (
-                  <article key={suggestion.id}>
+                  <article key={suggestion.id} data-ui-anchor="card">
                     <span>
                       {suggestion.source === "recent_asset" ? "近期学习资产" : "拓展 30%"}
                     </span>
@@ -451,5 +443,14 @@ export function ExpressionLab({
         </section>
       ) : null}
     </article>
+  );
+
+  return (
+    <>
+      {activeTabs.map((tab) => {
+        const target = panelTargets[tab];
+        return target ? createPortal(renderLabPanel(tab), target, tab) : null;
+      })}
+    </>
   );
 }

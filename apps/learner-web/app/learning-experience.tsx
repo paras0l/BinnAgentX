@@ -717,7 +717,7 @@ function LearningHome({
       <header className="home-topbar" data-ui-anchor="workspace-header">
         <div>
           <p className="eyebrow">BinnAgent · 学习首页</p>
-          <h1>语境实验室 × 表达实验室</h1>
+          <h1 className="learning-brand-title">语境实验室 × 表达实验室</h1>
         </div>
         <div className="home-topbar-actions">
           <button type="button" className="quiet-button" onClick={onOpenProfile}>
@@ -1352,7 +1352,7 @@ function OnboardingPanel({
       <header className="topbar">
         <div>
           <p className="eyebrow">BinnAgent · 考研英语</p>
-          <h1>语境实验室 × 表达实验室</h1>
+          <h1 className="learning-brand-title">语境实验室 × 表达实验室</h1>
         </div>
         <span className="environment-badge">电脑浏览器专属</span>
       </header>

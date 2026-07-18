@@ -10,6 +10,10 @@
   text-shadow: none !important;
 }
 
+.collector-particle-heading > :not(.collector-particle-heading-canvas) {
+  visibility: hidden !important;
+}
+
 .collector-particle-heading-canvas {
   position: absolute;
   z-index: 2;
@@ -22,7 +26,7 @@
 
 .collector-pointer-trail-canvas {
   position: fixed;
-  z-index: 70;
+  z-index: 999;
   inset: 0;
   width: 100vw;
   height: 100vh;
@@ -35,6 +39,10 @@
     color: inherit !important;
   }
 
+  .collector-particle-heading > :not(.collector-particle-heading-canvas) {
+    visibility: visible !important;
+  }
+
   .collector-particle-heading-canvas,
   .collector-pointer-trail-canvas {
     display: none !important;
@@ -45,6 +53,10 @@
   .collector-particle-heading {
     min-height: initial;
     color: CanvasText !important;
+  }
+
+  .collector-particle-heading > :not(.collector-particle-heading-canvas) {
+    visibility: visible !important;
   }
 
   .collector-particle-heading-canvas,
@@ -116,6 +128,26 @@
 
 [data-ui-anchor="task-workspace"] :is(.task-grid, .response-pane) {
   background: var(--theme-surface);
+}
+
+[data-ui-anchor="workspace-heading"] {
+  border-color: var(--theme-line);
+  color: var(--theme-ink);
+  background: var(--theme-surface-raised);
+}
+
+[data-ui-anchor="workspace-pane"] {
+  border-color: var(--theme-line);
+  border-radius: var(--theme-workspace-pane-radius);
+  color: var(--theme-ink);
+  background: var(--theme-surface-soft);
+  box-shadow: var(--theme-workspace-pane-shadow);
+}
+
+[data-ui-anchor="expression-surface"] {
+  border-color: var(--theme-line);
+  color: var(--theme-ink);
+  background: var(--theme-expression-lab-surface);
 }
 
 [data-ui-anchor="workspace"]

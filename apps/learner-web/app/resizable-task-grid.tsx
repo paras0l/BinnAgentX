@@ -26,6 +26,7 @@ interface DragState {
 
 interface ResizableTaskGridProps {
   children: ReactNode;
+  header?: ReactNode;
   className: string;
   defaultSplit: number;
   storageKey: string;
@@ -55,6 +56,7 @@ function storeSplit(storageKey: string, value: number) {
 
 export function ResizableTaskGrid({
   children,
+  header,
   className,
   defaultSplit,
   storageKey,
@@ -113,9 +115,10 @@ export function ResizableTaskGrid({
   return (
     <div
       ref={gridRef}
-      className={`task-grid resizable-task-grid ${className}`}
+      className={`task-grid resizable-task-grid ${className}${header ? " has-workspace-heading" : ""}`}
       style={{ "--workspace-split": `${initialSplit}%` } as SplitGridStyle}
     >
+      {header}
       {panes[0]}
       <div
         ref={separatorRef}

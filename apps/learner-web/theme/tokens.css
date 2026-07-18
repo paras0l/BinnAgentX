@@ -57,6 +57,42 @@
   --theme-card-radius: var(--primitive-radius-lg);
   --theme-control-radius: var(--primitive-radius-md);
   --theme-modal-radius: 18px;
+  --theme-workspace-pane-radius: 0px;
+  --theme-workspace-pane-shadow: none;
+  --theme-expression-lab-surface: color-mix(
+    in srgb,
+    var(--theme-warning-soft) 34%,
+    var(--theme-surface-soft)
+  );
+  --theme-expression-board-toolbar: color-mix(
+    in srgb,
+    var(--theme-warning-soft) 48%,
+    var(--theme-surface-soft)
+  );
+  --theme-expression-board-surface: color-mix(
+    in srgb,
+    var(--theme-warning-soft) 24%,
+    var(--theme-surface-raised)
+  );
+  --theme-expression-board-dot: color-mix(in srgb, var(--theme-line-strong) 72%, transparent);
+  --theme-expression-note-claim-surface: var(--theme-warning-soft);
+  --theme-expression-note-claim-line: color-mix(
+    in srgb,
+    var(--theme-warning) 42%,
+    var(--theme-line)
+  );
+  --theme-expression-note-example-surface: var(--theme-success-soft);
+  --theme-expression-note-example-line: color-mix(
+    in srgb,
+    var(--theme-success) 34%,
+    var(--theme-line)
+  );
+  --theme-expression-note-expression-surface: var(--theme-info-soft);
+  --theme-expression-note-expression-line: color-mix(
+    in srgb,
+    var(--theme-info) 30%,
+    var(--theme-line)
+  );
   --theme-font-ui:
     Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
     "Microsoft YaHei", sans-serif;

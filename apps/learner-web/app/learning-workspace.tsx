@@ -2,6 +2,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState, useTransition } from "react";
 import type { KeyboardEvent } from "react";
+import { createPortal } from "react-dom";
 import { layout as layoutPretext, prepare as preparePretext } from "@chenglou/pretext";
 import {
   ArrowLineUp,
@@ -75,7 +76,17 @@ import {
   type SelectionScale,
 } from "../lib/annotation-selection";
 import { locateContextMatches, type ContextMatch } from "../lib/context-locator";
-import { ExpressionLab } from "./expression-lab";
+import { ExpressionLab, type LabTab } from "./expression-lab";
+import {
+  defaultExpressionTabLayout,
+  MovableWorkspaceTabs,
+  moveExpressionTab,
+  readExpressionTabLayout,
+  saveExpressionTabLayout,
+  type ActiveExpressionTabs,
+  type ExpressionWorkspaceTab,
+  type WorkspacePane,
+} from "./movable-workspace-tabs";
 import { ResizableTaskGrid } from "./resizable-task-grid";
 
 const ANNOTATION_LABELS: Record<AnnotationKind, string> = {
@@ -133,6 +144,15 @@ interface TemporaryTaskItem {
 }
 
 type WorkspaceTab = "task" | "annotations" | "temporary" | "notes";
+
+const EXPRESSION_TAB_LABELS: Record<ExpressionWorkspaceTab, string> = {
+  brief: "任务",
+  board: "白板",
+  review: "写后复盘",
+  task: "本步任务",
+  temporary: "临时任务",
+  notes: "随时记",
+};
 
 const STAGE_LABELS = {
   calibration_a: "校准 A",
@@ -394,6 +414,26 @@ function ActiveTaskWorkspace({
   const [annotationAnalysisError, setAnnotationAnalysisError] = useState<string | null>(null);
   const [isAnnotationAnalysisPending, setIsAnnotationAnalysisPending] = useState(false);
   const [activeWorkspaceTab, setActiveWorkspaceTab] = useState<WorkspaceTab>("task");
+  const expressionTabStorageKey = `binnagent:expression-tabs:${task.task_id}:${task.current_content_version_id}:v1`;
+  const [expressionTabLayout, setExpressionTabLayout] = useState(() =>
+    isReading
+      ? defaultExpressionTabLayout(preferences.temporaryTasksEnabled)
+      : readExpressionTabLayout(expressionTabStorageKey, preferences.temporaryTasksEnabled),
+  );
+  const [activeExpressionTabs, setActiveExpressionTabs] = useState<ActiveExpressionTabs>(() => ({
+    left: expressionTabLayout.left.includes("brief")
+      ? "brief"
+      : (expressionTabLayout.left[0] ?? null),
+    right: expressionTabLayout.right.includes("task")
+      ? "task"
+      : (expressionTabLayout.right[0] ?? null),
+  }));
+  const [expressionNoteCount, setExpressionNoteCount] = useState(0);
+  const [leftExpressionPanelTarget, setLeftExpressionPanelTarget] = useState<HTMLDivElement | null>(
+    null,
+  );
+  const [rightExpressionPanelTarget, setRightExpressionPanelTarget] =
+    useState<HTMLDivElement | null>(null);
   const [progressMessage, setProgressMessage] = useState<string | null>(null);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [showThinkingGuide, setShowThinkingGuide] = useState(false);
@@ -432,6 +472,11 @@ function ActiveTaskWorkspace({
   const earlyEndTriggerRef = useRef<HTMLButtonElement>(null);
   const earlyEndConfirmRef = useRef<HTMLElement>(null);
   const temporaryTaskCounterRef = useRef(0);
+
+  useEffect(() => {
+    if (isReading) return;
+    saveExpressionTabLayout(expressionTabStorageKey, expressionTabLayout);
+  }, [expressionTabLayout, expressionTabStorageKey, isReading]);
 
   useLayoutEffect(() => {
     cacheSnapshotRef.current = { choice, text, workspaceNote, saveState, noteSaveState };
@@ -632,8 +677,53 @@ function ActiveTaskWorkspace({
   };
 
   const switchWorkspaceTab = (tab: WorkspaceTab) => {
+    if (!isReading && tab !== "annotations") {
+      const pane: WorkspacePane = expressionTabLayout.left.includes(tab) ? "left" : "right";
+      setActiveExpressionTabs((current) => ({ ...current, [pane]: tab }));
+      window.requestAnimationFrame(() => {
+        (pane === "left" ? leftExpressionPanelTarget : rightExpressionPanelTarget)?.scrollTo({
+          top: 0,
+        });
+      });
+      return;
+    }
     setActiveWorkspaceTab(tab);
     window.requestAnimationFrame(() => responsePaneRef.current?.scrollTo({ top: 0 }));
+  };
+
+  const activateExpressionTab = (pane: WorkspacePane, tab: ExpressionWorkspaceTab) => {
+    setActiveExpressionTabs((current) => ({ ...current, [pane]: tab }));
+    window.requestAnimationFrame(() => {
+      (pane === "left" ? leftExpressionPanelTarget : rightExpressionPanelTarget)?.scrollTo({
+        top: 0,
+      });
+    });
+  };
+
+  const requestExpressionLabTab = (tab: LabTab) => {
+    const pane: WorkspacePane = expressionTabLayout.left.includes(tab) ? "left" : "right";
+    activateExpressionTab(pane, tab);
+  };
+
+  const moveWorkspaceTab = (
+    tab: ExpressionWorkspaceTab,
+    target: { pane: WorkspacePane; index: number },
+  ) => {
+    setExpressionTabLayout((currentLayout) => {
+      const sourcePane: WorkspacePane = currentLayout.left.includes(tab) ? "left" : "right";
+      const nextLayout = moveExpressionTab(currentLayout, tab, target);
+      setActiveExpressionTabs((currentActive) => ({
+        ...currentActive,
+        [sourcePane]:
+          sourcePane === target.pane
+            ? tab
+            : currentActive[sourcePane] === tab
+              ? (nextLayout[sourcePane][0] ?? null)
+              : currentActive[sourcePane],
+        [target.pane]: tab,
+      }));
+      return nextLayout;
+    });
   };
 
   const addTemporaryTask = () => {
@@ -1158,12 +1248,51 @@ function ActiveTaskWorkspace({
     });
   };
 
+  const expressionPanelTargets = {
+    brief:
+      activeExpressionTabs.left === "brief"
+        ? leftExpressionPanelTarget
+        : activeExpressionTabs.right === "brief"
+          ? rightExpressionPanelTarget
+          : null,
+    board:
+      activeExpressionTabs.left === "board"
+        ? leftExpressionPanelTarget
+        : activeExpressionTabs.right === "board"
+          ? rightExpressionPanelTarget
+          : null,
+    review:
+      activeExpressionTabs.left === "review"
+        ? leftExpressionPanelTarget
+        : activeExpressionTabs.right === "review"
+          ? rightExpressionPanelTarget
+          : null,
+  };
+  const activeLabTabs = (Object.entries(expressionPanelTargets) as [LabTab, HTMLElement | null][])
+    .filter(([, target]) => target !== null)
+    .map(([tab]) => tab);
+  const targetForWorkspaceTab = (tab: WorkspaceTab) => {
+    if (isReading) return activeWorkspaceTab === tab ? rightExpressionPanelTarget : null;
+    if (tab === "annotations") return null;
+    return activeExpressionTabs.left === tab
+      ? leftExpressionPanelTarget
+      : activeExpressionTabs.right === tab
+        ? rightExpressionPanelTarget
+        : null;
+  };
+  const expressionTabBadges: Partial<Record<ExpressionWorkspaceTab, string>> = {
+    board: expressionNoteCount ? String(expressionNoteCount) : undefined,
+    temporary: `${temporaryTasks.filter((item) => item.completed).length}/${temporaryTasks.length}`,
+    notes: workspaceNote.trim() ? "•" : undefined,
+  };
+
   return (
     <main
       className={`workspace-shell comfort-${preferences.readingComfort}${preferences.reducedMotion ? " reduced-motion" : ""}`}
       onKeyDown={onWorkspaceKeyDown}
       data-ui-anchor="task-workspace"
     >
+      {!isReading ? <h1 className="sr-only">表达实验室</h1> : null}
       <header className="workspace-header" data-ui-anchor="workspace-header">
         <div className="stage-heading">
           <p className="eyebrow">{STAGE_LABELS[workspace.run.stage]}</p>
@@ -1219,16 +1348,49 @@ function ActiveTaskWorkspace({
           defaultSplit={isReading ? 64 : 52}
           storageKey={`binnagent:workspace-split:${isReading ? "reading" : "expression"}:v1`}
           separatorLabel={isReading ? "调整阅读材料与任务区宽度" : "调整表达实验室与任务区宽度"}
+          header={
+            isReading ? undefined : (
+              <header
+                className="expression-workspace-shared-heading"
+                ref={materialRef}
+                tabIndex={-1}
+                aria-labelledby="expression-workspace-title"
+                data-ui-anchor="workspace-heading"
+              >
+                <p className="step-label">表达实验室 · 自主输出优先</p>
+                <h2 id="expression-workspace-title">{material.title}</h2>
+              </header>
+            )
+          }
         >
           {material.content_type === "micro_expression" ? (
-            <ExpressionLab
-              material={material}
-              task={task}
-              learningAssets={learningAssets}
-              reducedMotion={preferences.reducedMotion}
-              materialRef={materialRef}
-              onLearningAssetCapture={onLearningAssetCapture}
-            />
+            <section
+              className="expression-workspace-pane"
+              aria-label="表达工作区左栏"
+              data-ui-anchor="workspace-pane"
+            >
+              <MovableWorkspaceTabs
+                pane="left"
+                tabs={expressionTabLayout.left}
+                activeTab={activeExpressionTabs.left}
+                labels={EXPRESSION_TAB_LABELS}
+                badges={expressionTabBadges}
+                onActivate={activateExpressionTab}
+                onMove={moveWorkspaceTab}
+              />
+              <div ref={setLeftExpressionPanelTarget} className="expression-workspace-panel-host" />
+              <ExpressionLab
+                material={material}
+                task={task}
+                learningAssets={learningAssets}
+                reducedMotion={preferences.reducedMotion}
+                onLearningAssetCapture={onLearningAssetCapture}
+                activeTabs={activeLabTabs}
+                panelTargets={expressionPanelTargets}
+                onRequestTab={requestExpressionLabTab}
+                onNoteCountChange={setExpressionNoteCount}
+              />
+            </section>
           ) : (
             <ReadingPane
               material={material}
@@ -1243,813 +1405,881 @@ function ActiveTaskWorkspace({
           )}
 
           <section
-            className="response-pane"
-            ref={responsePaneRef}
+            className={`response-pane${isReading ? "" : " expression-workspace-pane"}`}
+            ref={isReading ? responsePaneRef : undefined}
             aria-label="任务与学习记录"
-            data-ui-anchor="context-panel"
+            data-ui-anchor={isReading ? "context-panel" : "workspace-pane"}
           >
-            <div
-              className="workspace-tabs"
-              role="tablist"
-              aria-label="右侧任务区"
-              onKeyDown={navigateWorkspaceTabs}
-            >
-              <button
-                id="workspace-tab-task"
-                type="button"
-                role="tab"
-                aria-selected={activeWorkspaceTab === "task"}
-                aria-controls="workspace-panel-task"
-                tabIndex={activeWorkspaceTab === "task" ? 0 : -1}
-                onClick={() => switchWorkspaceTab("task")}
-              >
-                本步任务
-              </button>
-              {isReading ? (
-                <button
-                  id="workspace-tab-annotations"
-                  type="button"
-                  role="tab"
-                  aria-selected={activeWorkspaceTab === "annotations"}
-                  aria-controls="workspace-panel-annotations"
-                  tabIndex={activeWorkspaceTab === "annotations" ? 0 : -1}
-                  onClick={() => switchWorkspaceTab("annotations")}
+            {isReading ? (
+              <>
+                <div
+                  className="workspace-tabs"
+                  role="tablist"
+                  aria-label="右侧任务区"
+                  onKeyDown={navigateWorkspaceTabs}
                 >
-                  标注列表
-                  <span>{savedAnnotations.length}</span>
-                </button>
-              ) : null}
-              {preferences.temporaryTasksEnabled ? (
-                <button
-                  id="workspace-tab-temporary"
-                  type="button"
-                  role="tab"
-                  aria-selected={activeWorkspaceTab === "temporary"}
-                  aria-controls="workspace-panel-temporary"
-                  tabIndex={activeWorkspaceTab === "temporary" ? 0 : -1}
-                  onClick={() => switchWorkspaceTab("temporary")}
-                >
-                  临时任务
-                  <span
-                    aria-label={`已完成 ${temporaryTasks.filter((item) => item.completed).length} 个，共 ${temporaryTasks.length} 个`}
-                  >
-                    {temporaryTasks.filter((item) => item.completed).length}/{temporaryTasks.length}
-                  </span>
-                </button>
-              ) : null}
-              <button
-                id="workspace-tab-notes"
-                type="button"
-                role="tab"
-                aria-selected={activeWorkspaceTab === "notes"}
-                aria-controls="workspace-panel-notes"
-                tabIndex={activeWorkspaceTab === "notes" ? 0 : -1}
-                onClick={() => switchWorkspaceTab("notes")}
-              >
-                随时记
-                {workspaceNote.trim() ? <span aria-label="已有笔记">•</span> : null}
-              </button>
-            </div>
-
-            {activeWorkspaceTab === "task" ? (
-              <div
-                id="workspace-panel-task"
-                className="workspace-tab-panel task-tab-panel"
-                role="tabpanel"
-                aria-labelledby="workspace-tab-task"
-              >
-                {selection && isReading ? (
-                  <section
-                    className="annotation-composer"
-                    aria-labelledby="annotation-title"
-                    data-ui-anchor="composer"
-                  >
-                    <div className="annotation-composer-heading">
-                      <div>
-                        <p className="step-label">正在标记选中的原文</p>
-                        <h3 id="annotation-title">“{selection.textQuote}”</h3>
-                      </div>
-                      <button
-                        type="button"
-                        className="icon-button"
-                        aria-label="取消本次标记"
-                        onClick={() => {
-                          setSelection(null);
-                          setSelectionAnchor(null);
-                          setShowSelectionToolbar(false);
-                          setAnnotationAnalysis(null);
-                          setAnnotationAnalysisError(null);
-                          window.getSelection()?.removeAllRanges();
-                        }}
-                      >
-                        ×
-                      </button>
-                    </div>
-                    {selectedScale && selectedScope ? (
-                      <div className={`selection-recommendation selection-scope-${selectedScope}`}>
-                        <span>{SELECTION_SCALE_LABELS[selectedScale]}</span>
-                        <p>
-                          {selectedScope === "word_or_phrase"
-                            ? "优先查生词：看当前语境义、词性和搭配。"
-                            : "优先拆长句：先看完整译文，再看主干、从句和修饰层级。"}
-                        </p>
-                      </div>
-                    ) : null}
-                    <div className="annotation-color-legend" aria-label="高亮颜色语义">
-                      <span className="annotation-kind-vocabulary">暖黄 · 生词</span>
-                      <span className="annotation-kind-reusable_expression">雾蓝 · 好表达</span>
-                      <span className="annotation-kind-grammar">珊瑚 · 语法重点</span>
-                    </div>
-                    <div className="annotation-types" role="group" aria-label="标记类型">
-                      {allowedAnnotations.map((kind) => (
-                        <button
-                          key={kind}
-                          type="button"
-                          className={`annotation-kind-${kind}${annotationKind === kind ? " selected" : ""}`}
-                          onClick={() => chooseAnnotationKind(kind)}
-                        >
-                          {ANNOTATION_LABELS[kind]}
-                        </button>
-                      ))}
-                    </div>
-                    {preferences.assistanceMode !== "quiet" ? (
-                      <InlineAssistancePanel
-                        selection={selection}
-                        material={material as ReadingMaterialView}
-                        focus={inlineAssistanceFocus}
-                        onFocus={setInlineAssistanceFocus}
-                      />
-                    ) : null}
-                    {annotationKind === "uncertain" ? (
-                      <div className="uncertainty-reasons" role="group" aria-label="看不懂的原因">
-                        <span>卡在哪里？</span>
-                        {UNCERTAINTY_REASONS.map(([label, explanation]) => (
-                          <button
-                            key={label}
-                            type="button"
-                            onClick={() => {
-                              if (!annotationExplanation.trim()) {
-                                setAnnotationExplanation(explanation);
-                                setAnnotationAnalysis(null);
-                                setAnnotationAnalysisError(null);
-                              }
-                              window.requestAnimationFrame(() =>
-                                annotationExplanationRef.current?.focus(),
-                              );
-                            }}
-                          >
-                            {label}
-                          </button>
-                        ))}
-                      </div>
-                    ) : null}
-                    <label>
-                      <span>{canAnalyzeAnnotation ? "你想重点解决什么？" : "为什么这样标？"}</span>
-                      <textarea
-                        ref={annotationExplanationRef}
-                        value={annotationExplanation}
-                        onChange={(event) => {
-                          setAnnotationExplanation(event.target.value);
-                          setAnnotationAnalysis(null);
-                          setAnnotationAnalysisError(null);
-                        }}
-                        placeholder={
-                          annotationKind === "vocabulary"
-                            ? "可选：写下你猜的语境义，或直接点击下方查词。"
-                            : annotationKind === "grammar"
-                              ? "可选：写下没理清的主干、从句或修饰关系。"
-                              : annotationKind === "uncertain"
-                                ? "选一个卡点作为开头，再补充具体词、结构或关系。"
-                                : "写下你的判断。标记数量不算进步，解释才让思考可见。"
-                        }
-                      />
-                    </label>
-                    {canAnalyzeAnnotation ? (
-                      <div className="annotation-analysis-flow">
-                        <div className="annotation-analysis-action">
-                          <button
-                            className="analysis-button"
-                            type="button"
-                            onClick={requestAnnotationAnalysis}
-                            disabled={isAnnotationAnalysisPending || isPending}
-                          >
-                            {isAnnotationAnalysisPending
-                              ? "正在分析当前选区…"
-                              : annotationAnalysisButtonLabel}
-                          </button>
-                          <small>
-                            {selectedScope === "word_or_phrase"
-                              ? "默认优先语境义，不把短语误当整句"
-                              : "只翻译当前选区，不回答题目、不代读全文"}
-                          </small>
-                        </div>
-                        {isAnnotationAnalysisPending ? (
-                          <div
-                            className="annotation-streaming-placeholder"
-                            role="status"
-                            aria-label="正在生成并稳定排版当前选区分析"
-                          >
-                            <span />
-                            <span />
-                            <span />
-                            <small>内容到达时会在预留区域内逐段排版，避免正文反复跳动。</small>
-                          </div>
-                        ) : null}
-                        {annotationAnalysisError ? (
-                          <p className="annotation-analysis-error" role="alert">
-                            {annotationAnalysisError} 你的文字仍保留，可稍后重试。
-                          </p>
-                        ) : null}
-                        {annotationAnalysis ? (
-                          <article className="annotation-analysis-result" aria-live="polite">
-                            <header>
-                              <span>{ANALYSIS_FOCUS_LABELS[annotationAnalysis.focus]}</span>
-                              <small>
-                                {annotationAnalysis.source === "model"
-                                  ? "AI 模型分析"
-                                  : "本地保守分析 · 模型暂不可用"}
-                              </small>
-                            </header>
-                            {annotationAnalysis.vocabulary_note ? (
-                              <div className="annotation-primary-help vocabulary-help">
-                                <strong>语境义、词性与搭配</strong>
-                                <p>{annotationAnalysis.vocabulary_note}</p>
-                              </div>
-                            ) : null}
-                            {annotationAnalysis.translation ? (
-                              <div className="annotation-primary-help translation-help">
-                                <strong>当前选区完整翻译</strong>
-                                <p>{annotationAnalysis.translation}</p>
-                              </div>
-                            ) : annotationAnalysis.selection_scope === "sentence_or_paragraph" ? (
-                              <div className="annotation-primary-help translation-unavailable">
-                                <strong>完整翻译暂不可用</strong>
-                                <p>当前为本地保守分析；启用受约束模型后才会生成选区译文。</p>
-                              </div>
-                            ) : null}
-                            {annotationAnalysis.grammar_structure.length > 0 ? (
-                              <div className="annotation-grammar-structure">
-                                <strong>语法结构</strong>
-                                <ol>
-                                  {annotationAnalysis.grammar_structure.map((item) => (
-                                    <li key={item}>{item}</li>
-                                  ))}
-                                </ol>
-                              </div>
-                            ) : null}
-                            <p>{annotationAnalysis.diagnosis}</p>
-                            <ol>
-                              {annotationAnalysis.breakdown.map((step) => (
-                                <li key={step}>{step}</li>
-                              ))}
-                            </ol>
-                            <div className="annotation-next-check">
-                              <strong>下一步自查</strong>
-                              <p>{annotationAnalysis.next_check}</p>
-                            </div>
-                            <small className="annotation-analysis-boundary">
-                              {annotationAnalysis.boundary_note}
-                            </small>
-                          </article>
-                        ) : null}
-                      </div>
-                    ) : null}
-                    <div className="annotation-save-row">
-                      <button
-                        className="secondary-button"
-                        type="button"
-                        onClick={submitAnnotation}
-                        disabled={isPending || isAnnotationAnalysisPending}
-                      >
-                        {annotationAnalysis ? "保存标注与分析" : "保存这条判断"}
-                      </button>
-                    </div>
-                  </section>
-                ) : null}
-
-                {isReading ? (
-                  <section
-                    className={
-                      "grammar-challenge-card grammar-challenge-" +
-                      (material as ReadingMaterialView).grammar_challenge.status
-                    }
-                    aria-labelledby="grammar-challenge-title"
-                  >
-                    <div className="grammar-challenge-heading">
-                      <div>
-                        <p className="step-label">语法找茬 · 随机 1 处</p>
-                        <h2 id="grammar-challenge-title">
-                          {(material as ReadingMaterialView).grammar_challenge.status === "resolved"
-                            ? "语法找茬已完成，原文已恢复"
-                            : "文章中藏着 1 处语法错误"}
-                        </h2>
-                      </div>
-                      {(material as ReadingMaterialView).grammar_challenge.status === "resolved" ? (
-                        <CheckCircle size={24} weight="fill" aria-hidden="true" />
-                      ) : (
-                        <span className="grammar-challenge-count" aria-label="一处错误">
-                          1
-                        </span>
-                      )}
-                    </div>
-                    {(material as ReadingMaterialView).grammar_challenge.status === "resolved" ? (
-                      <p className="grammar-challenge-success" role="status">
-                        正确写法：
-                        <strong>
-                          {(material as ReadingMaterialView).grammar_challenge.answer ??
-                            "原文已恢复"}
-                        </strong>
-                        <span>文章中的错误片段已经替换，刷新页面也会保留正确原文。</span>
-                      </p>
-                    ) : (
-                      <>
-                        <p>
-                          通读左侧文章，找出错误后，只输入需要替换的正确英文片段。系统不会提前标出位置。
-                        </p>
-                        <form
-                          className="grammar-correction-form"
-                          onSubmit={(event) => {
-                            event.preventDefault();
-                            void submitGrammarCorrection();
-                          }}
-                        >
-                          <label>
-                            <span>正确写法</span>
-                            <input
-                              type="text"
-                              value={grammarCorrection}
-                              onChange={(event) => {
-                                setGrammarCorrection(event.target.value);
-                                setGrammarFeedback(null);
-                              }}
-                              placeholder="例如：may show"
-                              autoComplete="off"
-                              spellCheck={false}
-                              disabled={isGrammarPending}
-                            />
-                          </label>
-                          <button
-                            type="submit"
-                            className="secondary-button"
-                            disabled={isGrammarPending || !grammarCorrection.trim()}
-                          >
-                            {isGrammarPending ? "正在验证…" : "验证修改"}
-                          </button>
-                        </form>
-                        <div className="grammar-hint-row">
-                          <div className="grammar-assistance-actions">
-                            {(material as ReadingMaterialView).grammar_challenge
-                              .hint_revealed ? null : (
-                              <button
-                                type="button"
-                                className="quiet-button"
-                                onClick={() => void revealGrammarHint()}
-                                disabled={isGrammarPending}
-                              >
-                                查看提示（错误类型）
-                              </button>
-                            )}
-                            <button
-                              type="button"
-                              className="grammar-give-up-button"
-                              onClick={() => void revealGrammarAnswer()}
-                              disabled={isGrammarPending}
-                            >
-                              放弃并显示答案
-                            </button>
-                          </div>
-                          {(material as ReadingMaterialView).grammar_challenge.hint_revealed ? (
-                            <div className="grammar-hint" role="status">
-                              <strong>
-                                错误类型：
-                                {(material as ReadingMaterialView).grammar_challenge.error_type}
-                              </strong>
-                              <span>
-                                {(material as ReadingMaterialView).grammar_challenge.hint}
-                              </span>
-                            </div>
-                          ) : null}
-                          {(material as ReadingMaterialView).grammar_challenge.attempt_count > 0 ? (
-                            <small>
-                              已验证{" "}
-                              {(material as ReadingMaterialView).grammar_challenge.attempt_count} 次
-                            </small>
-                          ) : null}
-                        </div>
-                        {grammarFeedback ? (
-                          <p className="grammar-feedback" role="status">
-                            {grammarFeedback}
-                          </p>
-                        ) : null}
-                      </>
-                    )}
-                  </section>
-                ) : null}
-
-                <section
-                  className="task-checklist"
-                  aria-labelledby="task-checklist-title"
-                  data-ui-anchor="card"
-                >
-                  <div>
-                    <p className="step-label">完成本步还需要</p>
-                    <h2 id="task-checklist-title">
-                      {requiredSteps.filter((step) => !step.complete).length > 0
-                        ? `${requiredSteps.filter((step) => !step.complete).length} 项必做动作`
-                        : "必做动作已完成"}
-                    </h2>
-                  </div>
-                  <ul>
-                    {requiredSteps.map((step) => (
-                      <li key={step.label} className={step.complete ? "complete" : "pending"}>
-                        <span aria-hidden="true">{step.complete ? "✓" : "○"}</span>
-                        {step.label}
-                      </li>
-                    ))}
-                  </ul>
-                </section>
-
-                {hasAttempt ? (
-                  <ImmediateFeedback
-                    task={task}
-                    isReading={isReading}
-                    linkedRevision={linkedRevision}
-                    hasUnansweredIntervention={hasUnansweredIntervention}
-                  />
-                ) : null}
-
-                {hasAttempt ? (
-                  <AttemptTimeline
-                    attempts={task.attempts}
-                    interventions={task.interventions}
-                    revisions={task.revisions}
-                    preferences={preferences}
-                  />
-                ) : null}
-
-                {!hasAttempt ? (
-                  <section
-                    className="thinking-scaffold"
-                    aria-labelledby="thinking-scaffold-title"
-                    data-ui-anchor="card"
-                  >
-                    <button
-                      type="button"
-                      className="thinking-toggle"
-                      aria-expanded={showThinkingGuide}
-                      aria-controls="thinking-guide"
-                      onClick={() => setShowThinkingGuide((current) => !current)}
-                    >
-                      <span aria-hidden="true">↗</span>
-                      <span>
-                        <strong id="thinking-scaffold-title">不知道怎么想？打开思考起点</strong>
-                        <small>只给起步动作，不给当前题答案</small>
-                      </span>
-                      <span aria-hidden="true">{showThinkingGuide ? "收起" : "展开"}</span>
-                    </button>
-                    {showThinkingGuide ? <ThinkingGuide isReading={isReading} /> : null}
-                  </section>
-                ) : null}
-
-                {material.content_type === "micro_expression" ? (
-                  <ExpressionResponseHeader
-                    material={material}
-                    wordCount={wordCount}
-                    isRevision={hasUnansweredIntervention || task.attempts.length > 1}
-                  />
-                ) : (
-                  <>
-                    <p className="step-label">本步任务</p>
-                    <h2 id="response-title" className="question-prompt">
-                      {conciseQuestionPrompt(material.question.prompt)}
-                    </h2>
-                    {showSubmittedAnswer && selectedOption ? (
-                      <section className="submitted-answer" aria-label="已保存的当前答案">
-                        <CheckCircle size={19} weight="fill" aria-hidden="true" />
-                        <strong>{selectedOption.option_id}</strong>
-                        <p>{selectedOption.text}</p>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            latestIntervention ? setShowRevisionEditor(true) : requestMinimalHint()
-                          }
-                          disabled={isPending}
-                        >
-                          {latestIntervention ? "开始修改" : "领取反馈后修改"}
-                        </button>
-                      </section>
-                    ) : (
-                      <fieldset className="option-list" disabled={isPending}>
-                        <legend className="sr-only">选择一个答案</legend>
-                        {material.question.options.map((option) => (
-                          <label key={option.option_id}>
-                            <input
-                              type="radio"
-                              name="reading-answer"
-                              checked={choice === option.option_id}
-                              onChange={() => {
-                                setChoice(option.option_id);
-                                setSaveState("pending");
-                              }}
-                            />
-                            <strong>{option.option_id}</strong>
-                            <span>{option.text}</span>
-                          </label>
-                        ))}
-                      </fieldset>
-                    )}
-                  </>
-                )}
-
-                <label
-                  className={`response-editor${hasAttempt && (!hasUnansweredIntervention || revisionEditorCollapsed) ? " saved-response" : ""}`}
-                  data-ui-anchor="composer"
-                >
-                  <span>
-                    {isReading
-                      ? hasUnansweredIntervention || task.attempts.length > 1
-                        ? "我的解释 · V2"
-                        : "我的解释 · V1"
-                      : hasUnansweredIntervention || task.attempts.length > 1
-                        ? "我的作品 · V2"
-                        : "我的作品 · V1"}
-                    <small>
-                      {isReading ? "先说清判断与证据的关系" : `当前约 ${wordCount} 个英文词`}
-                    </small>
-                  </span>
-                  <textarea
-                    ref={responseRef}
-                    value={text}
-                    readOnly={hasAttempt && !hasUnansweredIntervention}
-                    disabled={isPending}
-                    placeholder={
-                      isReading
-                        ? "不要抄整句。用自己的话说明：这段原文为什么支持你的选择？"
-                        : "可以从关键词或不完整句开始，但最终请亲自组织成 2–4 句英文。"
-                    }
-                    onCompositionStart={() => setIsComposing(true)}
-                    onCompositionEnd={() => setIsComposing(false)}
-                    onChange={(event) => {
-                      setText(event.target.value);
-                      setSaveState("pending");
-                    }}
-                  />
-                </label>
-
-                {isReading && hasAttempt && !latestIntervention ? (
-                  <section
-                    className="intervention-offer"
-                    aria-labelledby="h1-offer-title"
-                    data-ui-anchor="card"
-                  >
-                    <div>
-                      <p className="step-label">反馈与纠偏 · 可选最小帮助</p>
-                      <h3 id="h1-offer-title">基于 V1 只指出一个偏差方向，然后由你写 V2</h3>
-                      <p>H1 不标答案句、不提供翻译，也不会替你改写。使用后本步必须再次输出。</p>
-                    </div>
-                    <button
-                      type="button"
-                      className="secondary-button"
-                      onClick={requestMinimalHint}
-                      disabled={isPending}
-                    >
-                      领取 H1
-                    </button>
-                  </section>
-                ) : null}
-
-                {!isReading && hasAttempt && !latestIntervention ? (
-                  <section
-                    className="intervention-offer expression-feedback-offer"
-                    aria-labelledby="expression-feedback-title"
-                    data-ui-anchor="card"
-                  >
-                    <div>
-                      <p className="step-label">反馈与纠偏 · 模型单项检查</p>
-                      <h3 id="expression-feedback-title">引用 V1，只指出一项最值得先改的问题</h3>
-                      <p>
-                        这是版本化规则检查，不是作文评分，也不会生成替代句。使用后必须由你亲自写
-                        V2。
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      className="secondary-button"
-                      onClick={requestExpressionFeedback}
-                      disabled={isPending}
-                    >
-                      查看单项反馈
-                    </button>
-                  </section>
-                ) : null}
-
-                {revisionEditorCollapsed ? null : (
-                  <div className="action-footer">
-                    <p className="progress-message" aria-live="polite">
-                      {progressMessage ??
-                        (isReading
-                          ? "提示不会预先展示。先选择、标记并解释你认为关键的原文。"
-                          : "系统不会生成成品段落；这一步保留你的措辞和组织责任。")}
-                    </p>
-                    <button
-                      className="primary-button"
-                      type="button"
-                      onClick={submitTask}
-                      disabled={isPending}
-                    >
-                      {isPending
-                        ? "正在确认保存…"
-                        : !hasAttempt
-                          ? "保存 V1（不结束本步）"
-                          : hasUnansweredIntervention
-                            ? "保存 V2 并建立引用"
-                            : needsRevisionLink
-                              ? "补齐 V2 引用"
-                              : latestIntervention
-                                ? "确认 V1 / V2 后完成"
-                                : "不看提示，直接完成本步"}
-                    </button>
-                  </div>
-                )}
-
-                <div className="early-end-row">
                   <button
-                    ref={earlyEndTriggerRef}
-                    className="early-end-trigger"
+                    id="workspace-tab-task"
                     type="button"
-                    onClick={() => setShowEarlyEndConfirm(true)}
-                    disabled={isPending || showEarlyEndConfirm}
+                    role="tab"
+                    aria-selected={activeWorkspaceTab === "task"}
+                    aria-controls="workspace-panel-task"
+                    tabIndex={activeWorkspaceTab === "task" ? 0 : -1}
+                    onClick={() => switchWorkspaceTab("task")}
                   >
-                    提前结束本步
+                    本步任务
+                  </button>
+                  {isReading ? (
+                    <button
+                      id="workspace-tab-annotations"
+                      type="button"
+                      role="tab"
+                      aria-selected={activeWorkspaceTab === "annotations"}
+                      aria-controls="workspace-panel-annotations"
+                      tabIndex={activeWorkspaceTab === "annotations" ? 0 : -1}
+                      onClick={() => switchWorkspaceTab("annotations")}
+                    >
+                      标注列表
+                      <span>{savedAnnotations.length}</span>
+                    </button>
+                  ) : null}
+                  {preferences.temporaryTasksEnabled ? (
+                    <button
+                      id="workspace-tab-temporary"
+                      type="button"
+                      role="tab"
+                      aria-selected={activeWorkspaceTab === "temporary"}
+                      aria-controls="workspace-panel-temporary"
+                      tabIndex={activeWorkspaceTab === "temporary" ? 0 : -1}
+                      onClick={() => switchWorkspaceTab("temporary")}
+                    >
+                      临时任务
+                      <span
+                        aria-label={`已完成 ${temporaryTasks.filter((item) => item.completed).length} 个，共 ${temporaryTasks.length} 个`}
+                      >
+                        {temporaryTasks.filter((item) => item.completed).length}/
+                        {temporaryTasks.length}
+                      </span>
+                    </button>
+                  ) : null}
+                  <button
+                    id="workspace-tab-notes"
+                    type="button"
+                    role="tab"
+                    aria-selected={activeWorkspaceTab === "notes"}
+                    aria-controls="workspace-panel-notes"
+                    tabIndex={activeWorkspaceTab === "notes" ? 0 : -1}
+                    onClick={() => switchWorkspaceTab("notes")}
+                  >
+                    随时记
+                    {workspaceNote.trim() ? <span aria-label="已有笔记">•</span> : null}
                   </button>
                 </div>
+                <div
+                  ref={setRightExpressionPanelTarget}
+                  className="expression-workspace-panel-host"
+                />
+              </>
+            ) : (
+              <>
+                <MovableWorkspaceTabs
+                  pane="right"
+                  tabs={expressionTabLayout.right}
+                  activeTab={activeExpressionTabs.right}
+                  labels={EXPRESSION_TAB_LABELS}
+                  badges={expressionTabBadges}
+                  onActivate={activateExpressionTab}
+                  onMove={moveWorkspaceTab}
+                />
+                <div
+                  ref={setRightExpressionPanelTarget}
+                  className="expression-workspace-panel-host"
+                />
+              </>
+            )}
 
-                {showEarlyEndConfirm ? (
-                  <section
-                    ref={earlyEndConfirmRef}
-                    className="early-end-confirmation"
-                    role="alertdialog"
-                    tabIndex={-1}
-                    aria-labelledby="early-end-title"
-                    aria-describedby="early-end-description"
-                    data-ui-anchor="popover"
+            {targetForWorkspaceTab("task")
+              ? createPortal(
+                  <div
+                    id="workspace-panel-task"
+                    className="workspace-tab-panel task-tab-panel"
+                    role="tabpanel"
+                    aria-labelledby="workspace-tab-task"
                   >
-                    <p className="step-label">结束前确认</p>
-                    <h3 id="early-end-title">确定提前结束这一步吗？</h3>
-                    <p id="early-end-description">
-                      当前草稿、标注和随手记会保留，但缺少的作答与修订证据不会被补记为完成。之后仍可进入下一步。
-                    </p>
-                    <div>
-                      <button
-                        type="button"
-                        className="quiet-button"
-                        onClick={() => {
-                          setShowEarlyEndConfirm(false);
-                          window.requestAnimationFrame(() => earlyEndTriggerRef.current?.focus());
+                    {selection && isReading ? (
+                      <section
+                        className="annotation-composer"
+                        aria-labelledby="annotation-title"
+                        data-ui-anchor="composer"
+                      >
+                        <div className="annotation-composer-heading">
+                          <div>
+                            <p className="step-label">正在标记选中的原文</p>
+                            <h3 id="annotation-title">“{selection.textQuote}”</h3>
+                          </div>
+                          <button
+                            type="button"
+                            className="icon-button"
+                            aria-label="取消本次标记"
+                            onClick={() => {
+                              setSelection(null);
+                              setSelectionAnchor(null);
+                              setShowSelectionToolbar(false);
+                              setAnnotationAnalysis(null);
+                              setAnnotationAnalysisError(null);
+                              window.getSelection()?.removeAllRanges();
+                            }}
+                          >
+                            ×
+                          </button>
+                        </div>
+                        {selectedScale && selectedScope ? (
+                          <div
+                            className={`selection-recommendation selection-scope-${selectedScope}`}
+                          >
+                            <span>{SELECTION_SCALE_LABELS[selectedScale]}</span>
+                            <p>
+                              {selectedScope === "word_or_phrase"
+                                ? "优先查生词：看当前语境义、词性和搭配。"
+                                : "优先拆长句：先看完整译文，再看主干、从句和修饰层级。"}
+                            </p>
+                          </div>
+                        ) : null}
+                        <div className="annotation-color-legend" aria-label="高亮颜色语义">
+                          <span className="annotation-kind-vocabulary">暖黄 · 生词</span>
+                          <span className="annotation-kind-reusable_expression">雾蓝 · 好表达</span>
+                          <span className="annotation-kind-grammar">珊瑚 · 语法重点</span>
+                        </div>
+                        <div className="annotation-types" role="group" aria-label="标记类型">
+                          {allowedAnnotations.map((kind) => (
+                            <button
+                              key={kind}
+                              type="button"
+                              className={`annotation-kind-${kind}${annotationKind === kind ? " selected" : ""}`}
+                              onClick={() => chooseAnnotationKind(kind)}
+                            >
+                              {ANNOTATION_LABELS[kind]}
+                            </button>
+                          ))}
+                        </div>
+                        {preferences.assistanceMode !== "quiet" ? (
+                          <InlineAssistancePanel
+                            selection={selection}
+                            material={material as ReadingMaterialView}
+                            focus={inlineAssistanceFocus}
+                            onFocus={setInlineAssistanceFocus}
+                          />
+                        ) : null}
+                        {annotationKind === "uncertain" ? (
+                          <div
+                            className="uncertainty-reasons"
+                            role="group"
+                            aria-label="看不懂的原因"
+                          >
+                            <span>卡在哪里？</span>
+                            {UNCERTAINTY_REASONS.map(([label, explanation]) => (
+                              <button
+                                key={label}
+                                type="button"
+                                onClick={() => {
+                                  if (!annotationExplanation.trim()) {
+                                    setAnnotationExplanation(explanation);
+                                    setAnnotationAnalysis(null);
+                                    setAnnotationAnalysisError(null);
+                                  }
+                                  window.requestAnimationFrame(() =>
+                                    annotationExplanationRef.current?.focus(),
+                                  );
+                                }}
+                              >
+                                {label}
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
+                        <label>
+                          <span>
+                            {canAnalyzeAnnotation ? "你想重点解决什么？" : "为什么这样标？"}
+                          </span>
+                          <textarea
+                            ref={annotationExplanationRef}
+                            value={annotationExplanation}
+                            onChange={(event) => {
+                              setAnnotationExplanation(event.target.value);
+                              setAnnotationAnalysis(null);
+                              setAnnotationAnalysisError(null);
+                            }}
+                            placeholder={
+                              annotationKind === "vocabulary"
+                                ? "可选：写下你猜的语境义，或直接点击下方查词。"
+                                : annotationKind === "grammar"
+                                  ? "可选：写下没理清的主干、从句或修饰关系。"
+                                  : annotationKind === "uncertain"
+                                    ? "选一个卡点作为开头，再补充具体词、结构或关系。"
+                                    : "写下你的判断。标记数量不算进步，解释才让思考可见。"
+                            }
+                          />
+                        </label>
+                        {canAnalyzeAnnotation ? (
+                          <div className="annotation-analysis-flow">
+                            <div className="annotation-analysis-action">
+                              <button
+                                className="analysis-button"
+                                type="button"
+                                onClick={requestAnnotationAnalysis}
+                                disabled={isAnnotationAnalysisPending || isPending}
+                              >
+                                {isAnnotationAnalysisPending
+                                  ? "正在分析当前选区…"
+                                  : annotationAnalysisButtonLabel}
+                              </button>
+                              <small>
+                                {selectedScope === "word_or_phrase"
+                                  ? "默认优先语境义，不把短语误当整句"
+                                  : "只翻译当前选区，不回答题目、不代读全文"}
+                              </small>
+                            </div>
+                            {isAnnotationAnalysisPending ? (
+                              <div
+                                className="annotation-streaming-placeholder"
+                                role="status"
+                                aria-label="正在生成并稳定排版当前选区分析"
+                              >
+                                <span />
+                                <span />
+                                <span />
+                                <small>内容到达时会在预留区域内逐段排版，避免正文反复跳动。</small>
+                              </div>
+                            ) : null}
+                            {annotationAnalysisError ? (
+                              <p className="annotation-analysis-error" role="alert">
+                                {annotationAnalysisError} 你的文字仍保留，可稍后重试。
+                              </p>
+                            ) : null}
+                            {annotationAnalysis ? (
+                              <article className="annotation-analysis-result" aria-live="polite">
+                                <header>
+                                  <span>{ANALYSIS_FOCUS_LABELS[annotationAnalysis.focus]}</span>
+                                  <small>
+                                    {annotationAnalysis.source === "model"
+                                      ? "AI 模型分析"
+                                      : "本地保守分析 · 模型暂不可用"}
+                                  </small>
+                                </header>
+                                {annotationAnalysis.vocabulary_note ? (
+                                  <div className="annotation-primary-help vocabulary-help">
+                                    <strong>语境义、词性与搭配</strong>
+                                    <p>{annotationAnalysis.vocabulary_note}</p>
+                                  </div>
+                                ) : null}
+                                {annotationAnalysis.translation ? (
+                                  <div className="annotation-primary-help translation-help">
+                                    <strong>当前选区完整翻译</strong>
+                                    <p>{annotationAnalysis.translation}</p>
+                                  </div>
+                                ) : annotationAnalysis.selection_scope ===
+                                  "sentence_or_paragraph" ? (
+                                  <div className="annotation-primary-help translation-unavailable">
+                                    <strong>完整翻译暂不可用</strong>
+                                    <p>当前为本地保守分析；启用受约束模型后才会生成选区译文。</p>
+                                  </div>
+                                ) : null}
+                                {annotationAnalysis.grammar_structure.length > 0 ? (
+                                  <div className="annotation-grammar-structure">
+                                    <strong>语法结构</strong>
+                                    <ol>
+                                      {annotationAnalysis.grammar_structure.map((item) => (
+                                        <li key={item}>{item}</li>
+                                      ))}
+                                    </ol>
+                                  </div>
+                                ) : null}
+                                <p>{annotationAnalysis.diagnosis}</p>
+                                <ol>
+                                  {annotationAnalysis.breakdown.map((step) => (
+                                    <li key={step}>{step}</li>
+                                  ))}
+                                </ol>
+                                <div className="annotation-next-check">
+                                  <strong>下一步自查</strong>
+                                  <p>{annotationAnalysis.next_check}</p>
+                                </div>
+                                <small className="annotation-analysis-boundary">
+                                  {annotationAnalysis.boundary_note}
+                                </small>
+                              </article>
+                            ) : null}
+                          </div>
+                        ) : null}
+                        <div className="annotation-save-row">
+                          <button
+                            className="secondary-button"
+                            type="button"
+                            onClick={submitAnnotation}
+                            disabled={isPending || isAnnotationAnalysisPending}
+                          >
+                            {annotationAnalysis ? "保存标注与分析" : "保存这条判断"}
+                          </button>
+                        </div>
+                      </section>
+                    ) : null}
+
+                    {isReading ? (
+                      <section
+                        className={
+                          "grammar-challenge-card grammar-challenge-" +
+                          (material as ReadingMaterialView).grammar_challenge.status
+                        }
+                        aria-labelledby="grammar-challenge-title"
+                      >
+                        <div className="grammar-challenge-heading">
+                          <div>
+                            <p className="step-label">语法找茬 · 随机 1 处</p>
+                            <h2 id="grammar-challenge-title">
+                              {(material as ReadingMaterialView).grammar_challenge.status ===
+                              "resolved"
+                                ? "语法找茬已完成，原文已恢复"
+                                : "文章中藏着 1 处语法错误"}
+                            </h2>
+                          </div>
+                          {(material as ReadingMaterialView).grammar_challenge.status ===
+                          "resolved" ? (
+                            <CheckCircle size={24} weight="fill" aria-hidden="true" />
+                          ) : (
+                            <span className="grammar-challenge-count" aria-label="一处错误">
+                              1
+                            </span>
+                          )}
+                        </div>
+                        {(material as ReadingMaterialView).grammar_challenge.status ===
+                        "resolved" ? (
+                          <p className="grammar-challenge-success" role="status">
+                            正确写法：
+                            <strong>
+                              {(material as ReadingMaterialView).grammar_challenge.answer ??
+                                "原文已恢复"}
+                            </strong>
+                            <span>文章中的错误片段已经替换，刷新页面也会保留正确原文。</span>
+                          </p>
+                        ) : (
+                          <>
+                            <p>
+                              通读左侧文章，找出错误后，只输入需要替换的正确英文片段。系统不会提前标出位置。
+                            </p>
+                            <form
+                              className="grammar-correction-form"
+                              onSubmit={(event) => {
+                                event.preventDefault();
+                                void submitGrammarCorrection();
+                              }}
+                            >
+                              <label>
+                                <span>正确写法</span>
+                                <input
+                                  type="text"
+                                  value={grammarCorrection}
+                                  onChange={(event) => {
+                                    setGrammarCorrection(event.target.value);
+                                    setGrammarFeedback(null);
+                                  }}
+                                  placeholder="例如：may show"
+                                  autoComplete="off"
+                                  spellCheck={false}
+                                  disabled={isGrammarPending}
+                                />
+                              </label>
+                              <button
+                                type="submit"
+                                className="secondary-button"
+                                disabled={isGrammarPending || !grammarCorrection.trim()}
+                              >
+                                {isGrammarPending ? "正在验证…" : "验证修改"}
+                              </button>
+                            </form>
+                            <div className="grammar-hint-row">
+                              <div className="grammar-assistance-actions">
+                                {(material as ReadingMaterialView).grammar_challenge
+                                  .hint_revealed ? null : (
+                                  <button
+                                    type="button"
+                                    className="quiet-button"
+                                    onClick={() => void revealGrammarHint()}
+                                    disabled={isGrammarPending}
+                                  >
+                                    查看提示（错误类型）
+                                  </button>
+                                )}
+                                <button
+                                  type="button"
+                                  className="grammar-give-up-button"
+                                  onClick={() => void revealGrammarAnswer()}
+                                  disabled={isGrammarPending}
+                                >
+                                  放弃并显示答案
+                                </button>
+                              </div>
+                              {(material as ReadingMaterialView).grammar_challenge.hint_revealed ? (
+                                <div className="grammar-hint" role="status">
+                                  <strong>
+                                    错误类型：
+                                    {(material as ReadingMaterialView).grammar_challenge.error_type}
+                                  </strong>
+                                  <span>
+                                    {(material as ReadingMaterialView).grammar_challenge.hint}
+                                  </span>
+                                </div>
+                              ) : null}
+                              {(material as ReadingMaterialView).grammar_challenge.attempt_count >
+                              0 ? (
+                                <small>
+                                  已验证{" "}
+                                  {
+                                    (material as ReadingMaterialView).grammar_challenge
+                                      .attempt_count
+                                  }{" "}
+                                  次
+                                </small>
+                              ) : null}
+                            </div>
+                            {grammarFeedback ? (
+                              <p className="grammar-feedback" role="status">
+                                {grammarFeedback}
+                              </p>
+                            ) : null}
+                          </>
+                        )}
+                      </section>
+                    ) : null}
+
+                    <section
+                      className="task-checklist"
+                      aria-labelledby="task-checklist-title"
+                      data-ui-anchor="card"
+                    >
+                      <div>
+                        <p className="step-label">完成本步还需要</p>
+                        <h2 id="task-checklist-title">
+                          {requiredSteps.filter((step) => !step.complete).length > 0
+                            ? `${requiredSteps.filter((step) => !step.complete).length} 项必做动作`
+                            : "必做动作已完成"}
+                        </h2>
+                      </div>
+                      <ul>
+                        {requiredSteps.map((step) => (
+                          <li key={step.label} className={step.complete ? "complete" : "pending"}>
+                            <span aria-hidden="true">{step.complete ? "✓" : "○"}</span>
+                            {step.label}
+                          </li>
+                        ))}
+                      </ul>
+                    </section>
+
+                    {hasAttempt ? (
+                      <ImmediateFeedback
+                        task={task}
+                        isReading={isReading}
+                        linkedRevision={linkedRevision}
+                        hasUnansweredIntervention={hasUnansweredIntervention}
+                      />
+                    ) : null}
+
+                    {hasAttempt ? (
+                      <AttemptTimeline
+                        attempts={task.attempts}
+                        interventions={task.interventions}
+                        revisions={task.revisions}
+                        preferences={preferences}
+                      />
+                    ) : null}
+
+                    {!hasAttempt ? (
+                      <section
+                        className="thinking-scaffold"
+                        aria-labelledby="thinking-scaffold-title"
+                        data-ui-anchor="card"
+                      >
+                        <button
+                          type="button"
+                          className="thinking-toggle"
+                          aria-expanded={showThinkingGuide}
+                          aria-controls="thinking-guide"
+                          onClick={() => setShowThinkingGuide((current) => !current)}
+                        >
+                          <span aria-hidden="true">↗</span>
+                          <span>
+                            <strong id="thinking-scaffold-title">不知道怎么想？打开思考起点</strong>
+                            <small>只给起步动作，不给当前题答案</small>
+                          </span>
+                          <span aria-hidden="true">{showThinkingGuide ? "收起" : "展开"}</span>
+                        </button>
+                        {showThinkingGuide ? <ThinkingGuide isReading={isReading} /> : null}
+                      </section>
+                    ) : null}
+
+                    {material.content_type === "micro_expression" ? (
+                      <ExpressionResponseHeader
+                        material={material}
+                        wordCount={wordCount}
+                        isRevision={hasUnansweredIntervention || task.attempts.length > 1}
+                      />
+                    ) : (
+                      <>
+                        <p className="step-label">本步任务</p>
+                        <h2 id="response-title" className="question-prompt">
+                          {conciseQuestionPrompt(material.question.prompt)}
+                        </h2>
+                        {showSubmittedAnswer && selectedOption ? (
+                          <section className="submitted-answer" aria-label="已保存的当前答案">
+                            <CheckCircle size={19} weight="fill" aria-hidden="true" />
+                            <strong>{selectedOption.option_id}</strong>
+                            <p>{selectedOption.text}</p>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                latestIntervention
+                                  ? setShowRevisionEditor(true)
+                                  : requestMinimalHint()
+                              }
+                              disabled={isPending}
+                            >
+                              {latestIntervention ? "开始修改" : "领取反馈后修改"}
+                            </button>
+                          </section>
+                        ) : (
+                          <fieldset className="option-list" disabled={isPending}>
+                            <legend className="sr-only">选择一个答案</legend>
+                            {material.question.options.map((option) => (
+                              <label key={option.option_id}>
+                                <input
+                                  type="radio"
+                                  name="reading-answer"
+                                  checked={choice === option.option_id}
+                                  onChange={() => {
+                                    setChoice(option.option_id);
+                                    setSaveState("pending");
+                                  }}
+                                />
+                                <strong>{option.option_id}</strong>
+                                <span>{option.text}</span>
+                              </label>
+                            ))}
+                          </fieldset>
+                        )}
+                      </>
+                    )}
+
+                    <label
+                      className={`response-editor${hasAttempt && (!hasUnansweredIntervention || revisionEditorCollapsed) ? " saved-response" : ""}`}
+                      data-ui-anchor="composer"
+                    >
+                      <span>
+                        {isReading
+                          ? hasUnansweredIntervention || task.attempts.length > 1
+                            ? "我的解释 · V2"
+                            : "我的解释 · V1"
+                          : hasUnansweredIntervention || task.attempts.length > 1
+                            ? "我的作品 · V2"
+                            : "我的作品 · V1"}
+                        <small>
+                          {isReading ? "先说清判断与证据的关系" : `当前约 ${wordCount} 个英文词`}
+                        </small>
+                      </span>
+                      <textarea
+                        ref={responseRef}
+                        value={text}
+                        readOnly={hasAttempt && !hasUnansweredIntervention}
+                        disabled={isPending}
+                        placeholder={
+                          isReading
+                            ? "不要抄整句。用自己的话说明：这段原文为什么支持你的选择？"
+                            : "可以从关键词或不完整句开始，但最终请亲自组织成 2–4 句英文。"
+                        }
+                        onCompositionStart={() => setIsComposing(true)}
+                        onCompositionEnd={() => setIsComposing(false)}
+                        onChange={(event) => {
+                          setText(event.target.value);
+                          setSaveState("pending");
                         }}
-                        disabled={isPending}
+                      />
+                    </label>
+
+                    {isReading && hasAttempt && !latestIntervention ? (
+                      <section
+                        className="intervention-offer"
+                        aria-labelledby="h1-offer-title"
+                        data-ui-anchor="card"
                       >
-                        继续本步
-                      </button>
+                        <div>
+                          <p className="step-label">反馈与纠偏 · 可选最小帮助</p>
+                          <h3 id="h1-offer-title">基于 V1 只指出一个偏差方向，然后由你写 V2</h3>
+                          <p>H1 不标答案句、不提供翻译，也不会替你改写。使用后本步必须再次输出。</p>
+                        </div>
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          onClick={requestMinimalHint}
+                          disabled={isPending}
+                        >
+                          领取 H1
+                        </button>
+                      </section>
+                    ) : null}
+
+                    {!isReading && hasAttempt && !latestIntervention ? (
+                      <section
+                        className="intervention-offer expression-feedback-offer"
+                        aria-labelledby="expression-feedback-title"
+                        data-ui-anchor="card"
+                      >
+                        <div>
+                          <p className="step-label">反馈与纠偏 · 模型单项检查</p>
+                          <h3 id="expression-feedback-title">
+                            引用 V1，只指出一项最值得先改的问题
+                          </h3>
+                          <p>
+                            这是版本化规则检查，不是作文评分，也不会生成替代句。使用后必须由你亲自写
+                            V2。
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          onClick={requestExpressionFeedback}
+                          disabled={isPending}
+                        >
+                          查看单项反馈
+                        </button>
+                      </section>
+                    ) : null}
+
+                    {revisionEditorCollapsed ? null : (
+                      <div className="action-footer">
+                        <p className="progress-message" aria-live="polite">
+                          {progressMessage ??
+                            (isReading
+                              ? "提示不会预先展示。先选择、标记并解释你认为关键的原文。"
+                              : "系统不会生成成品段落；这一步保留你的措辞和组织责任。")}
+                        </p>
+                        <button
+                          className="primary-button"
+                          type="button"
+                          onClick={submitTask}
+                          disabled={isPending}
+                        >
+                          {isPending
+                            ? "正在确认保存…"
+                            : !hasAttempt
+                              ? "保存 V1（不结束本步）"
+                              : hasUnansweredIntervention
+                                ? "保存 V2 并建立引用"
+                                : needsRevisionLink
+                                  ? "补齐 V2 引用"
+                                  : latestIntervention
+                                    ? "确认 V1 / V2 后完成"
+                                    : "不看提示，直接完成本步"}
+                        </button>
+                      </div>
+                    )}
+
+                    <div className="early-end-row">
                       <button
+                        ref={earlyEndTriggerRef}
+                        className="early-end-trigger"
                         type="button"
-                        className="secondary-button early-end-confirm-button"
-                        onClick={confirmEarlyEnd}
-                        disabled={isPending}
+                        onClick={() => setShowEarlyEndConfirm(true)}
+                        disabled={isPending || showEarlyEndConfirm}
                       >
-                        {isPending ? "正在保留记录…" : "确认提前结束"}
+                        提前结束本步
                       </button>
                     </div>
-                  </section>
-                ) : null}
-              </div>
-            ) : null}
 
-            {isReading && activeWorkspaceTab === "annotations" ? (
-              <div
-                id="workspace-panel-annotations"
-                className="workspace-tab-panel"
-                role="tabpanel"
-                aria-labelledby="workspace-tab-annotations"
-              >
-                <div className="workspace-panel-intro">
-                  <p className="step-label">原文思考痕迹</p>
-                  <h2>标注列表</h2>
-                  <p>这里展示本步保存的判断、卡点和可迁移表达；点击原文标记也会回到这里。</p>
-                </div>
-                <SavedAnnotations
-                  annotations={savedAnnotations}
-                  expanded={showSavedAnnotations}
-                  onToggle={() => setShowSavedAnnotations((current) => !current)}
-                />
-                <button
-                  type="button"
-                  className="quiet-button workspace-panel-return"
-                  onClick={() => switchWorkspaceTab("task")}
-                >
-                  返回本步任务
-                </button>
-              </div>
-            ) : null}
+                    {showEarlyEndConfirm ? (
+                      <section
+                        ref={earlyEndConfirmRef}
+                        className="early-end-confirmation"
+                        role="alertdialog"
+                        tabIndex={-1}
+                        aria-labelledby="early-end-title"
+                        aria-describedby="early-end-description"
+                        data-ui-anchor="popover"
+                      >
+                        <p className="step-label">结束前确认</p>
+                        <h3 id="early-end-title">确定提前结束这一步吗？</h3>
+                        <p id="early-end-description">
+                          当前草稿、标注和随手记会保留，但缺少的作答与修订证据不会被补记为完成。之后仍可进入下一步。
+                        </p>
+                        <div>
+                          <button
+                            type="button"
+                            className="quiet-button"
+                            onClick={() => {
+                              setShowEarlyEndConfirm(false);
+                              window.requestAnimationFrame(() =>
+                                earlyEndTriggerRef.current?.focus(),
+                              );
+                            }}
+                            disabled={isPending}
+                          >
+                            继续本步
+                          </button>
+                          <button
+                            type="button"
+                            className="secondary-button early-end-confirm-button"
+                            onClick={confirmEarlyEnd}
+                            disabled={isPending}
+                          >
+                            {isPending ? "正在保留记录…" : "确认提前结束"}
+                          </button>
+                        </div>
+                      </section>
+                    ) : null}
+                  </div>,
+                  targetForWorkspaceTab("task")!,
+                  "workspace-task",
+                )
+              : null}
 
-            {activeWorkspaceTab === "temporary" && preferences.temporaryTasksEnabled ? (
-              <div
-                id="workspace-panel-temporary"
-                className="workspace-tab-panel"
-                role="tabpanel"
-                aria-labelledby="workspace-tab-temporary"
-              >
-                <TemporaryTaskList
-                  isReading={isReading}
-                  material={material}
-                  tasks={temporaryTasks}
-                  expandedTaskId={expandedTemporaryTaskId}
-                  onToggle={(taskId) =>
-                    setExpandedTemporaryTaskId((current) => (current === taskId ? null : taskId))
-                  }
-                  onAnswer={updateTemporaryTaskAnswer}
-                  onComplete={completeTemporaryTaskItem}
-                  onAdd={addTemporaryTask}
-                  onClose={() => switchWorkspaceTab("task")}
-                />
-              </div>
-            ) : null}
+            {targetForWorkspaceTab("annotations")
+              ? createPortal(
+                  <div
+                    id="workspace-panel-annotations"
+                    className="workspace-tab-panel"
+                    role="tabpanel"
+                    aria-labelledby="workspace-tab-annotations"
+                  >
+                    <div className="workspace-panel-intro">
+                      <p className="step-label">原文思考痕迹</p>
+                      <h2>标注列表</h2>
+                      <p>这里展示本步保存的判断、卡点和可迁移表达；点击原文标记也会回到这里。</p>
+                    </div>
+                    <SavedAnnotations
+                      annotations={savedAnnotations}
+                      expanded={showSavedAnnotations}
+                      onToggle={() => setShowSavedAnnotations((current) => !current)}
+                    />
+                    <button
+                      type="button"
+                      className="quiet-button workspace-panel-return"
+                      onClick={() => switchWorkspaceTab("task")}
+                    >
+                      返回本步任务
+                    </button>
+                  </div>,
+                  targetForWorkspaceTab("annotations")!,
+                  "workspace-annotations",
+                )
+              : null}
 
-            {activeWorkspaceTab === "notes" ? (
-              <div
-                id="workspace-panel-notes"
-                className="workspace-tab-panel"
-                role="tabpanel"
-                aria-labelledby="workspace-tab-notes"
-              >
-                <section className="anytime-notes" aria-labelledby="anytime-notes-title">
-                  <div className="workspace-panel-intro">
-                    <p className="step-label">不必完整，也不计入进度</p>
-                    <h2 id="anytime-notes-title">随时记一点正在发生的思考</h2>
-                    <p>记下一个疑问、一次转折或刚发现的规律。它不会提交为答案，也不会打断本步。</p>
-                  </div>
-                  <div className="note-starters" aria-label="笔记开头建议">
-                    {["我刚发现…", "这里让我疑惑的是…", "下次遇到类似句子，我会…"].map(
-                      (starter) => (
-                        <button
-                          key={starter}
-                          type="button"
-                          onClick={() => {
-                            setWorkspaceNote((current) =>
-                              current.trim() ? `${current.trimEnd()}\n${starter}` : starter,
-                            );
+            {targetForWorkspaceTab("temporary") && preferences.temporaryTasksEnabled
+              ? createPortal(
+                  <div
+                    id="workspace-panel-temporary"
+                    className="workspace-tab-panel"
+                    role="tabpanel"
+                    aria-labelledby="workspace-tab-temporary"
+                  >
+                    <TemporaryTaskList
+                      isReading={isReading}
+                      material={material}
+                      tasks={temporaryTasks}
+                      expandedTaskId={expandedTemporaryTaskId}
+                      onToggle={(taskId) =>
+                        setExpandedTemporaryTaskId((current) =>
+                          current === taskId ? null : taskId,
+                        )
+                      }
+                      onAnswer={updateTemporaryTaskAnswer}
+                      onComplete={completeTemporaryTaskItem}
+                      onAdd={addTemporaryTask}
+                      onClose={() => switchWorkspaceTab("task")}
+                    />
+                  </div>,
+                  targetForWorkspaceTab("temporary")!,
+                  "workspace-temporary",
+                )
+              : null}
+
+            {targetForWorkspaceTab("notes")
+              ? createPortal(
+                  <div
+                    id="workspace-panel-notes"
+                    className="workspace-tab-panel"
+                    role="tabpanel"
+                    aria-labelledby="workspace-tab-notes"
+                  >
+                    <section className="anytime-notes" aria-labelledby="anytime-notes-title">
+                      <div className="workspace-panel-intro">
+                        <p className="step-label">不必完整，也不计入进度</p>
+                        <h2 id="anytime-notes-title">随时记一点正在发生的思考</h2>
+                        <p>
+                          记下一个疑问、一次转折或刚发现的规律。它不会提交为答案，也不会打断本步。
+                        </p>
+                      </div>
+                      <div className="note-starters" aria-label="笔记开头建议">
+                        {["我刚发现…", "这里让我疑惑的是…", "下次遇到类似句子，我会…"].map(
+                          (starter) => (
+                            <button
+                              key={starter}
+                              type="button"
+                              onClick={() => {
+                                setWorkspaceNote((current) =>
+                                  current.trim() ? `${current.trimEnd()}\n${starter}` : starter,
+                                );
+                                setNoteSaveState("pending");
+                                setNoteCaptured(false);
+                              }}
+                            >
+                              {starter}
+                            </button>
+                          ),
+                        )}
+                      </div>
+                      <label>
+                        <span>我的思考笔记</span>
+                        <textarea
+                          value={workspaceNote}
+                          onChange={(event) => {
+                            setWorkspaceNote(event.target.value);
                             setNoteSaveState("pending");
                             setNoteCaptured(false);
                           }}
+                          placeholder="哪怕只记一个词、一条关系或一个没想通的问题，也可以。"
+                        />
+                      </label>
+                      <div className="anytime-note-footer">
+                        <span aria-live="polite">
+                          {noteSaveState === "pending"
+                            ? "正在保留…"
+                            : noteSaveState === "local"
+                              ? "已保存在此电脑"
+                              : noteSaveState === "memory"
+                                ? "暂存在当前页面"
+                                : "尚未记录"}
+                        </span>
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          disabled={!workspaceNote.trim() || noteCaptured}
+                          onClick={() => {
+                            onLearningAssetCapture({
+                              kind: isReading ? "reading_skill" : "writing_expression",
+                              title: `随时记：${material.title}`,
+                              content: workspaceNote.trim(),
+                              note: "训练中主动记录的思考笔记。",
+                              sourceTitle: material.title,
+                            });
+                            setNoteCaptured(true);
+                          }}
                         >
-                          {starter}
+                          {noteCaptured ? "已加入学习资产" : "加入学习资产"}
                         </button>
-                      ),
-                    )}
-                  </div>
-                  <label>
-                    <span>我的思考笔记</span>
-                    <textarea
-                      value={workspaceNote}
-                      onChange={(event) => {
-                        setWorkspaceNote(event.target.value);
-                        setNoteSaveState("pending");
-                        setNoteCaptured(false);
-                      }}
-                      placeholder="哪怕只记一个词、一条关系或一个没想通的问题，也可以。"
-                    />
-                  </label>
-                  <div className="anytime-note-footer">
-                    <span aria-live="polite">
-                      {noteSaveState === "pending"
-                        ? "正在保留…"
-                        : noteSaveState === "local"
-                          ? "已保存在此电脑"
-                          : noteSaveState === "memory"
-                            ? "暂存在当前页面"
-                            : "尚未记录"}
-                    </span>
-                    <button
-                      type="button"
-                      className="secondary-button"
-                      disabled={!workspaceNote.trim() || noteCaptured}
-                      onClick={() => {
-                        onLearningAssetCapture({
-                          kind: isReading ? "reading_skill" : "writing_expression",
-                          title: `随时记：${material.title}`,
-                          content: workspaceNote.trim(),
-                          note: "训练中主动记录的思考笔记。",
-                          sourceTitle: material.title,
-                        });
-                        setNoteCaptured(true);
-                      }}
-                    >
-                      {noteCaptured ? "已加入学习资产" : "加入学习资产"}
-                    </button>
-                  </div>
-                </section>
-              </div>
-            ) : null}
+                      </div>
+                    </section>
+                  </div>,
+                  targetForWorkspaceTab("notes")!,
+                  "workspace-notes",
+                )
+              : null}
           </section>
         </ResizableTaskGrid>
       )}
@@ -2685,6 +2915,7 @@ function ReadingPane({
         setReadingProgress(Math.round(rawProgress / 5) * 5);
       }}
     >
+      <h1 className="sr-only">语境实验室</h1>
       <div
         className="reading-position"
         role="progressbar"
@@ -2733,7 +2964,7 @@ function ReadingPane({
       </div>
       <div className="material-heading">
         <p className="step-label">项目自写开发材料 · 难度待校准</p>
-        <h1 id="material-title">{material.title}</h1>
+        <h2 id="material-title">{material.title}</h2>
         <div className="reading-instruction">
           <p>选中原文后，标记工具会直接出现在选区旁边。</p>
           <button type="button" onClick={onPromptUncertain}>
