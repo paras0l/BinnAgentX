@@ -69,6 +69,35 @@ class AnnotationAnalysisView(BaseModel):
     boundary_note: str
 
 
+class RecentLearningAssetInput(BaseModel):
+    title: Annotated[str, Field(min_length=1, max_length=160)]
+    content: Annotated[str, Field(min_length=1, max_length=1200)]
+
+
+class ExpressionReviewRequest(BaseModel):
+    expected_version: Annotated[int, Field(ge=1)]
+    draft: Annotated[str, Field(min_length=12, max_length=20000)]
+    recent_assets: Annotated[
+        list[RecentLearningAssetInput], Field(default_factory=list, max_length=4)
+    ]
+
+
+class ExpressionStyleVersionView(BaseModel):
+    style: Literal["logic_mirror", "academic", "news"]
+    label: str
+    text: str
+    explanation: list[str]
+
+
+class ExpressionReviewView(BaseModel):
+    review_id: str
+    source: Literal["model", "local_fallback"]
+    reason_code: str
+    thinking_difference: str
+    versions: list[ExpressionStyleVersionView]
+    boundary_note: str
+
+
 class AttemptRequest(BaseModel):
     expected_version: Annotated[int, Field(ge=1)]
     text: Annotated[str, Field(min_length=1, max_length=20000)]
@@ -298,6 +327,7 @@ class GrammarChallengeView(BaseModel):
     hint_revealed: bool
     error_type: str | None
     hint: str | None
+    answer: str | None
 
 
 class LearnerReadingMaterialView(BaseModel):

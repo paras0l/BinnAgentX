@@ -6,102 +6,199 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 cd "$PROJECT_ROOT"
 
-COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-binnagentx}"
+# Keep the default aligned with compose.yml (`name: binnagent`) and `pnpm db:up`.
+COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-binnagent}"
 LOG_DIR="${LOG_DIR:-$PROJECT_ROOT/logs}"
+DEPLOY_STATE_DIR="${DEPLOY_STATE_DIR:-$PROJECT_ROOT/logs}"
 DB_WAIT_SECONDS="${DB_WAIT_SECONDS:-60}"
+SERVICE_WAIT_SECONDS="${SERVICE_WAIT_SECONDS:-45}"
 MONITOR_INTERVAL="${MONITOR_INTERVAL:-2}"
+SHUTDOWN_TIMEOUT="${SHUTDOWN_TIMEOUT:-8}"
 SKIP_MIGRATE="${SKIP_MIGRATE:-0}"
 SKIP_COMPOSE="${SKIP_COMPOSE:-0}"
-MONITOR_WORKER="${MONITOR_WORKER:-0}"
+VERBOSE="${VERBOSE:-0}"
+LEARNER_API_BASE_URL="${NEXT_PUBLIC_LEARNER_API_BASE_URL:-http://127.0.0.1:8000/learner}"
+CONTROL_API_BASE_URL="${NEXT_PUBLIC_CONTROL_API_BASE_URL:-http://127.0.0.1:8000/control}"
 
 RUN_API=1
 RUN_WORKER=1
-RUN_LEARNER=0
-RUN_CONTROL=0
+RUN_LEARNER=1
+RUN_CONTROL=1
+MONITOR_WORKER=0
+CLEAN_OLD_INSTANCES=1
+
+declare -a COMPOSE_FILES=()
+declare -a SERVICE_NAMES=()
+declare -a SERVICE_PIDS=()
+declare -a SERVICE_LOGS=()
+declare -a PNPM_CMD=()
+
+COMPOSE_STARTED_BY_SCRIPT=0
+CLEANUP_DONE=0
+INSTANCE_STATE_FILE=""
 
 show_help() {
   cat <<'EOF'
 用法:
   bash scripts/deploy.sh [选项]
 
+默认启动 PostgreSQL、执行迁移、运行 API 与 Worker 就绪检查，并启动学习端和控制舱。
+控制台只显示关键状态；完整输出写入 ./logs。
+
 选项:
-  --project-name <name>     docker compose 项目名（默认: binnagentx）
-  --compose <file[:file]>   指定 compose 文件列表（优先于 COMPOSE_FILE/COMPOSE_FILES_ENV）
-  --skip-compose            不启动/停止 docker compose，仅拉起本机服务
-  --skip-migrate            跳过 alembic 迁移
+  --project-name <name>     Compose 项目名（默认: binnagent）
+  --compose <file[:file]>   指定 Compose 文件列表
+  --skip-compose            使用已有数据库，不操作 Docker Compose
+  --skip-migrate            跳过 Alembic 迁移
   --no-api                  不启动 API
-  --no-worker               不启动 Worker
-  --learner                 启动 Learner 前端（可与 --control 配合）
-  --control                 启动 Control 前端
-  --monitor-worker          监控 worker 退出，异常退出则退出脚本（默认不监控）
-  --log-dir <dir>           指定日志目录（默认: ./logs）
+  --no-worker               不运行 Worker 就绪检查
+  --learner                 启动 Learner 前端（默认开启）
+  --control                 启动 Control 前端（默认开启）
+  --no-learner              不启动 Learner 前端
+  --no-control              不启动 Control 前端
+  --monitor-worker          兼容旧参数；Worker 是一次性检查，不再监控
+  --no-cleanup              不清理当前项目上次遗留的服务实例
+  --log-dir <dir>           日志目录（默认: ./logs）
+  --verbose                 在控制台同步显示 Compose/迁移输出
   --help                    打印帮助
+
+常用:
+  bash scripts/deploy.sh
+  bash scripts/deploy.sh --no-control
+  bash scripts/deploy.sh --skip-compose --skip-migrate --no-api --no-worker
 EOF
 }
 
-declare -a COMPOSE_FILES=()
+info() {
+  printf '• %s\n' "$*"
+}
+
+success() {
+  printf '✓ %s\n' "$*"
+}
+
+warn() {
+  printf '! %s\n' "$*" >&2
+}
+
+die() {
+  printf '错误：%s\n' "$*" >&2
+  exit 1
+}
+
+require_option_value() {
+  local option="$1"
+  local count="$2"
+  local value="${3:-}"
+  if (( count < 2 )) || [[ -z "$value" || "$value" == --* ]]; then
+    die "${option} 需要一个值"
+  fi
+}
+
+require_cmd() {
+  local command_name="$1"
+  local guidance="$2"
+  if ! command -v "$command_name" >/dev/null 2>&1; then
+    die "未检测到 ${command_name}。${guidance}"
+  fi
+}
+
+resolve_pnpm() {
+  if command -v pnpm >/dev/null 2>&1; then
+    PNPM_CMD=(pnpm)
+    return
+  fi
+  if command -v corepack >/dev/null 2>&1; then
+    PNPM_CMD=(corepack pnpm)
+    info "未找到全局 pnpm，使用 Corepack 提供 pnpm 11.9.0"
+    return
+  fi
+  if command -v npm >/dev/null 2>&1; then
+    PNPM_CMD=(npm exec --yes pnpm@11.9.0 --)
+    info "未找到全局 pnpm，使用 npm 加载 pnpm 11.9.0"
+    return
+  fi
+  die "未检测到 pnpm、Corepack 或 npm。请安装 Node.js 24.14.0。"
+}
+
+validate_positive_integer() {
+  local name="$1"
+  local value="$2"
+  case "$value" in
+    '' | *[!0-9]*) die "${name} 必须是正整数" ;;
+  esac
+  (( value > 0 )) || die "${name} 必须大于 0"
+}
+
+absolute_log_dir() {
+  case "$LOG_DIR" in
+    /*) ;;
+    *) LOG_DIR="$PROJECT_ROOT/$LOG_DIR" ;;
+  esac
+}
 
 add_compose_file() {
   local compose_file="$1"
+  local required="${2:-0}"
   local resolved="$compose_file"
+  local existing
 
   [[ -z "$resolved" ]] && return
   resolved="${resolved#./}"
   if [[ ! -f "$resolved" && -f "$PROJECT_ROOT/$resolved" ]]; then
     resolved="$PROJECT_ROOT/$resolved"
   fi
-  [[ ! -f "$resolved" ]] && return
+  if [[ ! -f "$resolved" ]]; then
+    if [[ "$required" == "1" ]]; then
+      die "Compose 文件不存在: $compose_file"
+    fi
+    return
+  fi
 
   for existing in "${COMPOSE_FILES[@]-}"; do
-    if [[ "$existing" == "$resolved" ]]; then
-      return
-    fi
+    [[ "$existing" == "$resolved" ]] && return
   done
   COMPOSE_FILES+=("$resolved")
 }
 
-collect_compose_files_from_env() {
+collect_compose_files_from_value() {
   local value="$1"
-  [[ -z "$value" ]] && return
+  local required="${2:-0}"
   local -a files=()
+  local compose_file
+  [[ -z "$value" ]] && return
   IFS=':' read -r -a files <<< "$value"
-  for f in "${files[@]}"; do
-    add_compose_file "$f"
+  for compose_file in "${files[@]}"; do
+    add_compose_file "$compose_file" "$required"
   done
 }
 
 collect_default_compose_files() {
-  add_compose_file "compose.yaml"
-  add_compose_file "compose.yml"
-  add_compose_file "docker-compose.yaml"
-  add_compose_file "docker-compose.yml"
-  add_compose_file "docker-compose.dev.yaml"
-  add_compose_file "docker-compose.dev.yml"
-  add_compose_file "docker-compose.local.yaml"
-  add_compose_file "docker-compose.local.yml"
-}
-
-require_cmd() {
-  local cmd_name="$1"
-  if ! command -v "$cmd_name" >/dev/null 2>&1; then
-    echo "错误：未检测到命令 $cmd_name"
-    return 1
-  fi
-}
-
-run_uv() {
-  uv run "$@"
+  local base
+  local override
+  for base in compose.yaml compose.yml docker-compose.yaml docker-compose.yml; do
+    if [[ -f "$PROJECT_ROOT/$base" ]]; then
+      add_compose_file "$PROJECT_ROOT/$base"
+      break
+    fi
+  done
+  for override in \
+    docker-compose.dev.yaml docker-compose.dev.yml \
+    docker-compose.local.yaml docker-compose.local.yml; do
+    add_compose_file "$PROJECT_ROOT/$override"
+  done
 }
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --project-name)
+      require_option_value "$1" "$#" "${2:-}"
       COMPOSE_PROJECT_NAME="$2"
       shift 2
       ;;
     --compose)
-      compose_input="$2"
-      collect_compose_files_from_env "$compose_input"
+      require_option_value "$1" "$#" "${2:-}"
+      collect_compose_files_from_value "$2" 1
       shift 2
       ;;
     --skip-compose)
@@ -128,277 +225,594 @@ while [[ $# -gt 0 ]]; do
       RUN_CONTROL=1
       shift
       ;;
+    --no-learner)
+      RUN_LEARNER=0
+      shift
+      ;;
+    --no-control)
+      RUN_CONTROL=0
+      shift
+      ;;
     --monitor-worker)
       MONITOR_WORKER=1
       shift
       ;;
+    --no-cleanup)
+      CLEAN_OLD_INSTANCES=0
+      shift
+      ;;
     --log-dir)
+      require_option_value "$1" "$#" "${2:-}"
       LOG_DIR="$2"
       shift 2
+      ;;
+    --verbose)
+      VERBOSE=1
+      shift
       ;;
     --help)
       show_help
       exit 0
       ;;
     *)
-      echo "未知参数: $1"
-      show_help
+      printf '未知参数: %s\n\n' "$1" >&2
+      show_help >&2
       exit 2
       ;;
   esac
 done
 
 if (( RUN_API == 0 && RUN_WORKER == 0 && RUN_LEARNER == 0 && RUN_CONTROL == 0 )); then
-  echo "错误：未选择任何服务。请至少保留 api、worker、learner、control 中的一项。"
-  exit 1
+  die "未选择任何服务"
 fi
 
-echo "部署入口目录: $PROJECT_ROOT"
-echo "使用 Compose 项目: $COMPOSE_PROJECT_NAME"
+validate_positive_integer "DB_WAIT_SECONDS" "$DB_WAIT_SECONDS"
+validate_positive_integer "SERVICE_WAIT_SECONDS" "$SERVICE_WAIT_SECONDS"
+validate_positive_integer "MONITOR_INTERVAL" "$MONITOR_INTERVAL"
+validate_positive_integer "SHUTDOWN_TIMEOUT" "$SHUTDOWN_TIMEOUT"
+absolute_log_dir
+case "$DEPLOY_STATE_DIR" in
+  /*) ;;
+  *) DEPLOY_STATE_DIR="$PROJECT_ROOT/$DEPLOY_STATE_DIR" ;;
+esac
+INSTANCE_STATE_FILE="$DEPLOY_STATE_DIR/deploy.state"
+mkdir -p "$LOG_DIR" "$DEPLOY_STATE_DIR"
+: > "$LOG_DIR/bootstrap.log"
 
-if [[ "$SKIP_COMPOSE" == "0" ]]; then
-  collect_compose_files_from_env "${COMPOSE_FILE:-}"
-  collect_compose_files_from_env "${COMPOSE_FILES_ENV:-}"
+NEED_DATABASE=0
+if (( RUN_API == 1 || RUN_WORKER == 1 )); then
+  NEED_DATABASE=1
+fi
+
+if (( NEED_DATABASE == 1 && SKIP_COMPOSE == 0 )); then
+  require_cmd docker "请安装 Docker，或使用 --skip-compose 连接已有数据库。"
+  if ! docker compose version >/dev/null 2>&1; then
+    die "Docker Compose 不可用"
+  fi
+fi
+if (( RUN_API == 1 || RUN_WORKER == 1 )); then
+  require_cmd uv "请安装 uv 并执行 uv sync。"
+fi
+if (( RUN_LEARNER == 1 || RUN_CONTROL == 1 )); then
+  resolve_pnpm
+fi
+if (( RUN_API == 1 || RUN_LEARNER == 1 || RUN_CONTROL == 1 )); then
+  require_cmd curl "服务就绪检查需要 curl。"
+fi
+
+# uv should consistently use this repository's environment, regardless of the caller's shell.
+unset VIRTUAL_ENV || true
+export UV_PROJECT_ENVIRONMENT="$PROJECT_ROOT/.venv"
+export PYTHONUNBUFFERED=1
+export PYTHONPATH="$PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}"
+
+if (( NEED_DATABASE == 1 && SKIP_COMPOSE == 0 )); then
+  if (( ${#COMPOSE_FILES[@]-0} == 0 )); then
+    collect_compose_files_from_value "${COMPOSE_FILE:-}"
+    collect_compose_files_from_value "${COMPOSE_FILES_ENV:-}"
+  fi
   if (( ${#COMPOSE_FILES[@]-0} == 0 )); then
     collect_default_compose_files
   fi
-  if (( ${#COMPOSE_FILES[@]-0} == 0 )); then
-    echo "未匹配到明确 compose 文件，将直接使用 docker compose 默认规则。"
-  else
-    echo "使用 compose 文件:"
-    for f in "${COMPOSE_FILES[@]}"; do
-      echo "  - $f"
-    done
-  fi
+  (( ${#COMPOSE_FILES[@]-0} > 0 )) || die "未找到 Compose 文件"
 fi
-
-mkdir -p "$LOG_DIR"
-
-if ! require_cmd docker; then
-  echo "请先安装 Docker（或加 --skip-compose 并单独启动数据库）。"
-  exit 1
-fi
-
-if (( RUN_API == 1 || RUN_WORKER == 1 )); then
-  if ! require_cmd uv; then
-    echo "请先安装 uv（例如 pipx install uv）。"
-    exit 1
-  fi
-fi
-
-if (( RUN_LEARNER == 1 || RUN_CONTROL == 1 )); then
-  if ! require_cmd pnpm; then
-    echo "请先安装 pnpm 11.9.0。"
-    exit 1
-  fi
-fi
-
-if [[ -n "${VIRTUAL_ENV:-}" ]]; then
-  echo "检测到环境变量 VIRTUAL_ENV=${VIRTUAL_ENV}，将忽略并使用项目虚拟环境"
-  unset VIRTUAL_ENV
-fi
-
-load_env_file() {
-  local env_file="$1"
-  local line key value
-  local -i line_no=0
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    line_no=$((line_no + 1))
-    [[ -z "$line" || "${line:0:1}" == "#" ]] && continue
-    line="${line%$'\r'}"
-    if [[ "$line" == export\ * ]]; then
-      line="${line#export }"
-    fi
-    [[ -z "$line" ]] && continue
-    case "$line" in
-      *=*)
-        ;;
-      *)
-        continue
-        ;;
-    esac
-
-    key="${line%%=*}"
-    value="${line#*=}"
-    key="$(printf '%s' "$key" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-    value="$(printf '%s' "$value" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-
-    case "$key" in
-      [!A-Za-z_]* | "" )
-        echo "警告: ${env_file}:${line_no} 跳过非法变量名 \"$key\"" >&2
-        continue
-        ;;
-    esac
-
-    if [[ "$value" == \"*\" && "$value" == *\" ]]; then
-      value="${value:1:${#value}-2}"
-    elif [[ "$value" == \'*\' && "$value" == *\' ]]; then
-      value="${value:1:${#value}-2}"
-    fi
-
-    export "$key=$value"
-  done < "$env_file"
-}
-
-if [[ -f "$PROJECT_ROOT/.env" ]]; then
-  load_env_file "$PROJECT_ROOT/.env"
-fi
-
-export UV_PROJECT_ENVIRONMENT="${PROJECT_ROOT}/.venv"
-export PYTHONPATH="$PROJECT_ROOT"
-export PYTHONUNBUFFERED=1
 
 compose_cmd=(docker compose)
-  if (( SKIP_COMPOSE == 0 )) && (( ${#COMPOSE_FILES[@]-0} > 0 )); then
-  for f in "${COMPOSE_FILES[@]-}"; do
-    compose_cmd+=(-f "$f")
+if (( ${#COMPOSE_FILES[@]-0} > 0 )); then
+  for compose_file in "${COMPOSE_FILES[@]}"; do
+    compose_cmd+=(-f "$compose_file")
   done
 fi
 compose_cmd+=(-p "$COMPOSE_PROJECT_NAME")
 
-compose_up() {
-  "${compose_cmd[@]}" up -d
+run_logged() {
+  local logfile="$1"
+  shift
+  if (( VERBOSE == 1 )); then
+    set +e
+    "$@" 2>&1 | tee -a "$logfile"
+    local status=${PIPESTATUS[0]}
+    set -e
+    return "$status"
+  fi
+  "$@" >> "$logfile" 2>&1
 }
 
-compose_down() {
-  "${compose_cmd[@]}" down --remove-orphans
+show_log_tail() {
+  local logfile="$1"
+  local line_count="${2:-20}"
+  if [[ -s "$logfile" ]]; then
+    printf '\n最近日志（%s）：\n' "$logfile" >&2
+    tail -n "$line_count" "$logfile" >&2
+  fi
 }
 
-if [[ "$SKIP_COMPOSE" == "0" ]]; then
-  echo "启动 compose..."
-  compose_up
-fi
+compose_is_running() {
+  "${compose_cmd[@]}" ps --status running --services 2>/dev/null | grep -qx postgres
+}
 
-wait_postgres() {
-  if ! command -v pg_isready >/dev/null 2>&1; then
-    echo "警告：未检测到 pg_isready，跳过数据库就绪探测。"
+start_database() {
+  if compose_is_running; then
+    success "PostgreSQL 已在运行"
     return
   fi
-  local host="${DB_HOST:-127.0.0.1}"
-  local port="${DB_PORT:-5432}"
-  local retries="$DB_WAIT_SECONDS"
-  while (( retries > 0 )); do
-    if pg_isready -h "$host" -p "$port" >/dev/null 2>&1; then
-      echo "数据库就绪: ${host}:${port}"
-      return
-    fi
-    retries=$((retries - 1))
-    sleep 1
-  done
-  echo "错误：PostgreSQL 未在预期时间内就绪 (${host}:${port})"
-  if [[ "$SKIP_COMPOSE" == "0" ]]; then
-    compose_down
+  info "启动 PostgreSQL"
+  if ! run_logged "$LOG_DIR/bootstrap.log" "${compose_cmd[@]}" up -d postgres; then
+    show_log_tail "$LOG_DIR/bootstrap.log"
+    die "PostgreSQL 启动失败"
   fi
-  exit 1
+  COMPOSE_STARTED_BY_SCRIPT=1
 }
 
-wait_postgres
-
-if (( SKIP_MIGRATE == 0 )) && [[ -f "$PROJECT_ROOT/services/api/alembic.ini" ]]; then
-  if ! run_uv python -m alembic -c services/api/alembic.ini upgrade head; then
-    echo "错误：数据库迁移失败"
-    if [[ "$SKIP_COMPOSE" == "0" ]]; then
-      compose_down
-    fi
-    exit 1
+database_ready() {
+  if (( SKIP_COMPOSE == 0 )); then
+    "${compose_cmd[@]}" exec -T postgres sh -c \
+      'pg_isready -U "$POSTGRES_USER" -d "$POSTGRES_DB"' >/dev/null 2>&1
+    return
   fi
-fi
+  if command -v pg_isready >/dev/null 2>&1; then
+    pg_isready -h "${DB_HOST:-127.0.0.1}" -p "${DB_PORT:-5432}" >/dev/null 2>&1
+    return
+  fi
+  if command -v nc >/dev/null 2>&1; then
+    nc -z "${DB_HOST:-127.0.0.1}" "${DB_PORT:-5432}" >/dev/null 2>&1
+    return
+  fi
+  return 1
+}
 
-SERVICE_NAMES=()
-SERVICE_PIDS=()
-SERVICE_MONITOR_FLAGS=()
-MONITOR_SERVICES=()
+wait_for_database() {
+  local elapsed=0
+  while (( elapsed < DB_WAIT_SECONDS )); do
+    if database_ready; then
+      success "PostgreSQL 就绪"
+      return
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  show_log_tail "$LOG_DIR/bootstrap.log"
+  die "PostgreSQL 在 ${DB_WAIT_SECONDS}s 内未就绪"
+}
+
+run_migrations() {
+  local logfile="$LOG_DIR/migration.log"
+  : > "$logfile"
+  info "检查数据库迁移"
+  if ! run_logged "$logfile" uv run python -m alembic -c services/api/alembic.ini upgrade head; then
+    show_log_tail "$logfile" 30
+    die "数据库迁移失败"
+  fi
+  success "数据库迁移完成"
+}
+
+run_worker_check() {
+  local logfile="$LOG_DIR/worker.log"
+  : > "$logfile"
+  info "检查 Worker"
+  if ! run_logged "$logfile" uv run binnagent-worker; then
+    show_log_tail "$logfile"
+    die "Worker 就绪检查失败"
+  fi
+  success "Worker 就绪检查通过"
+}
+
+port_is_listening() {
+  local port="$1"
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -nP -iTCP:"$port" -sTCP:LISTEN -t >/dev/null 2>&1
+    return
+  fi
+  if command -v nc >/dev/null 2>&1; then
+    nc -z 127.0.0.1 "$port" >/dev/null 2>&1
+    return
+  fi
+  return 1
+}
+
+ensure_port_available() {
+  local name="$1"
+  local port="$2"
+  if port_is_listening "$port"; then
+    die "${name} 端口 ${port} 已被占用；请先停止旧进程"
+  fi
+}
 
 register_service() {
   local name="$1"
   local logfile="$2"
-  local monitor="$3"
-  shift 3
-
-  mkdir -p "$LOG_DIR"
+  shift 2
   : > "$logfile"
-
   "$@" >> "$logfile" 2>&1 &
-  local pid=$!
   SERVICE_NAMES+=("$name")
-  SERVICE_PIDS+=("$pid")
-  SERVICE_MONITOR_FLAGS+=("$monitor")
+  SERVICE_PIDS+=("$!")
+  SERVICE_LOGS+=("$logfile")
+  write_instance_state
+}
 
-  if [[ "$monitor" == "1" ]]; then
-    MONITOR_SERVICES+=("$name")
+wait_for_http_service() {
+  local name="$1"
+  local url="$2"
+  local pid="$3"
+  local logfile="$4"
+  local elapsed=0
+
+  while (( elapsed < SERVICE_WAIT_SECONDS )); do
+    if curl --silent --fail --max-time 1 "$url" >/dev/null 2>&1; then
+      success "${name} 就绪"
+      return
+    fi
+    if ! kill -0 "$pid" >/dev/null 2>&1; then
+      local exit_code=1
+      if wait "$pid"; then
+        exit_code=0
+      else
+        exit_code=$?
+      fi
+      show_log_tail "$logfile" 30
+      die "${name} 启动时退出（code=${exit_code}）"
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  show_log_tail "$logfile" 30
+  die "${name} 在 ${SERVICE_WAIT_SECONDS}s 内未就绪"
+}
+
+start_http_service() {
+  local name="$1"
+  local port="$2"
+  local url="$3"
+  local logfile="$4"
+  shift 4
+
+  ensure_port_available "$name" "$port"
+  info "启动 ${name}"
+  register_service "$name" "$logfile" "$@"
+  local index=$((${#SERVICE_PIDS[@]} - 1))
+  wait_for_http_service "$name" "$url" "${SERVICE_PIDS[$index]}" "$logfile"
+}
+
+descendant_pids() {
+  local parent_pid="$1"
+  local child_pid
+  local children=""
+  command -v pgrep >/dev/null 2>&1 || return
+  children="$(pgrep -P "$parent_pid" 2>/dev/null || true)"
+  for child_pid in $children; do
+    descendant_pids "$child_pid"
+    printf '%s\n' "$child_pid"
+  done
+}
+
+terminate_process_tree() {
+  local root_pid="$1"
+  local descendants=""
+  local target_pid
+  local elapsed=0
+  local alive=0
+
+  kill -0 "$root_pid" >/dev/null 2>&1 || return 0
+  descendants="$(descendant_pids "$root_pid")"
+  kill -TERM "$root_pid" >/dev/null 2>&1 || true
+  for target_pid in $descendants; do
+    kill -TERM "$target_pid" >/dev/null 2>&1 || true
+  done
+
+  while (( elapsed < SHUTDOWN_TIMEOUT )); do
+    alive=0
+    if kill -0 "$root_pid" >/dev/null 2>&1; then
+      alive=1
+    fi
+    for target_pid in $descendants; do
+      if kill -0 "$target_pid" >/dev/null 2>&1; then
+        alive=1
+      fi
+    done
+    (( alive == 0 )) && break
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+
+  if (( alive == 1 )); then
+    kill -KILL "$root_pid" >/dev/null 2>&1 || true
+    for target_pid in $descendants; do
+      kill -KILL "$target_pid" >/dev/null 2>&1 || true
+    done
   fi
+  wait "$root_pid" 2>/dev/null || true
+}
 
-  echo "启动 $name... (pid=$pid, log=$logfile, monitor=$monitor)"
+process_command() {
+  ps -p "$1" -o command= 2>/dev/null | sed -e 's/^[[:space:]]*//' || true
+}
+
+process_working_directory() {
+  command -v lsof >/dev/null 2>&1 || return 0
+  lsof -a -p "$1" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1 || true
+}
+
+process_belongs_to_project() {
+  local pid="$1"
+  local command_line=""
+  local working_directory=""
+  kill -0 "$pid" >/dev/null 2>&1 || return 1
+  command_line="$(process_command "$pid")"
+  working_directory="$(process_working_directory "$pid")"
+  [[ "$command_line" == *"$PROJECT_ROOT/"* ]] && return 0
+  [[ "$working_directory" == "$PROJECT_ROOT" || "$working_directory" == "$PROJECT_ROOT/"* ]]
+}
+
+process_is_current_deploy() {
+  local pid="$1"
+  local recorded_root="${2:-$PROJECT_ROOT}"
+  local command_line=""
+  [[ "$recorded_root" == "$PROJECT_ROOT" ]] || return 1
+  process_belongs_to_project "$pid" || return 1
+  command_line="$(process_command "$pid")"
+  [[ "$command_line" == *"deploy.sh"* ]]
+}
+
+recorded_service_is_safe_to_stop() {
+  local pid="$1"
+  local name="$2"
+  local command_line=""
+  process_belongs_to_project "$pid" || return 1
+  command_line="$(process_command "$pid")"
+  case "$name" in
+    API) [[ "$command_line" == *"binnagent-api"* ]] ;;
+    Learner) [[ "$command_line" == *"dev:learner"* || "$command_line" == *"learner-web"* ]] ;;
+    Control) [[ "$command_line" == *"dev:control"* || "$command_line" == *"control-cockpit"* ]] ;;
+    *) return 1 ;;
+  esac
+}
+
+write_instance_state() {
+  local temporary_file="${INSTANCE_STATE_FILE}.$$"
+  local index
+  [[ -n "$INSTANCE_STATE_FILE" ]] || return 0
+  {
+    printf 'root\t%s\t%s\n' "$$" "$PROJECT_ROOT"
+    for index in "${!SERVICE_PIDS[@]}"; do
+      printf 'service\t%s\t%s\n' "${SERVICE_PIDS[$index]}" "${SERVICE_NAMES[$index]}"
+    done
+  } > "$temporary_file"
+  mv "$temporary_file" "$INSTANCE_STATE_FILE"
+}
+
+release_instance_state() {
+  local record_type=""
+  local recorded_pid=""
+  local recorded_value=""
+  [[ -f "$INSTANCE_STATE_FILE" ]] || return 0
+  IFS=$'\t' read -r record_type recorded_pid recorded_value < "$INSTANCE_STATE_FILE" || true
+  if [[ "$record_type" == "root" && "$recorded_pid" == "$$" ]]; then
+    rm -f "$INSTANCE_STATE_FILE"
+  fi
+}
+
+cleanup_recorded_instance() {
+  local record_type=""
+  local recorded_pid=""
+  local recorded_value=""
+  local old_root_pid=""
+  local old_project_root=""
+  local cleaned=0
+  local -a old_service_pids=()
+  local -a old_service_names=()
+  local index
+
+  [[ -f "$INSTANCE_STATE_FILE" ]] || return 0
+  while IFS=$'\t' read -r record_type recorded_pid recorded_value; do
+    case "$record_type" in
+      root)
+        old_root_pid="$recorded_pid"
+        old_project_root="$recorded_value"
+        ;;
+      service)
+        old_service_pids+=("$recorded_pid")
+        old_service_names+=("$recorded_value")
+        ;;
+    esac
+  done < "$INSTANCE_STATE_FILE"
+
+  if [[ "$old_root_pid" =~ ^[0-9]+$ ]] && [[ "$old_root_pid" != "$$" ]] \
+    && process_is_current_deploy "$old_root_pid" "$old_project_root"; then
+    info "清理上次运行的服务"
+    terminate_process_tree "$old_root_pid"
+    cleaned=1
+  else
+    for index in "${!old_service_pids[@]}"; do
+      recorded_pid="${old_service_pids[$index]}"
+      recorded_value="${old_service_names[$index]}"
+      [[ "$recorded_pid" =~ ^[0-9]+$ ]] || continue
+      if recorded_service_is_safe_to_stop "$recorded_pid" "$recorded_value"; then
+        (( cleaned == 1 )) || info "清理上次运行的服务"
+        terminate_process_tree "$recorded_pid"
+        cleaned=1
+      fi
+    done
+  fi
+  rm -f "$INSTANCE_STATE_FILE"
+  (( cleaned == 0 )) || success "旧实例已清理"
+}
+
+find_project_instance_root() {
+  local current_pid="$1"
+  local parent_pid=""
+  local candidate=""
+  while [[ "$current_pid" =~ ^[0-9]+$ ]] && (( current_pid > 1 )); do
+    if process_is_current_deploy "$current_pid"; then
+      printf '%s\n' "$current_pid"
+      return
+    fi
+    if process_belongs_to_project "$current_pid"; then
+      candidate="$current_pid"
+    fi
+    parent_pid="$(ps -p "$current_pid" -o ppid= 2>/dev/null | tr -d '[:space:]')"
+    [[ -n "$parent_pid" && "$parent_pid" != "$current_pid" ]] || break
+    current_pid="$parent_pid"
+  done
+  [[ -z "$candidate" ]] || printf '%s\n' "$candidate"
+}
+
+cleanup_legacy_instances() {
+  local port
+  local listener_pid
+  local root_pid
+  local cleaned=0
+  local seen_roots=" "
+  local -a ports=()
+  command -v lsof >/dev/null 2>&1 || return 0
+  (( RUN_API == 0 )) || ports+=(8000)
+  (( RUN_LEARNER == 0 )) || ports+=(3000)
+  (( RUN_CONTROL == 0 )) || ports+=(3001)
+
+  for port in "${ports[@]-}"; do
+    while IFS= read -r listener_pid; do
+      [[ "$listener_pid" =~ ^[0-9]+$ ]] || continue
+      root_pid="$(find_project_instance_root "$listener_pid")"
+      [[ "$root_pid" =~ ^[0-9]+$ && "$root_pid" != "$$" ]] || continue
+      [[ "$seen_roots" != *" $root_pid "* ]] || continue
+      seen_roots+="$root_pid "
+      (( cleaned == 1 )) || info "清理检测到的旧服务"
+      terminate_process_tree "$root_pid"
+      cleaned=1
+    done < <(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null | sort -u)
+  done
+  (( cleaned == 0 )) || success "旧实例已清理"
 }
 
 cleanup() {
-  local reason="${1:-exit}"
-  echo "退出部署守护：$reason"
-  for pid in "${SERVICE_PIDS[@]}"; do
-    if kill -0 "$pid" >/dev/null 2>&1; then
-      kill "$pid" >/dev/null 2>&1 || true
-    fi
-  done
-  if [[ "$SKIP_COMPOSE" == "0" ]]; then
-    compose_down || true
+  local exit_code=$?
+  local pid
+  # Cleanup must finish even when a child already received the terminal signal.
+  set +e
+  if (( CLEANUP_DONE == 1 )); then
+    return
   fi
-  for pid in "${SERVICE_PIDS[@]}"; do
-    wait "$pid" 2>/dev/null || true
+  CLEANUP_DONE=1
+
+  if (( ${#SERVICE_PIDS[@]-0} > 0 || COMPOSE_STARTED_BY_SCRIPT == 1 )); then
+    printf '\n'
+    info "停止本次启动的服务"
+  fi
+  for pid in "${SERVICE_PIDS[@]-}"; do
+    terminate_process_tree "$pid"
   done
+  if (( COMPOSE_STARTED_BY_SCRIPT == 1 )); then
+    run_logged "$LOG_DIR/bootstrap.log" "${compose_cmd[@]}" stop postgres || true
+  fi
+  if (( ${#SERVICE_PIDS[@]-0} > 0 || COMPOSE_STARTED_BY_SCRIPT == 1 )); then
+    success "已停止"
+  fi
+  release_instance_state
+  return "$exit_code"
 }
 
-trap 'cleanup "收到停止信号"' INT TERM
+handle_signal() {
+  exit "$1"
+}
+
+trap 'handle_signal 130' INT
+trap 'handle_signal 143' TERM
+trap cleanup EXIT
+
+if (( CLEAN_OLD_INSTANCES == 1 )); then
+  cleanup_recorded_instance
+  cleanup_legacy_instances
+fi
+
+# Fail before touching the database when an old application process is still running.
+(( RUN_API == 1 )) && ensure_port_available "API" 8000
+(( RUN_LEARNER == 1 )) && ensure_port_available "Learner" 3000
+(( RUN_CONTROL == 1 )) && ensure_port_available "Control" 3001
+
+write_instance_state
+
+if (( NEED_DATABASE == 1 )); then
+  if (( SKIP_COMPOSE == 0 )); then
+    start_database
+  else
+    info "使用已有 PostgreSQL"
+  fi
+  wait_for_database
+  if (( SKIP_MIGRATE == 0 )); then
+    run_migrations
+  fi
+fi
+
+if (( MONITOR_WORKER == 1 )); then
+  warn "--monitor-worker 已无需使用：当前 Worker 是一次性就绪检查"
+fi
+if (( RUN_WORKER == 1 )); then
+  run_worker_check
+fi
 
 if (( RUN_API == 1 )); then
-  register_service "api" "$LOG_DIR/api.log" 1 uv run binnagent-api
+  start_http_service \
+    "API" 8000 "http://127.0.0.1:8000/health/ready" "$LOG_DIR/api.log" \
+    uv run binnagent-api
 fi
-
-if (( RUN_WORKER == 1 )); then
-  worker_monitor=0
-  if (( MONITOR_WORKER == 1 )); then
-    worker_monitor=1
-  fi
-  register_service "worker" "$LOG_DIR/worker.log" "$worker_monitor" uv run binnagent-worker
-fi
-
 if (( RUN_LEARNER == 1 )); then
-  register_service "learner-web" "$LOG_DIR/learner-web.log" 1 pnpm dev:learner
+  start_http_service \
+    "Learner" 3000 "http://127.0.0.1:3000/api/learner/v1/meta" "$LOG_DIR/learner-web.log" \
+    env "NEXT_PUBLIC_LEARNER_API_BASE_URL=$LEARNER_API_BASE_URL" \
+    "${PNPM_CMD[@]}" dev:learner
 fi
-
 if (( RUN_CONTROL == 1 )); then
-  register_service "control-cockpit" "$LOG_DIR/control-cockpit.log" 1 pnpm dev:control
+  start_http_service \
+    "Control" 3001 "http://127.0.0.1:3001/api/control/v1/meta" "$LOG_DIR/control-cockpit.log" \
+    env "NEXT_PUBLIC_CONTROL_API_BASE_URL=$CONTROL_API_BASE_URL" \
+    "${PNPM_CMD[@]}" dev:control
 fi
 
-echo "启动完成。日志目录: ${LOG_DIR}/*.log"
-echo "按 Ctrl-C 可停止部署守护。"
-
-if ((${#MONITOR_SERVICES[@]} == 0)); then
-  echo "当前无监控服务（所有服务皆为可选一次性任务）将保持等待状态。"
+if (( ${#SERVICE_PIDS[@]-0} == 0 )); then
+  printf '\n'
+  success "一次性检查完成"
+  info "日志: $LOG_DIR"
+  exit 0
 fi
+
+printf '\n已启动：\n'
+(( RUN_API == 1 )) && printf '  API      http://127.0.0.1:8000\n'
+(( RUN_LEARNER == 1 )) && printf '  Learner  http://127.0.0.1:3000\n'
+(( RUN_CONTROL == 1 )) && printf '  Control  http://127.0.0.1:3001\n'
+printf '  日志     %s\n' "$LOG_DIR"
+printf '按 Ctrl-C 停止。\n'
 
 while true; do
-  for service_name in "${MONITOR_SERVICES[@]}"; do
-    service_pid=""
-    for idx in "${!SERVICE_NAMES[@]}"; do
-      if [[ "${SERVICE_NAMES[$idx]}" == "$service_name" ]]; then
-        service_pid="${SERVICE_PIDS[$idx]}"
-        break
-      fi
-    done
-    if [[ -z "$service_pid" ]]; then
-      continue
-    fi
+  for index in "${!SERVICE_NAMES[@]}"; do
+    service_pid="${SERVICE_PIDS[$index]}"
     if ! kill -0 "$service_pid" >/dev/null 2>&1; then
+      service_exit_code=1
       if wait "$service_pid"; then
-        echo "${service_name} 进程正常退出 (pid=$service_pid)"
-        cleanup "服务 ${service_name} 已退出"
-        exit 0
+        service_exit_code=0
       else
         service_exit_code=$?
-        echo "${service_name} 进程异常退出 code=$service_exit_code (pid=$service_pid)"
-        cleanup "服务 ${service_name} 异常退出"
-        exit "$service_exit_code"
       fi
+      show_log_tail "${SERVICE_LOGS[$index]}" 30
+      die "${SERVICE_NAMES[$index]} 已退出（code=${service_exit_code}）"
     fi
   done
   sleep "$MONITOR_INTERVAL"

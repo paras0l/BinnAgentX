@@ -1,0 +1,313 @@
+import os
+import signal
+import subprocess
+import time
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DEPLOY_SCRIPT = PROJECT_ROOT / "scripts" / "deploy.sh"
+
+
+def _write_executable(path: Path, content: str) -> None:
+    path.write_text(content, encoding="utf-8")
+    path.chmod(0o755)
+
+
+def test_deploy_script_has_valid_syntax_and_concise_help() -> None:
+    syntax = subprocess.run(
+        ["bash", "-n", str(DEPLOY_SCRIPT)],
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert syntax.returncode == 0, syntax.stderr
+
+    help_result = subprocess.run(
+        ["bash", str(DEPLOY_SCRIPT), "--help"],
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert help_result.returncode == 0
+    assert "Compose 项目名" in help_result.stdout
+    assert "binnagent" in help_result.stdout
+    assert "控制台只显示关键状态" in help_result.stdout
+
+
+def test_worker_only_check_does_not_require_or_invoke_docker(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    docker_marker = tmp_path / "docker-invoked"
+    _write_executable(
+        fake_bin / "docker",
+        '#!/usr/bin/env bash\ntouch "$FAKE_DOCKER_MARKER"\nexit 99\n',
+    )
+    _write_executable(fake_bin / "uv", "#!/usr/bin/env bash\nexit 0\n")
+    _write_executable(fake_bin / "pg_isready", "#!/usr/bin/env bash\nexit 0\n")
+    env = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "FAKE_DOCKER_MARKER": str(docker_marker),
+        "LOG_DIR": str(tmp_path / "logs"),
+        "DEPLOY_STATE_DIR": str(tmp_path / "state"),
+    }
+
+    result = subprocess.run(
+        [
+            "bash",
+            str(DEPLOY_SCRIPT),
+            "--skip-compose",
+            "--skip-migrate",
+            "--no-api",
+            "--no-learner",
+            "--no-control",
+        ],
+        cwd=PROJECT_ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Worker 就绪检查通过" in result.stdout
+    assert "一次性检查完成" in result.stdout
+    assert not docker_marker.exists()
+
+
+def test_frontend_uses_npm_fallback_and_stops_child_on_interrupt(
+    tmp_path: Path,
+) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    npm_marker = tmp_path / "npm-args"
+    _write_executable(
+        fake_bin / "npm",
+        '#!/bin/bash\nprintf \'%s\\n\' "$*" > "$FAKE_NPM_MARKER"\n'
+        "trap 'exit 0' TERM INT\nwhile :; do sleep 1; done\n",
+    )
+    _write_executable(fake_bin / "curl", "#!/usr/bin/env bash\nexit 0\n")
+    _write_executable(fake_bin / "lsof", "#!/usr/bin/env bash\nexit 1\n")
+    env = {
+        **os.environ,
+        "PATH": f"{fake_bin}:/usr/bin:/bin",
+        "FAKE_NPM_MARKER": str(npm_marker),
+        "LOG_DIR": str(tmp_path / "logs"),
+        "DEPLOY_STATE_DIR": str(tmp_path / "state"),
+        "MONITOR_INTERVAL": "1",
+        "SHUTDOWN_TIMEOUT": "2",
+    }
+    process = subprocess.Popen(
+        [
+            "bash",
+            str(DEPLOY_SCRIPT),
+            "--skip-compose",
+            "--skip-migrate",
+            "--no-api",
+            "--no-worker",
+            "--learner",
+            "--no-control",
+        ],
+        cwd=PROJECT_ROOT,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    try:
+        time.sleep(0.5)
+        process.send_signal(signal.SIGINT)
+        output, _ = process.communicate(timeout=6)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=3)
+
+    assert process.returncode == 130, output
+    assert "使用 npm 加载 pnpm 11.9.0" in output
+    assert "启动 Learner" in output
+    assert "停止本次启动的服务" in output
+    assert "已停止" in output
+    assert npm_marker.read_text(encoding="utf-8").strip() == (
+        "exec --yes pnpm@11.9.0 -- dev:learner"
+    )
+
+
+def test_new_deploy_cleans_previous_project_instance(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    _write_executable(
+        fake_bin / "npm",
+        "#!/bin/bash\ntrap 'exit 0' TERM INT\nwhile :; do sleep 1; done\n",
+    )
+    _write_executable(fake_bin / "curl", "#!/usr/bin/env bash\nexit 0\n")
+    _write_executable(fake_bin / "lsof", "#!/usr/bin/env bash\nexit 1\n")
+    state_dir = tmp_path / "state"
+    env = {
+        **os.environ,
+        "PATH": f"{fake_bin}:/usr/bin:/bin",
+        "LOG_DIR": str(tmp_path / "logs"),
+        "DEPLOY_STATE_DIR": str(state_dir),
+        "MONITOR_INTERVAL": "1",
+        "SHUTDOWN_TIMEOUT": "2",
+    }
+    command = [
+        "bash",
+        str(DEPLOY_SCRIPT),
+        "--skip-compose",
+        "--skip-migrate",
+        "--no-api",
+        "--no-worker",
+        "--learner",
+        "--no-control",
+    ]
+    first = subprocess.Popen(
+        command,
+        cwd=PROJECT_ROOT,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    second: subprocess.Popen[str] | None = None
+    try:
+        state_file = state_dir / "deploy.state"
+        deadline = time.monotonic() + 4
+        while not state_file.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert state_file.exists()
+
+        second = subprocess.Popen(
+            command,
+            cwd=PROJECT_ROOT,
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        first.wait(timeout=6)
+        assert first.returncode == 143
+
+        deadline = time.monotonic() + 6
+        while time.monotonic() < deadline:
+            state_lines = (
+                state_file.read_text(encoding="utf-8").splitlines() if state_file.exists() else []
+            )
+            if state_lines and state_lines[0].split("\t")[1] == str(second.pid):
+                break
+            time.sleep(0.05)
+        else:
+            raise AssertionError("new deploy did not take ownership of the state file")
+        second.send_signal(signal.SIGINT)
+        output, _ = second.communicate(timeout=6)
+    finally:
+        for process in (second, first):
+            if process is not None and process.poll() is None:
+                process.kill()
+                process.wait(timeout=3)
+
+    assert "清理上次运行的服务" in output
+    assert "旧实例已清理" in output
+    assert not (state_dir / "deploy.state").exists()
+
+
+def test_new_deploy_discovers_legacy_instance_from_listener(tmp_path: Path) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    listener_marker = tmp_path / "listener-pid"
+    _write_executable(
+        fake_bin / "npm",
+        '#!/bin/bash\nprintf \'%s\\n\' "$$" > "$FAKE_LISTENER_MARKER"\n'
+        "trap 'exit 0' TERM INT\nwhile :; do sleep 1; done\n",
+    )
+    _write_executable(fake_bin / "curl", "#!/usr/bin/env bash\nexit 0\n")
+    _write_executable(
+        fake_bin / "lsof",
+        "#!/bin/bash\n"
+        'case " $* " in\n'
+        "  *' -d cwd '*) printf 'p%s\\nfcwd\\nn%s\\n' \"$3\" \"$PROJECT_ROOT\"; exit 0 ;;\n"
+        "  *' -iTCP:3000 '*)\n"
+        '    if [ -s "$FAKE_LISTENER_MARKER" ]; then\n'
+        '      pid=$(head -n 1 "$FAKE_LISTENER_MARKER")\n'
+        '      if kill -0 "$pid" 2>/dev/null; then printf \'%s\\n\' "$pid"; exit 0; fi\n'
+        "    fi\n"
+        "    exit 1 ;;\n"
+        "esac\n"
+        "exit 1\n",
+    )
+    common_env = {
+        **os.environ,
+        "PATH": f"{fake_bin}:/usr/bin:/bin",
+        "FAKE_LISTENER_MARKER": str(listener_marker),
+        "PROJECT_ROOT": str(PROJECT_ROOT),
+        "MONITOR_INTERVAL": "1",
+        "SHUTDOWN_TIMEOUT": "2",
+    }
+    command = [
+        "bash",
+        str(DEPLOY_SCRIPT),
+        "--skip-compose",
+        "--skip-migrate",
+        "--no-api",
+        "--no-worker",
+        "--learner",
+        "--no-control",
+    ]
+    first = subprocess.Popen(
+        command,
+        cwd=PROJECT_ROOT,
+        env={
+            **common_env,
+            "LOG_DIR": str(tmp_path / "old-logs"),
+            "DEPLOY_STATE_DIR": str(tmp_path / "old-state"),
+        },
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    second: subprocess.Popen[str] | None = None
+    try:
+        deadline = time.monotonic() + 4
+        while not listener_marker.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert listener_marker.exists()
+
+        new_state = tmp_path / "new-state" / "deploy.state"
+        second = subprocess.Popen(
+            command,
+            cwd=PROJECT_ROOT,
+            env={
+                **common_env,
+                "LOG_DIR": str(tmp_path / "new-logs"),
+                "DEPLOY_STATE_DIR": str(tmp_path / "new-state"),
+            },
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        first.wait(timeout=6)
+        assert first.returncode == 143
+
+        deadline = time.monotonic() + 6
+        while time.monotonic() < deadline:
+            state_lines = (
+                new_state.read_text(encoding="utf-8").splitlines() if new_state.exists() else []
+            )
+            if state_lines and state_lines[0].split("\t")[1] == str(second.pid):
+                break
+            time.sleep(0.05)
+        else:
+            raise AssertionError("new deploy did not replace the legacy instance")
+        second.send_signal(signal.SIGINT)
+        output, _ = second.communicate(timeout=6)
+    finally:
+        for process in (second, first):
+            if process is not None and process.poll() is None:
+                process.kill()
+                process.wait(timeout=3)
+
+    assert "清理检测到的旧服务" in output
+    assert "旧实例已清理" in output

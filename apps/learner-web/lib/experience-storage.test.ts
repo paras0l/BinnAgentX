@@ -5,8 +5,10 @@ import {
   calibrationSummaryDismissed,
   dismissCalibrationSummary,
   loadExperience,
+  loadLearnerPreferences,
   recordCompletedSession,
   saveExperienceProfile,
+  saveLearnerPreferences,
 } from "./experience-storage";
 
 const profile: LearnerProfileInput = {
@@ -73,9 +75,41 @@ describe("learner experience storage", () => {
     expect(loadExperience("learner_other_0001")).toBeNull();
   });
 
+  it("persists account preferences before calibration creates a full experience record", () => {
+    const preferences = { ...loadLearnerPreferences(learnerId), skin: "ragdoll" as const };
+
+    expect(saveLearnerPreferences(learnerId, preferences)).toBeNull();
+    expect(loadLearnerPreferences(learnerId).skin).toBe("ragdoll");
+    expect(loadLearnerPreferences("learner_other_0001").skin).toBe("paper");
+  });
+
   it("remembers that the calibration summary was acknowledged", () => {
     expect(calibrationSummaryDismissed(completedRun.workflow_run_id)).toBe(false);
     dismissCalibrationSummary(completedRun.workflow_run_id);
     expect(calibrationSummaryDismissed(completedRun.workflow_run_id)).toBe(true);
+  });
+
+  it("migrates preferences saved before account skins existed", () => {
+    saveExperienceProfile(learnerId, profile);
+    const key = `binnagent:learner-experience:v1:${learnerId}`;
+    const stored = JSON.parse(localStorage.getItem(key) ?? "{}") as {
+      preferences?: Record<string, unknown>;
+    };
+    if (stored.preferences) delete stored.preferences.skin;
+    localStorage.setItem(key, JSON.stringify(stored));
+
+    expect(loadExperience(learnerId)?.preferences.skin).toBe("paper");
+  });
+
+  it("migrates the former sakura skin to the ragdoll theme", () => {
+    saveExperienceProfile(learnerId, profile);
+    const key = `binnagent:learner-experience:v1:${learnerId}`;
+    const stored = JSON.parse(localStorage.getItem(key) ?? "{}") as {
+      preferences?: Record<string, unknown>;
+    };
+    if (stored.preferences) stored.preferences.skin = "sakura";
+    localStorage.setItem(key, JSON.stringify(stored));
+
+    expect(loadExperience(learnerId)?.preferences.skin).toBe("ragdoll");
   });
 });

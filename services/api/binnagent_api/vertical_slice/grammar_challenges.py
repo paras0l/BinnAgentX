@@ -36,6 +36,7 @@ def grammar_challenge_view(
         hint_revealed=state.hint_revealed,
         error_type=challenge.error_type if state.hint_revealed else None,
         hint=challenge.hint if state.hint_revealed else None,
+        answer=challenge.correct_text if state.resolved else None,
     )
 
 
@@ -86,6 +87,34 @@ async def reveal_grammar_challenge_hint(
         .values(hint_revealed=True, updated_at=now)
     )
     return replace(state, hint_revealed=True)
+
+
+async def reveal_grammar_challenge_answer(
+    connection: AsyncConnection,
+    task_id: str,
+    content_version_id: str,
+    challenge: GrammarChallenge,
+) -> GrammarChallengeState:
+    state = await _ensure_state(
+        connection,
+        task_id,
+        content_version_id,
+        challenge.challenge_id,
+    )
+    if state.resolved:
+        return state
+    now = datetime.now(UTC)
+    await connection.execute(
+        sa.update(tables.task_grammar_challenges)
+        .where(tables.task_grammar_challenges.c.task_id == task_id)
+        .values(
+            hint_revealed=True,
+            resolved=True,
+            updated_at=now,
+            resolved_at=now,
+        )
+    )
+    return replace(state, hint_revealed=True, resolved=True)
 
 
 async def verify_grammar_correction(

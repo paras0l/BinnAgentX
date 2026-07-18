@@ -1,0 +1,53 @@
+[data-ui-anchor="app-shell"],
+[data-ui-anchor="sidebar"],
+[data-ui-anchor="titlebar"],
+[data-ui-anchor="workspace"] :is(.home-shell, .insight-shell, .assets-shell),
+[data-ui-anchor="task-workspace"] :is(.task-grid, .response-pane) {
+  transition:
+    color var(--theme-transition-base) ease,
+    border-color var(--theme-transition-base) ease,
+    background-color var(--theme-transition-base) ease,
+    box-shadow var(--theme-transition-base) ease;
+}
+
+:root[data-theme-features~="enhanced-motion"] [data-theme-slot="hero-art"] {
+  animation: theme-hero-art-in 420ms var(--theme-motion-ease) both;
+}
+
+:root[data-theme-features~="enhanced-motion"]
+  :is([data-theme-slot="sidebar-ornament"], [data-theme-slot="hero-sparkle"]) {
+  animation: theme-decoration-in 520ms var(--theme-motion-ease) both;
+}
+
+@keyframes theme-hero-art-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes theme-decoration-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.96);
+  }
+}
+
+:root[data-motion="reduced"] *,
+:root[data-motion="reduced"] *::before,
+:root[data-motion="reduced"] *::after {
+  scroll-behavior: auto !important;
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

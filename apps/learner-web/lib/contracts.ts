@@ -53,6 +53,22 @@ export interface AnnotationAnalysisView {
   boundary_note: string;
 }
 
+export interface ExpressionStyleVersion {
+  style: "logic_mirror" | "academic" | "news";
+  label: string;
+  text: string;
+  explanation: string[];
+}
+
+export interface ExpressionReviewView {
+  review_id: string;
+  source: "model" | "local_fallback";
+  reason_code: string;
+  thinking_difference: string;
+  versions: ExpressionStyleVersion[];
+  boundary_note: string;
+}
+
 export interface InterventionView {
   intervention_id: string;
   input_attempt_version_id: string;
@@ -154,6 +170,7 @@ export interface GrammarChallengeView {
   hint_revealed: boolean;
   error_type: string | null;
   hint: string | null;
+  answer: string | null;
 }
 
 export interface GrammarChallengeUpdateView {

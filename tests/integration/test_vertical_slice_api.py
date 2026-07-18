@@ -478,6 +478,76 @@ async def test_annotation_question_can_request_audited_ai_analysis_without_mutat
 
 
 @pytest.mark.asyncio
+async def test_expression_review_requires_saved_work_and_preserves_authored_versions() -> None:
+    transport = httpx2.ASGITransport(app=create_app())
+    async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
+        task = await _seed_task(
+            TaskType.MICRO_EXPRESSION,
+            exam_track=ExamTrack.ENGLISH_1,
+            self_reported_level=SelfReportedLevel.DEVELOPING,
+        )
+        draft = (
+            "Digital tools can help students check details, but students should reason "
+            "independently before relying on them."
+        )
+        unsaved = await client.post(
+            f"/learner/v1/tasks/{task['task_id']}/expression-lab/review",
+            json={"expected_version": task["version"], "draft": draft, "recent_assets": []},
+        )
+        assert unsaved.status_code == 422
+        assert unsaved.json()["reason"] == "expression_review_saved_attempt_required"
+
+        saved = await client.post(
+            f"/learner/v1/tasks/{task['task_id']}/attempts",
+            headers={"Idempotency-Key": "expression-review-v1-0001"},
+            json={
+                "expected_version": task["version"],
+                "text": draft,
+                "independence": "independent",
+            },
+        )
+        assert saved.status_code == 200, saved.text
+        saved_payload = saved.json()
+        review = await client.post(
+            f"/learner/v1/tasks/{task['task_id']}/expression-lab/review",
+            json={
+                "expected_version": saved_payload["version"],
+                "draft": draft,
+                "recent_assets": [{"title": "让步结构", "content": "can help ..., but ..."}],
+            },
+        )
+        assert review.status_code == 200, review.text
+        review_payload = review.json()
+        assert review_payload["source"] == "local_fallback"
+        assert {version["style"] for version in review_payload["versions"]} == {
+            "logic_mirror",
+            "academic",
+            "news",
+        }
+        unchanged = await client.get(f"/learner/v1/tasks/{task['task_id']}")
+        assert unchanged.json()["version"] == saved_payload["version"]
+        assert unchanged.json()["attempts"] == saved_payload["attempts"]
+
+    async with get_engine().connect() as connection:
+        invocation = (
+            (
+                await connection.execute(
+                    sa.select(tables.model_invocations).where(
+                        tables.model_invocations.c.task_id == task["task_id"]
+                    )
+                )
+            )
+            .mappings()
+            .one()
+        )
+        assert invocation["purpose"] == "expression_style_review"
+        assert (
+            invocation["input_attempt_version_id"]
+            == saved_payload["attempts"][0]["attempt_version_id"]
+        )
+
+
+@pytest.mark.asyncio
 async def test_h1_is_gated_auditable_and_requires_linked_learner_v2() -> None:
     transport = httpx2.ASGITransport(app=create_app())
     async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:

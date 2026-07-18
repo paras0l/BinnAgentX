@@ -1,12 +1,24 @@
 "use client";
 
-import { useCallback, useEffect, useState, useTransition } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useTransition,
+  type CSSProperties,
+} from "react";
 import {
   BookOpenText,
   Books,
+  CalendarDots,
   CaretDown,
+  ChartLineUp,
+  House,
   SidebarSimple,
   SlidersHorizontal,
+  Sparkle,
   SignOut,
   UserCircle,
 } from "@phosphor-icons/react";
@@ -26,6 +38,7 @@ import {
   type LearnerExperienceState,
   type LearnerPreferences,
   loadExperience,
+  loadLearnerPreferences,
   recordCompletedSession,
   recordTemporaryTask,
   saveExperienceProfile,
@@ -42,6 +55,13 @@ import {
 } from "../lib/learning-assets-storage";
 import { LearningAssetsPanel } from "./learning-assets-panel";
 import { LearningWorkspace } from "./learning-workspace";
+import { getThemeDefinition, THEME_LIST, THEME_TIERS, type ThemeId } from "../theme/registry";
+import {
+  applyThemePreferences,
+  preloadThemeAssets,
+  previewThemePreferences,
+} from "../theme/runtime";
+import { ThemeProvider } from "../theme/theme-provider";
 
 const DEFAULT_PROFILE: LearnerProfileInput = {
   exam_track: "english_1",
@@ -97,6 +117,9 @@ export function LearningExperience({
   const [experience, setExperience] = useState<LearnerExperienceState | null>(() =>
     loadExperience(identity.learner_id),
   );
+  const [standalonePreferences, setStandalonePreferences] = useState(() =>
+    loadLearnerPreferences(identity.learner_id),
+  );
   const [calibrationDeferred, setCalibrationDeferred] = useState(false);
   const [learningAssets, setLearningAssets] = useState(() =>
     loadLearningAssets(identity.learner_id),
@@ -111,9 +134,18 @@ export function LearningExperience({
       return false;
     }
   });
+  const [themeArtbookOpen, setThemeArtbookOpen] = useState(false);
+  const [previewTheme, setPreviewTheme] = useState<ThemeId | null>(null);
   const [resumeChecked, setResumeChecked] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
+  const contentRef = useRef<HTMLDivElement>(null);
+
+  useLayoutEffect(() => {
+    if (surface !== "training" && contentRef.current) {
+      contentRef.current.scrollTop = 0;
+    }
+  }, [surface]);
 
   useEffect(() => {
     let active = true;
@@ -131,15 +163,13 @@ export function LearningExperience({
         if (!active) return;
         if (value.available && value.workspace) {
           setWorkspace(value.workspace);
-          setSurface("training");
         } else {
           clearResumeRunId(identity.learner_id);
         }
       })
       .catch((reason: unknown) => {
         if (!active) return;
-        clearResumeRunId(identity.learner_id);
-        setError(`上次训练未能恢复。${errorMessage(reason)}`);
+        setError(`上次训练暂时未能读取，缓存位置仍已保留。${errorMessage(reason)}`);
       })
       .finally(() => {
         if (active) setResumeChecked(true);
@@ -204,11 +234,22 @@ export function LearningExperience({
 
   const reportError = useCallback((message: string | null) => setError(message), []);
   const returnHome = useCallback(() => {
-    clearResumeRunId(identity.learner_id);
-    setWorkspace(null);
+    if (workspace?.run.lifecycle === "completed") {
+      clearResumeRunId(identity.learner_id);
+      setWorkspace(null);
+    } else if (workspace) {
+      saveResumeRunId(identity.learner_id, workspace.run.workflow_run_id);
+    }
     setSurface("home");
     setError(null);
-  }, [identity.learner_id]);
+  }, [identity.learner_id, workspace]);
+
+  const resumeTraining = useCallback(() => {
+    if (!workspace) return;
+    saveResumeRunId(identity.learner_id, workspace.run.workflow_run_id);
+    setSurface("training");
+    setError(null);
+  }, [identity.learner_id, workspace]);
 
   const saveProfileOnly = useCallback(
     (profile: LearnerProfileInput) => {
@@ -225,29 +266,34 @@ export function LearningExperience({
 
   const savePreferences = useCallback(
     (preferences: LearnerPreferences) => {
+      setStandalonePreferences(preferences);
+      const persistedExperience = saveLearnerPreferences(identity.learner_id, preferences);
       if (calibrationDeferred) {
         setExperience((current) => (current ? { ...current, preferences } : current));
         setSurface("preferences");
         return;
       }
-      setExperience(saveLearnerPreferences(identity.learner_id, preferences));
+      setExperience(persistedExperience);
       setSurface("preferences");
     },
     [calibrationDeferred, identity.learner_id],
   );
 
-  const deferCalibration = useCallback((profile: LearnerProfileInput) => {
-    setExperience({
-      schemaVersion: 1,
-      profile,
-      sessions: [],
-      preferences: DEFAULT_PREFERENCES,
-      temporaryTasksCompleted: 0,
-    });
-    setCalibrationDeferred(true);
-    setSurface("home");
-    setError(null);
-  }, []);
+  const deferCalibration = useCallback(
+    (profile: LearnerProfileInput) => {
+      setExperience({
+        schemaVersion: 1,
+        profile,
+        sessions: [],
+        preferences: standalonePreferences,
+        temporaryTasksCompleted: 0,
+      });
+      setCalibrationDeferred(true);
+      setSurface("home");
+      setError(null);
+    },
+    [standalonePreferences],
+  );
 
   const completeTemporaryTask = useCallback(() => {
     setExperience(recordTemporaryTask(identity.learner_id));
@@ -271,12 +317,13 @@ export function LearningExperience({
       return next;
     });
   }, []);
+  const closeThemeArtbook = useCallback(() => setThemeArtbookOpen(false), []);
 
   if (!resumeChecked) {
     return (
-      <main className="loading-shell" aria-busy="true">
+      <main className="loading-shell" aria-busy="true" data-ui-anchor="auth-shell">
         <p className="eyebrow">BinnAgent · 考研英语</p>
-        <h1>正在恢复最近一次训练…</h1>
+        <h1>正在检查最近一次训练…</h1>
       </main>
     );
   }
@@ -304,18 +351,14 @@ export function LearningExperience({
     );
   } else if (surface === "profile" && experience) {
     content = (
-      <LearnerProfilePanel
-        experience={experience}
-        onEdit={() => setSurface("profile-edit")}
-        onBack={() => setSurface(workspace ? "training" : "home")}
-      />
+      <LearnerProfilePanel experience={experience} onEdit={() => setSurface("profile-edit")} />
     );
   } else if (surface === "preferences" && experience) {
     content = (
       <PreferencesPanel
         preferences={experience.preferences ?? DEFAULT_PREFERENCES}
         onSave={savePreferences}
-        onBack={() => setSurface(workspace ? "training" : "home")}
+        onThemePreview={setPreviewTheme}
       />
     );
   } else if (surface === "profile-edit" && experience) {
@@ -348,6 +391,7 @@ export function LearningExperience({
         preferences={experience?.preferences ?? DEFAULT_PREFERENCES}
         onTemporaryTaskComplete={completeTemporaryTask}
         onLearningAssetCapture={captureLearningAsset}
+        learningAssets={learningAssets.items}
       />
     );
   } else if (experience) {
@@ -356,10 +400,16 @@ export function LearningExperience({
         experience={experience}
         calibrationDeferred={calibrationDeferred}
         isPending={isPending}
-        onContinue={(session) => startPractice(session.workflowRunId, session.runVersion)}
+        resumableWorkspace={workspace?.run.lifecycle === "completed" ? null : workspace}
+        onResume={resumeTraining}
+        onContinueSession={(session) => startPractice(session.workflowRunId, session.runVersion)}
         onStartFirst={() => startFirstRun(experience.profile)}
-        onOpenProfile={() => setSurface("profile")}
-        onOpenPreferences={() => setSurface("preferences")}
+        onOpenProfile={() => {
+          setSurface("profile");
+        }}
+        onOpenPreferences={() => {
+          setSurface("preferences");
+        }}
       />
     );
   } else {
@@ -394,125 +444,229 @@ export function LearningExperience({
     preferences: "偏好设置",
     assets: "学习资产",
   }[surface];
+  const surfaceSubtitle = {
+    home: "今日学习概览",
+    training: "专注训练空间",
+    profile: "基于训练证据",
+    "profile-edit": "调整训练边界",
+    preferences: "呈现与辅助方式",
+    assets: "积累与复习",
+  }[surface];
+  const activePreferences = experience?.preferences ?? standalonePreferences;
+  const activeThemeDefinition = getThemeDefinition(previewTheme ?? activePreferences.skin);
 
   return (
-    <div
-      className={`experience-frame${usesLeftRail ? " training-frame" : ""}${navCollapsed ? " nav-collapsed" : ""}`}
+    <ThemeProvider
+      theme={activePreferences.skin}
+      density={activePreferences.readingComfort}
+      motion={activePreferences.reducedMotion ? "reduced" : "full"}
     >
-      <header className="account-bar" aria-label="当前学习账号">
-        <div className="account-brand" aria-label="BinnAgent">
-          B
-        </div>
-        <nav className="account-navigation" aria-label="学习功能导航">
-          <button
-            type="button"
-            className={surface === "home" || surface === "training" ? "selected" : ""}
-            aria-label={workspace ? "当前训练" : "学习首页"}
-            onClick={() => setSurface(workspace ? "training" : "home")}
-          >
-            <BookOpenText size={22} weight={surface === "training" ? "fill" : "regular"} />
-            <span>{workspace ? "训练" : "首页"}</span>
-          </button>
-          {experience ? (
-            <>
+      <div
+        className={`experience-frame${usesLeftRail ? " training-frame" : ""}${navCollapsed ? " nav-collapsed" : ""}`}
+        data-ui-anchor="app-shell"
+        data-surface={surface}
+      >
+        <aside className="account-bar" aria-label="当前学习账号" data-ui-anchor="sidebar">
+          <span data-theme-slot="sidebar-ornament" aria-hidden="true" />
+          <div className="account-brand" aria-label="BinnAgent" data-ui-anchor="brand">
+            B
+          </div>
+          <nav className="account-navigation" aria-label="学习功能导航" data-ui-anchor="navigation">
+            <button
+              type="button"
+              className={surface === "home" ? "selected" : ""}
+              aria-label="学习首页"
+              onClick={returnHome}
+            >
+              <House size={22} weight={surface === "home" ? "fill" : "regular"} />
+              <span>首页</span>
+            </button>
+            {workspace ? (
               <button
                 type="button"
-                className={surface === "assets" ? "selected" : ""}
-                aria-label="学习资产"
-                onClick={() => setSurface("assets")}
+                className={surface === "training" ? "selected" : ""}
+                aria-label="继续当前训练"
+                onClick={resumeTraining}
               >
-                <Books size={22} weight={surface === "assets" ? "fill" : "regular"} />
-                <span>资产</span>
+                <BookOpenText size={22} weight={surface === "training" ? "fill" : "regular"} />
+                <span>训练</span>
               </button>
-              <button
-                type="button"
-                className={surface === "profile" || surface === "profile-edit" ? "selected" : ""}
-                aria-label="学习画像"
-                onClick={() => setSurface("profile")}
-              >
-                <UserCircle size={22} weight={surface === "profile" ? "fill" : "regular"} />
-                <span>画像</span>
-              </button>
-              <button
-                type="button"
-                className={surface === "preferences" ? "selected" : ""}
-                aria-label="偏好设置"
-                onClick={() => setSurface("preferences")}
-              >
-                <SlidersHorizontal
-                  size={22}
-                  weight={surface === "preferences" ? "fill" : "regular"}
-                />
-                <span>偏好</span>
-              </button>
-            </>
-          ) : null}
-        </nav>
-        {experience ? (
-          <button
-            type="button"
-            className="navigation-collapse"
-            aria-label={navCollapsed ? "展开左侧导航" : "收起左侧导航"}
-            aria-expanded={!navCollapsed}
-            onClick={toggleNavigation}
-          >
-            <SidebarSimple size={19} />
-            <span>{navCollapsed ? "展开" : "收起"}</span>
-          </button>
-        ) : null}
-        <div className="account-bar-identity">
-          <span>
-            <strong>{identity.nickname}</strong>
-            <small>{identity.account_type === "experience" ? "体验账号" : identity.email}</small>
-          </span>
-          <button type="button" onClick={onLogout} aria-label="退出登录">
-            <SignOut size={16} />
-            <span>退出登录</span>
-          </button>
-        </div>
-      </header>
-      {usesLeftRail ? (
-        <header className="training-location-bar" aria-label="当前页面位置">
-          <div className="training-breadcrumb">
-            <strong>
-              {isTrainingSurface && workspace
-                ? TRAINING_STAGE_LABELS[workspace.run.stage]
-                : surfaceTitle}
-            </strong>
-            {isTrainingSurface && workspace ? (
+            ) : null}
+            {experience ? (
               <>
-                <span aria-hidden="true">/</span>
-                <button type="button" aria-label="查看当前训练阶段">
-                  {workspace.material?.content_type === "micro_expression"
-                    ? "表达训练"
-                    : "匹配阅读"}
-                  <CaretDown size={13} />
+                <button
+                  type="button"
+                  className={surface === "assets" ? "selected" : ""}
+                  aria-label="学习资产"
+                  onClick={() => setSurface("assets")}
+                >
+                  <Books size={22} weight={surface === "assets" ? "fill" : "regular"} />
+                  <span>资产</span>
+                </button>
+                <button
+                  type="button"
+                  className={surface === "profile" || surface === "profile-edit" ? "selected" : ""}
+                  aria-label="学习画像"
+                  onClick={() => setSurface("profile")}
+                >
+                  <UserCircle size={22} weight={surface === "profile" ? "fill" : "regular"} />
+                  <span>画像</span>
+                </button>
+                <button
+                  type="button"
+                  className={surface === "preferences" ? "selected" : ""}
+                  aria-label="偏好设置"
+                  onClick={() => setSurface("preferences")}
+                >
+                  <SlidersHorizontal
+                    size={22}
+                    weight={surface === "preferences" ? "fill" : "regular"}
+                  />
+                  <span>偏好</span>
                 </button>
               </>
-            ) : (
-              <span className="surface-location-note">你的数据仅保存在当前账号空间</span>
-            )}
-          </div>
-          {isTrainingSurface && workspace ? (
-            <div className="training-session-status">
-              <span>{workspace.task?.attempts.length ? "版本已同步" : "本步数据已连接"}</span>
-              <span>
-                第 {Math.max(trainingStageIndex + 1, 1)} / {trainingStageOrder.length} 步
-              </span>
-              <span className="training-progress-track" aria-hidden="true">
-                <i style={{ width: `${trainingProgress}%` }} />
-              </span>
-              <strong>{trainingProgress}%</strong>
-            </div>
+            ) : null}
+          </nav>
+          {experience ? (
+            <button
+              type="button"
+              className="navigation-collapse"
+              aria-label={navCollapsed ? "展开左侧导航" : "收起左侧导航"}
+              aria-expanded={!navCollapsed}
+              onClick={toggleNavigation}
+            >
+              <SidebarSimple size={19} />
+              <span>{navCollapsed ? "展开" : "收起"}</span>
+            </button>
           ) : null}
-        </header>
-      ) : null}
-      {error ? (
-        <div className="global-error" role="alert">
-          {error}
+          {experience ? (
+            <button
+              type="button"
+              className="theme-artbook-trigger"
+              data-ui-anchor="theme-artbook-trigger"
+              aria-label={`打开${activeThemeDefinition.label}皮肤图鉴`}
+              onClick={() => setThemeArtbookOpen(true)}
+            >
+              <Sparkle size={18} weight="fill" />
+              <span>皮肤图鉴</span>
+            </button>
+          ) : null}
+          <div className="account-bar-identity" data-ui-anchor="account-area">
+            <span>
+              <strong>{identity.nickname}</strong>
+              <small>{identity.account_type === "experience" ? "体验账号" : identity.email}</small>
+            </span>
+            <button type="button" onClick={onLogout} aria-label="退出登录">
+              <SignOut size={16} />
+              <span>退出登录</span>
+            </button>
+          </div>
+        </aside>
+        {usesLeftRail ? (
+          <header
+            className="training-location-bar"
+            aria-label="当前页面位置"
+            data-ui-anchor="titlebar"
+          >
+            <div className="training-breadcrumb">
+              <strong>
+                {isTrainingSurface && workspace
+                  ? TRAINING_STAGE_LABELS[workspace.run.stage]
+                  : surfaceTitle}
+              </strong>
+              {isTrainingSurface && workspace ? (
+                <>
+                  <span aria-hidden="true">/</span>
+                  <button type="button" aria-label="查看当前训练阶段">
+                    {workspace.material?.content_type === "micro_expression"
+                      ? "表达训练"
+                      : "匹配阅读"}
+                    <CaretDown size={13} />
+                  </button>
+                </>
+              ) : (
+                <span className="surface-location-note">{surfaceSubtitle}</span>
+              )}
+            </div>
+            {isTrainingSurface && workspace ? (
+              <div className="training-session-status" data-ui-anchor="status-area">
+                <span>{workspace.task?.attempts.length ? "版本已同步" : "本步数据已连接"}</span>
+                <span>
+                  第 {Math.max(trainingStageIndex + 1, 1)} / {trainingStageOrder.length} 步
+                </span>
+                <span className="training-progress-track" aria-hidden="true">
+                  <i style={{ width: `${trainingProgress}%` }} />
+                </span>
+                <strong>{trainingProgress}%</strong>
+              </div>
+            ) : null}
+          </header>
+        ) : null}
+        {error ? (
+          <div className="global-error" role="alert">
+            {error}
+          </div>
+        ) : null}
+        <div
+          className={usesLeftRail ? "training-content" : "experience-content"}
+          data-ui-anchor="workspace"
+          ref={contentRef}
+        >
+          {content}
         </div>
-      ) : null}
-      <div className={usesLeftRail ? "training-content" : "experience-content"}>{content}</div>
+        {themeArtbookOpen ? (
+          <ThemeArtbook label={activeThemeDefinition.label} onClose={closeThemeArtbook} />
+        ) : null}
+      </div>
+    </ThemeProvider>
+  );
+}
+
+function ThemeArtbook({ label, onClose }: { label: string; onClose: () => void }) {
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+
+  return (
+    <div className="theme-artbook-backdrop">
+      <section
+        className="theme-artbook"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="theme-artbook-title"
+      >
+        <header>
+          <div>
+            <p>典藏皮肤图鉴</p>
+            <h2 id="theme-artbook-title">{label}</h2>
+          </div>
+          <button type="button" autoFocus aria-label="关闭皮肤图鉴" onClick={onClose}>
+            ×
+          </button>
+        </header>
+        <div className="theme-artbook-grid">
+          <figure className="theme-artbook-guide">
+            <span role="img" aria-label={`${label}使用指南`} />
+            <figcaption>使用指南</figcaption>
+          </figure>
+          <figure className="theme-artbook-concept">
+            <span role="img" aria-label={`${label}角色概念设定`} />
+            <figcaption>角色概念设定</figcaption>
+          </figure>
+          <figure className="theme-artbook-characters">
+            <span role="img" aria-label={`${label}角色动作与道具素材`} />
+            <figcaption>角色动作与夏日道具</figcaption>
+          </figure>
+          <figure className="theme-artbook-components">
+            <span role="img" aria-label={`${label}组件装饰资源`} />
+            <figcaption>组件与装饰资源</figcaption>
+          </figure>
+        </div>
+      </section>
     </div>
   );
 }
@@ -521,7 +675,9 @@ interface LearningHomeProps {
   experience: LearnerExperienceState;
   calibrationDeferred: boolean;
   isPending: boolean;
-  onContinue: (session: CompletedSessionRecord) => void;
+  resumableWorkspace: LearnerWorkspaceView | null;
+  onResume: () => void;
+  onContinueSession: (session: CompletedSessionRecord) => void;
   onStartFirst: () => void;
   onOpenProfile: () => void;
   onOpenPreferences: () => void;
@@ -531,7 +687,9 @@ function LearningHome({
   experience,
   calibrationDeferred,
   isPending,
-  onContinue,
+  resumableWorkspace,
+  onResume,
+  onContinueSession,
   onStartFirst,
   onOpenProfile,
   onOpenPreferences,
@@ -549,10 +707,14 @@ function LearningHome({
     Math.round((practicedMinutes / profile.weekly_minutes) * 100),
   );
   const independentSessions = sessions.filter((session) => session.supportedTaskCount === 0).length;
+  const hasResumableTask = Boolean(resumableWorkspace);
+  const resumableStage = resumableWorkspace
+    ? TRAINING_STAGE_LABELS[resumableWorkspace.run.stage]
+    : null;
 
   return (
     <main className="home-shell">
-      <header className="home-topbar">
+      <header className="home-topbar" data-ui-anchor="workspace-header">
         <div>
           <p className="eyebrow">BinnAgent · 学习首页</p>
           <h1>语境实验室 × 表达实验室</h1>
@@ -567,35 +729,52 @@ function LearningHome({
         </div>
       </header>
 
-      <section className="home-hero" aria-labelledby="next-session-title">
-        <div>
+      <section className="home-hero" aria-labelledby="next-session-title" data-ui-anchor="hero">
+        <span data-theme-slot="hero-art" aria-hidden="true" />
+        <span data-theme-slot="hero-trail" aria-hidden="true" />
+        <span data-theme-slot="hero-sparkle" aria-hidden="true" />
+        <div data-ui-anchor="hero-copy">
           {calibrationDeferred ? (
             <p className="calibration-deferred-note" role="status">
               本次先浏览，尚未形成校准记录；下次登录仍会重新邀请你完成独立校准。
             </p>
           ) : null}
-          <p className="step-label">熟悉阶段 · 下一次训练</p>
+          <p className="step-label">
+            {hasResumableTask ? `任务已缓存 · ${resumableStage}` : "熟悉阶段 · 下一次训练"}
+          </p>
           <h2 id="next-session-title">
-            {latest ? "换一篇新材料，继续验证读写迁移" : "从两段短阅读找到合适起点"}
+            {hasResumableTask
+              ? "继续上次任务，从离开的位置接着学"
+              : latest
+                ? "换一篇新材料，继续验证读写迁移"
+                : "从两段短阅读找到合适起点"}
           </h2>
           <p>
-            {latest
-              ? recommendationFor(latest.difficultyRating)
-              : "首次会先做两段轻量校准，再进入匹配阅读与亲自表达。"}
+            {hasResumableTask
+              ? `上次停在${resumableWorkspace?.material?.title ? `《${resumableWorkspace.material.title}》` : "当前训练"}，任务位置与未提交草稿都已保留。`
+              : latest
+                ? recommendationFor(latest.difficultyRating)
+                : "首次会先做两段轻量校准，再进入匹配阅读与亲自表达。"}
           </p>
           <button
             className="primary-button strong-action"
             type="button"
-            onClick={() => (latest ? onContinue(latest) : onStartFirst())}
+            onClick={() =>
+              hasResumableTask ? onResume() : latest ? onContinueSession(latest) : onStartFirst()
+            }
             disabled={isPending}
           >
             {isPending
-              ? latest
-                ? "正在准备新材料…"
-                : "正在建立训练…"
-              : latest
-                ? "开始下一次训练"
-                : "开始独立校准"}
+              ? hasResumableTask
+                ? "正在恢复任务…"
+                : latest
+                  ? "正在准备新材料…"
+                  : "正在建立训练…"
+              : hasResumableTask
+                ? "继续上次任务"
+                : latest
+                  ? "开始下一次训练"
+                  : "开始独立校准"}
           </button>
         </div>
         <dl className="session-brief">
@@ -608,14 +787,15 @@ function LearningHome({
             <dd>约 {profile.session_minutes} 分钟</dd>
           </div>
           <div>
-            <dt>反馈方式</dt>
-            <dd>先独立，按需最小介入</dd>
+            <dt>{hasResumableTask ? "缓存状态" : "反馈方式"}</dt>
+            <dd>{hasResumableTask ? "位置与草稿已保留" : "先独立，按需最小介入"}</dd>
           </div>
         </dl>
       </section>
 
-      <section className="home-grid">
+      <section className="home-grid" data-ui-anchor="primary-actions">
         <article className="weekly-card">
+          <CalendarDots className="home-card-icon" size={28} weight="duotone" aria-hidden="true" />
           <p className="step-label">本机近 7 天</p>
           <div className="weekly-heading">
             <h2>{practicedMinutes} 分钟</h2>
@@ -627,6 +807,7 @@ function LearningHome({
           <p>这里只汇总当前浏览器中已完成的训练，不把时长当作能力提升。</p>
         </article>
         <article className="evidence-card">
+          <ChartLineUp className="home-card-icon" size={28} weight="duotone" aria-hidden="true" />
           <p className="step-label">累计体验证据</p>
           <div className="evidence-numbers">
             <span>
@@ -639,6 +820,7 @@ function LearningHome({
           <p>稳定进步仍需要新材料、延迟和无提示表现共同确认。</p>
         </article>
         <article className="intelligence-card">
+          <Sparkle className="home-card-icon" size={28} weight="duotone" aria-hidden="true" />
           <p className="step-label">智能协作记录</p>
           <div className="evidence-numbers">
             <span>
@@ -653,6 +835,7 @@ function LearningHome({
       </section>
 
       <section className="history-section" aria-labelledby="history-title">
+        <span data-theme-slot="history-easter-egg" aria-hidden="true" />
         <div className="section-heading">
           <div>
             <p className="step-label">最近训练</p>
@@ -772,11 +955,9 @@ function formatSessionDate(value: string): string {
 function LearnerProfilePanel({
   experience,
   onEdit,
-  onBack,
 }: {
   experience: LearnerExperienceState;
   onEdit: () => void;
-  onBack: () => void;
 }) {
   const { profile, sessions } = experience;
   const completedTasks = sessions.reduce((sum, session) => sum + session.completedTaskCount, 0);
@@ -794,9 +975,6 @@ function LearnerProfilePanel({
           <h1>你的读写学习画像</h1>
           <p>画像描述当前可观察到的学习行为，不预测分数，也不把一次表现写成固定能力。</p>
         </div>
-        <button type="button" className="quiet-button" onClick={onBack}>
-          返回
-        </button>
       </header>
 
       <section className="profile-overview" aria-label="画像概览">
@@ -866,13 +1044,30 @@ function LearnerProfilePanel({
 function PreferencesPanel({
   preferences,
   onSave,
-  onBack,
+  onThemePreview,
 }: {
   preferences: LearnerPreferences;
   onSave: (preferences: LearnerPreferences) => void;
-  onBack: () => void;
+  onThemePreview: (theme: ThemeId | null) => void;
 }) {
   const [draft, setDraft] = useState(preferences);
+  const [expandedTierTheme, setExpandedTierTheme] = useState<ThemeId | null>(null);
+
+  useLayoutEffect(() => {
+    const savedThemePreferences = {
+      theme: preferences.skin,
+      density: preferences.readingComfort,
+      motion: preferences.reducedMotion ? ("reduced" as const) : ("full" as const),
+    };
+
+    previewThemePreferences(savedThemePreferences);
+    onThemePreview(preferences.skin);
+    return () => {
+      previewThemePreferences(savedThemePreferences);
+      onThemePreview(null);
+    };
+  }, [onThemePreview, preferences.readingComfort, preferences.reducedMotion, preferences.skin]);
+
   return (
     <main className="insight-shell preferences-shell">
       <header className="insight-heading">
@@ -881,14 +1076,16 @@ function PreferencesPanel({
           <h1>让辅助按你的节奏出现</h1>
           <p>这些设置只改变呈现和介入节奏，不改变题目难度，也不会替你完成答案。</p>
         </div>
-        <button type="button" className="quiet-button" onClick={onBack}>
-          取消
-        </button>
       </header>
       <form
         className="preferences-form"
         onSubmit={(event) => {
           event.preventDefault();
+          applyThemePreferences({
+            theme: draft.skin,
+            density: draft.readingComfort,
+            motion: draft.reducedMotion ? "reduced" : "full",
+          });
           onSave(draft);
         }}
       >
@@ -972,12 +1169,18 @@ function PreferencesPanel({
             </span>
             <select
               value={draft.readingComfort}
-              onChange={(event) =>
+              onChange={(event) => {
+                const readingComfort = event.target.value as LearnerPreferences["readingComfort"];
                 setDraft({
                   ...draft,
-                  readingComfort: event.target.value as LearnerPreferences["readingComfort"],
-                })
-              }
+                  readingComfort,
+                });
+                previewThemePreferences({
+                  theme: draft.skin,
+                  density: readingComfort,
+                  motion: draft.reducedMotion ? "reduced" : "full",
+                });
+              }}
             >
               <option value="compact">紧凑</option>
               <option value="comfortable">舒适</option>
@@ -988,8 +1191,105 @@ function PreferencesPanel({
             label="减少动态效果"
             detail="关闭非必要的位移和过渡动画"
             checked={draft.reducedMotion}
-            onChange={(checked) => setDraft({ ...draft, reducedMotion: checked })}
+            onChange={(checked) => {
+              setDraft({ ...draft, reducedMotion: checked });
+              previewThemePreferences({
+                theme: draft.skin,
+                density: draft.readingComfort,
+                motion: checked ? "reduced" : "full",
+              });
+            }}
           />
+        </fieldset>
+        <fieldset>
+          <legend>界面皮肤</legend>
+          <p className="skin-tier-guide">
+            皮肤等级表示表现层覆盖范围：基础替换色板，史诗增加材质与图标语言，传说包含专属布局、插画和装饰资产，典藏进一步替换组件并提供陪伴场景与皮肤图鉴。
+          </p>
+          <div className="skin-picker" role="radiogroup" aria-label="选择界面皮肤">
+            {THEME_LIST.map((theme) => {
+              const tier = THEME_TIERS[theme.tier];
+              const tierPanelId = `skin-tier-${theme.id}-details`;
+              const tierExpanded = expandedTierTheme === theme.id;
+              return (
+                <div
+                  key={theme.id}
+                  className="skin-choice"
+                  onPointerEnter={() => preloadThemeAssets(theme.id)}
+                  onFocus={() => preloadThemeAssets(theme.id)}
+                  style={
+                    {
+                      "--preview-canvas": theme.preview.canvas,
+                      "--preview-rail": theme.preview.rail,
+                      "--preview-accent": theme.preview.accent,
+                      "--preview-surface": theme.preview.surface,
+                    } as CSSProperties
+                  }
+                >
+                  <input
+                    id={`skin-${theme.id}`}
+                    type="radio"
+                    name="skin"
+                    value={theme.id}
+                    checked={draft.skin === theme.id}
+                    onChange={() => {
+                      setDraft({ ...draft, skin: theme.id });
+                      onThemePreview(theme.id);
+                      previewThemePreferences({
+                        theme: theme.id,
+                        density: draft.readingComfort,
+                        motion: draft.reducedMotion ? "reduced" : "full",
+                      });
+                    }}
+                  />
+                  <label className="skin-choice-main" htmlFor={`skin-${theme.id}`}>
+                    <span className="skin-preview" aria-hidden="true">
+                      <i className="skin-preview-rail" />
+                      <i className="skin-preview-header" />
+                      <i className="skin-preview-card" />
+                    </span>
+                    <span className="skin-choice-copy">
+                      <span className="skin-choice-heading">
+                        <strong>{theme.label}</strong>
+                      </span>
+                      <small>{theme.description}</small>
+                    </span>
+                  </label>
+                  <button
+                    type="button"
+                    className="skin-tier"
+                    data-tier={theme.tier}
+                    aria-expanded={tierExpanded}
+                    aria-controls={tierPanelId}
+                    aria-label={`${tierExpanded ? "收起" : "查看"}${tier.label}等级说明`}
+                    onClick={() => setExpandedTierTheme(tierExpanded ? null : theme.id)}
+                  >
+                    <span>{tier.label}</span>
+                    <CaretDown size={11} weight="bold" aria-hidden="true" />
+                  </button>
+                  {tierExpanded ? (
+                    <section
+                      id={tierPanelId}
+                      className="skin-tier-panel"
+                      data-tier={theme.tier}
+                      aria-label={`${tier.label}等级效果`}
+                    >
+                      <strong>{tier.label}等级效果</strong>
+                      <p>{tier.description}</p>
+                      <ul>
+                        {tier.effects.map((effect) => (
+                          <li key={effect}>{effect}</li>
+                        ))}
+                      </ul>
+                    </section>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+          <p className="skin-boundary">
+            皮肤只改变颜色、层次与装饰，不改变训练规则、字号和学习证据。
+          </p>
         </fieldset>
         <footer className="preferences-actions">
           <p>偏好只保存在当前浏览器的此账号下。</p>

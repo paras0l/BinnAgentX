@@ -26,7 +26,7 @@ async def test_resume_workspace_treats_an_expired_browser_pointer_as_absent() ->
 
 
 @pytest.mark.asyncio
-async def test_reading_grammar_challenge_hides_answer_and_restores_original_after_success() -> None:
+async def test_reading_grammar_challenge_hides_then_reveals_answer_and_restores_original() -> None:
     transport = httpx2.ASGITransport(app=create_app())
     async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
         created = await client.post(
@@ -74,6 +74,7 @@ async def test_reading_grammar_challenge_hides_answer_and_restores_original_afte
             "hint_revealed": False,
             "error_type": None,
             "hint": None,
+            "answer": None,
         }
         assert (
             displayed_paragraphs[challenge.paragraph_id]
@@ -104,22 +105,21 @@ async def test_reading_grammar_challenge_hides_answer_and_restores_original_afte
         assert wrong.json()["verification_correct"] is False
         assert wrong.json()["paragraphs"] == material["paragraphs"]
 
-        corrected = await client.post(
-            f"/learner/v1/tasks/{task_id}/grammar-challenge/verify",
-            json={"correction": challenge.correct_text},
-        )
-        assert corrected.status_code == 200, corrected.text
-        assert corrected.json()["verification_correct"] is True
-        assert corrected.json()["grammar_challenge"]["status"] == "resolved"
+        revealed = await client.post(f"/learner/v1/tasks/{task_id}/grammar-challenge/answer")
+        assert revealed.status_code == 200, revealed.text
+        assert revealed.json()["verification_correct"] is None
+        assert revealed.json()["grammar_challenge"]["status"] == "resolved"
+        assert revealed.json()["grammar_challenge"]["answer"] == challenge.correct_text
         assert {
             paragraph["paragraph_id"]: paragraph["text"]
-            for paragraph in corrected.json()["paragraphs"]
+            for paragraph in revealed.json()["paragraphs"]
         } == correct_paragraphs
 
         resumed = await client.get(f"/learner/v1/runs/{run_id}/resume-workspace")
         assert resumed.status_code == 200, resumed.text
         resumed_material = resumed.json()["workspace"]["material"]
         assert resumed_material["grammar_challenge"]["status"] == "resolved"
+        assert resumed_material["grammar_challenge"]["answer"] == challenge.correct_text
         assert {
             paragraph["paragraph_id"]: paragraph["text"]
             for paragraph in resumed_material["paragraphs"]

@@ -44,9 +44,7 @@ async def test_content_generation_api_runs_and_returns_generated_pack(
     )
 
     transport = httpx2.ASGITransport(app=create_app())
-    async with httpx2.AsyncClient(
-        transport=transport, base_url="http://test"
-    ) as client:
+    async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
             "/control/v1/content-generation/jobs",
             headers={"X-BinnAgent-Control-Role": "developer_reviewer"},
@@ -78,9 +76,7 @@ async def test_content_generation_api_returns_validation_failed_payload(
     )
 
     transport = httpx2.ASGITransport(app=create_app())
-    async with httpx2.AsyncClient(
-        transport=transport, base_url="http://test"
-    ) as client:
+    async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
             "/control/v1/content-generation/jobs",
             headers={"X-BinnAgent-Control-Role": "developer_reviewer"},

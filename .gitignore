@@ -43,3 +43,4 @@ fixtures/content/v1/generated/
 *.swp
 *~
 /design-qa.md
+logs/deploy.state

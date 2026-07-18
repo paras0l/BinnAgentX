@@ -92,6 +92,7 @@ const workspace = {
       hint_revealed: false,
       error_type: null,
       hint: null,
+      answer: "found",
     },
   },
 };
@@ -176,6 +177,78 @@ test("learner entry is desktop-focused and accessible", async ({ page }) => {
 
   const results = await new AxeBuilder({ page }).analyze();
   expect(results.violations).toEqual([]);
+});
+
+test("collector skin forms a readable h1 hero and paints bubbles while scrolling", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1440, height: 600 });
+  await page.addInitScript(() => {
+    const preferences = {
+      assistanceMode: "ask_first",
+      feedbackDetail: "balanced",
+      correctionTone: "gentle",
+      showDecisionTrace: true,
+      temporaryTasksEnabled: true,
+      readingComfort: "comfortable",
+      reducedMotion: false,
+      skin: "seal-summer",
+    };
+    queueMicrotask(() => {
+      localStorage.setItem(
+        "binnagent:learner-preferences:v1:learner_synthetic_local",
+        JSON.stringify(preferences),
+      );
+      localStorage.setItem(
+        "binnagent:theme:v1",
+        JSON.stringify({ theme: "seal-summer", density: "comfortable", motion: "full" }),
+      );
+    });
+  });
+  await page.goto("/");
+
+  await expect(page.locator("html")).toHaveAttribute("data-theme-tier", "collector");
+  const heading = page.getByRole("heading", { name: "语境实验室 × 表达实验室" });
+  await expect(heading).toHaveClass(/collector-particle-heading/);
+  await expect(heading).toHaveClass(/collector-particle-heading-cjk/);
+  const headingCanvas = heading.locator(".collector-particle-heading-canvas");
+  await expect(headingCanvas).toBeVisible();
+  await expect
+    .poll(async () => (await heading.boundingBox())?.height ?? 0)
+    .toBeGreaterThanOrEqual(48);
+  await expect
+    .poll(() =>
+      headingCanvas.evaluate((element) => {
+        const canvas = element as HTMLCanvasElement;
+        const pixels = canvas
+          .getContext("2d")
+          ?.getImageData(0, 0, canvas.width, canvas.height).data;
+        if (!pixels) return 0;
+        let painted = 0;
+        for (let index = 3; index < pixels.length; index += 4) {
+          if ((pixels[index] ?? 0) > 0) painted += 1;
+        }
+        return painted;
+      }),
+    )
+    .toBeGreaterThan(20);
+
+  await page.mouse.move(590, 390);
+  await page.mouse.wheel(0, 180);
+  await page.waitForTimeout(35);
+  const trailCanvas = page.locator(".collector-pointer-trail-canvas");
+  await expect(trailCanvas).toBeVisible();
+  const trailPixels = await trailCanvas.evaluate((element) => {
+    const canvas = element as HTMLCanvasElement;
+    const pixels = canvas.getContext("2d")?.getImageData(0, 0, canvas.width, canvas.height).data;
+    if (!pixels) return 0;
+    let painted = 0;
+    for (let index = 3; index < pixels.length; index += 4) {
+      if ((pixels[index] ?? 0) > 0) painted += 1;
+    }
+    return painted;
+  });
+  expect(trailPixels).toBeGreaterThan(10);
 });
 
 test("known learner can inspect profile evidence and control assistance preferences", async ({
@@ -267,9 +340,7 @@ test("a completed stage stops at a calm checkpoint before advancing", async ({ p
   expect(results.violations).toEqual([]);
 });
 
-test("grammar challenge reveals only the error type and restores the original after success", async ({
-  page,
-}) => {
+test("grammar challenge can reveal a hint or give up and display the answer", async ({ page }) => {
   const incorrectParagraphs = workspace.material.paragraphs.map((paragraph) =>
     paragraph.paragraph_id === "calibration_a_p2"
       ? { ...paragraph, text: paragraph.text.replace("found", "finds") }
@@ -287,6 +358,7 @@ test("grammar challenge reveals only the error type and restores the original af
         hint_revealed: false,
         error_type: null,
         hint: null,
+        answer: null,
       },
     },
   };
@@ -317,6 +389,7 @@ test("grammar challenge reveals only the error type and restores the original af
             hint_revealed: true,
             error_type: "时态与谓语形式",
             hint: "留意上下文的叙事时态。",
+            answer: null,
           },
           verification_correct: null,
           feedback: null,
@@ -341,11 +414,35 @@ test("grammar challenge reveals only the error type and restores the original af
             hint_revealed: true,
             error_type: "时态与谓语形式",
             hint: "留意上下文的叙事时态。",
+            answer: correct ? "found" : null,
           },
           verification_correct: correct,
           feedback: correct
             ? "修改正确，文章已恢复为正确原文。"
             : "还不正确，文章暂未修改。请结合句子结构再检查一次。",
+        }),
+      });
+    },
+  );
+  await page.route(
+    "**/api/learner/v1/tasks/task_browser_0001/grammar-challenge/answer",
+    async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          paragraphs: workspace.material.paragraphs,
+          grammar_challenge: {
+            challenge_id: "calibration_a_grammar_02",
+            status: "resolved",
+            attempt_count: 1,
+            hint_revealed: true,
+            error_type: "时态与谓语形式",
+            hint: "留意上下文的叙事时态。",
+            answer: "found",
+          },
+          verification_correct: null,
+          feedback: "已放弃本次作答，正确写法和恢复后的原文已显示。",
         }),
       });
     },
@@ -362,10 +459,10 @@ test("grammar challenge reveals only the error type and restores the original af
   await page.getByRole("button", { name: "验证修改" }).click();
   await expect(page.getByText(/还不正确，文章暂未修改/)).toBeVisible();
   await expect(page.getByText(/more students finds a place/)).toBeVisible();
-  await page.getByLabel("正确写法").fill("found");
-  await page.getByRole("button", { name: "验证修改" }).click();
+  await page.getByRole("button", { name: "放弃并显示答案" }).click();
 
-  await expect(page.getByRole("heading", { name: "已找出并改正，原文已恢复" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "语法找茬已完成，原文已恢复" })).toBeVisible();
+  await expect(page.getByText("found", { exact: true })).toBeVisible();
   await expect(page.getByText(/more students found a place/)).toBeVisible();
   await expect(page.getByText(/more students finds a place/)).toHaveCount(0);
 });

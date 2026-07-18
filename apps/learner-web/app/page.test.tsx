@@ -1,9 +1,75 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import LearnerHomePage from "./page";
 import { completedStageProgress } from "./learning-experience";
+import type { LearnerWorkspaceView } from "../lib/contracts";
+import { loadDraft, loadResumeRunId, saveResumeRunId } from "../lib/draft-storage";
 import { saveExperienceProfile } from "../lib/experience-storage";
+
+const resumableWorkspace = {
+  run: {
+    workflow_run_id: "workflow_run_resume_0001",
+    run_kind: "practice",
+    predecessor_run_id: null,
+    lifecycle: "active",
+    stage: "matched_reading",
+    version: 3,
+    current_task_id: "task_resume_0001",
+    task_refs: [],
+    match_decisions: [],
+    calibration_fallback_approved: false,
+    difficulty_feedback_status: "pending",
+    difficulty_rating: null,
+    next_task_placeholder_id: null,
+    completion_gaps: [],
+    created_at: "2026-07-18T08:00:00Z",
+    updated_at: "2026-07-18T08:10:00Z",
+    replayed: false,
+  },
+  task: {
+    task_id: "task_resume_0001",
+    workflow_run_id: "workflow_run_resume_0001",
+    task_type: "matched_reading",
+    state: "active",
+    version: 1,
+    highest_hint_level: 0,
+    current_content_version_id: "reading_resume_v1",
+    annotation_count: 0,
+    annotations: [],
+    attempts: [],
+    interventions: [],
+    revisions: [],
+    intervention_count: 0,
+    revision_count: 0,
+    completion_gaps: [],
+    replayed: false,
+  },
+  material: {
+    content_type: "matched_reading",
+    content_version_id: "reading_resume_v1",
+    title: "Cached Passage",
+    paragraphs: [{ paragraph_id: "paragraph_1", text: "A cached learning task remains intact." }],
+    allowed_annotations: ["vocabulary", "logic"],
+    question: {
+      question_id: "question_resume_0001",
+      prompt: "What is preserved?",
+      options: [
+        { option_id: "A", text: "The task position" },
+        { option_id: "B", text: "Nothing" },
+      ],
+    },
+    grammar_challenge: {
+      challenge_id: "grammar_resume_0001",
+      status: "pending",
+      attempt_count: 0,
+      hint_revealed: false,
+      error_type: null,
+      hint: null,
+      answer: null,
+    },
+  },
+} satisfies LearnerWorkspaceView;
 
 describe("learner home", () => {
   afterEach(() => {
@@ -40,6 +106,32 @@ describe("learner home", () => {
     expect(screen.queryByText(/聊天/)).not.toBeInTheDocument();
   });
 
+  it("keeps a deferred learner's saved skin aligned after reload", async () => {
+    const firstRender = render(<LearnerHomePage />);
+    fireEvent.click(await screen.findByRole("button", { name: "下次再说" }));
+    fireEvent.click(
+      within(screen.getByRole("navigation", { name: "学习功能导航" })).getByRole("button", {
+        name: "偏好设置",
+      }),
+    );
+    fireEvent.click(screen.getByRole("radio", { name: /布偶猫陪伴/ }));
+    fireEvent.click(screen.getByRole("button", { name: "保存偏好" }));
+    expect(document.documentElement).toHaveAttribute("data-theme", "ragdoll");
+
+    firstRender.unmount();
+    render(<LearnerHomePage />);
+    expect(await screen.findByRole("button", { name: "下次再说" })).toBeEnabled();
+    expect(document.documentElement).toHaveAttribute("data-theme", "ragdoll");
+
+    fireEvent.click(screen.getByRole("button", { name: "下次再说" }));
+    fireEvent.click(
+      within(screen.getByRole("navigation", { name: "学习功能导航" })).getByRole("button", {
+        name: "偏好设置",
+      }),
+    );
+    expect(screen.getByRole("radio", { name: /布偶猫陪伴/ })).toBeChecked();
+  });
+
   it("returns a known learner to a persistent learning home", async () => {
     saveExperienceProfile("learner_synthetic_local", {
       exam_track: "english_2",
@@ -63,6 +155,92 @@ describe("learner home", () => {
     expect(screen.getByRole("button", { name: "开始独立校准" })).toBeEnabled();
   });
 
+  it("keeps a resumable task on the home page and caches an immediate draft when leaving", async () => {
+    saveExperienceProfile("learner_synthetic_local", {
+      exam_track: "english_1",
+      target_score: 70,
+      weekly_minutes: 420,
+      self_reported_level: "developing",
+      prior_exam_seen: false,
+      session_minutes: 45,
+      feedback_density: "minimal",
+      timed: false,
+      evidence_count: 0,
+      confidence_band: "low",
+    });
+    saveResumeRunId("learner_synthetic_local", resumableWorkspace.run.workflow_run_id);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/session")) {
+          return Response.json({
+            learner_id: "learner_synthetic_local",
+            nickname: "本地学习者",
+            email: "local@binnagent.invalid",
+            invite_code: "BINN-LOCAL",
+            account_type: "registered",
+          });
+        }
+        if (url.endsWith("/resume-workspace")) {
+          return Response.json({ available: true, workspace: resumableWorkspace });
+        }
+        return Response.json({ detail: "not_found" }, { status: 404 });
+      }),
+    );
+
+    render(<LearnerHomePage />);
+
+    expect(await screen.findByRole("button", { name: "继续上次任务" })).toBeEnabled();
+    expect(screen.getByText(/任务位置与未提交草稿都已保留/)).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "继续上次任务" }));
+    expect(screen.getByRole("heading", { name: "Cached Passage" })).toBeVisible();
+    fireEvent.change(screen.getByRole("textbox", { name: /我的解释 · V1/ }), {
+      target: { value: "My cached explanation." },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "学习首页" }));
+    expect(screen.getByRole("button", { name: "继续上次任务" })).toBeEnabled();
+    expect(loadDraft(resumableWorkspace)?.text).toBe("My cached explanation.");
+  });
+
+  it("keeps the cached run pointer when the resume service is temporarily unavailable", async () => {
+    saveExperienceProfile("learner_synthetic_local", {
+      exam_track: "english_1",
+      target_score: 70,
+      weekly_minutes: 420,
+      self_reported_level: "developing",
+      prior_exam_seen: false,
+      session_minutes: 45,
+      feedback_density: "minimal",
+      timed: false,
+      evidence_count: 0,
+      confidence_band: "low",
+    });
+    saveResumeRunId("learner_synthetic_local", resumableWorkspace.run.workflow_run_id);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        if (String(input).endsWith("/session")) {
+          return Response.json({
+            learner_id: "learner_synthetic_local",
+            nickname: "本地学习者",
+            email: "local@binnagent.invalid",
+            invite_code: "BINN-LOCAL",
+            account_type: "registered",
+          });
+        }
+        return Response.json({ detail: "temporarily_unavailable" }, { status: 503 });
+      }),
+    );
+
+    render(<LearnerHomePage />);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("缓存位置仍已保留");
+    expect(loadResumeRunId("learner_synthetic_local")).toBe(resumableWorkspace.run.workflow_run_id);
+  });
+
   it("opens the evidence-based profile and preference controls", async () => {
     saveExperienceProfile("learner_synthetic_local", {
       exam_track: "english_1",
@@ -81,11 +259,81 @@ describe("learner home", () => {
     fireEvent.click(await screen.findByRole("button", { name: "查看学习画像" }));
     expect(screen.getByRole("heading", { name: "你的读写学习画像" })).toBeVisible();
     expect(screen.getByText(/不预测分数/)).toBeVisible();
+    expect(screen.queryByRole("button", { name: "返回" })).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "偏好设置" }));
+    fireEvent.click(
+      within(screen.getByRole("navigation", { name: "学习功能导航" })).getByRole("button", {
+        name: "偏好设置",
+      }),
+    );
     expect(screen.getByRole("heading", { name: "让辅助按你的节奏出现" })).toBeVisible();
     expect(screen.getByLabelText(/行内辅助出现方式/)).toBeVisible();
     expect(screen.getByRole("button", { name: "保存偏好" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "取消" })).not.toBeInTheDocument();
+
+    const legendaryTier = screen.getByRole("button", { name: "查看传说等级说明" });
+    expect(legendaryTier).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(legendaryTier);
+    expect(screen.getByRole("region", { name: "传说等级效果" })).toHaveTextContent(
+      "皮肤专属页面布局和角色安全区",
+    );
+    const collectorTier = screen.getByRole("button", { name: "查看典藏等级说明" });
+    fireEvent.click(collectorTier);
+    expect(screen.getByRole("region", { name: "典藏等级效果" })).toHaveTextContent("完整外观");
+    expect(screen.getByRole("radio", { name: /纸上专注/ })).toBeChecked();
+
+    fireEvent.click(screen.getByRole("radio", { name: /布偶猫陪伴/ }));
+    expect(document.documentElement).toHaveAttribute("data-theme", "ragdoll");
+    expect(document.querySelector('[data-ui-anchor="app-shell"]')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "学习首页" }));
+    expect(document.documentElement).toHaveAttribute("data-theme", "paper");
+
+    fireEvent.click(
+      within(screen.getByRole("navigation", { name: "学习功能导航" })).getByRole("button", {
+        name: "偏好设置",
+      }),
+    );
+    expect(screen.getByRole("radio", { name: /纸上专注/ })).toBeChecked();
+    expect(document.documentElement).toHaveAttribute("data-theme", "paper");
+
+    fireEvent.click(screen.getByRole("radio", { name: /布偶猫陪伴/ }));
+    fireEvent.click(screen.getByRole("button", { name: "保存偏好" }));
+    expect(screen.getByRole("radio", { name: /布偶猫陪伴/ })).toBeChecked();
+    expect(document.documentElement).toHaveAttribute("data-theme", "ragdoll");
+  });
+
+  it("opens the collector artbook after previewing the summer seal skin", async () => {
+    saveExperienceProfile("learner_synthetic_local", {
+      exam_track: "english_1",
+      target_score: 70,
+      weekly_minutes: 420,
+      self_reported_level: "developing",
+      prior_exam_seen: false,
+      session_minutes: 45,
+      feedback_density: "minimal",
+      timed: false,
+      evidence_count: 0,
+      confidence_band: "low",
+    });
+
+    render(<LearnerHomePage />);
+    await screen.findByRole("heading", { name: "语境实验室 × 表达实验室" });
+    fireEvent.click(
+      within(screen.getByRole("navigation", { name: "学习功能导航" })).getByRole("button", {
+        name: "偏好设置",
+      }),
+    );
+    fireEvent.click(screen.getByRole("radio", { name: /海豹夏日乐园/ }));
+
+    expect(document.documentElement).toHaveAttribute("data-theme", "seal-summer");
+    expect(document.documentElement).toHaveAttribute("data-theme-tier", "collector");
+    fireEvent.click(screen.getByRole("button", { name: "打开海豹夏日乐园皮肤图鉴" }));
+    expect(screen.getByRole("dialog", { name: "海豹夏日乐园" })).toBeVisible();
+    expect(screen.getByRole("img", { name: "海豹夏日乐园角色概念设定" })).toBeVisible();
+    expect(screen.getByRole("img", { name: "海豹夏日乐园组件装饰资源" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "关闭皮肤图鉴" }));
+    expect(screen.queryByRole("dialog", { name: "海豹夏日乐园" })).not.toBeInTheDocument();
   });
 
   it("keeps authenticated navigation on the left and supports learning assets", async () => {

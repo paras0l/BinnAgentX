@@ -1,0 +1,871 @@
+:root[data-theme="seal-summer"] {
+  --theme-canvas: #eef9ff;
+  --theme-canvas-muted: #d8f1ff;
+  --theme-surface: #fffef4;
+  --theme-surface-raised: #fffef9;
+  --theme-surface-soft: #e6f6ff;
+  --theme-ink: #21465f;
+  --theme-ink-muted: #547389;
+  --theme-accent: #319ee8;
+  --theme-accent-strong: #1478bd;
+  --theme-accent-soft: #dff3ff;
+  --theme-line: #bfdef0;
+  --theme-line-strong: #8ec7e8;
+  --theme-focus: rgb(30 147 218 / 42%);
+  --theme-danger-soft: #fff0f3;
+  --theme-success: #37866f;
+  --theme-success-soft: #e4f7ef;
+  --theme-warning: #9c681a;
+  --theme-warning-soft: #fff5cf;
+  --theme-info: #625ca7;
+  --theme-info-soft: #eeebff;
+  --theme-control-background: #fffef9;
+  --theme-control-hover: #eaf7ff;
+  --theme-control-active: #d9f1ff;
+  --theme-popover-background: #fffef9;
+  --theme-selection-background: #b9e5ff;
+  --theme-selection-ink: #153f5a;
+  --theme-scrollbar-thumb: #8bc9ec;
+  --theme-scrollbar-thumb-hover: #56abe0;
+  --theme-icon-background: #e4f5ff;
+  --theme-icon-ink: #218bce;
+  --theme-hero-background: #8dd4fa;
+  --theme-hero-ink: #21465f;
+  --theme-hero-muted: #466b83;
+  --theme-hero-label: #1176b7;
+  --theme-hero-button-background: #ff8fa7;
+  --theme-hero-button-ink: #623343;
+  --theme-feature-background: linear-gradient(135deg, #247fba, #4aafe9 58%, #71c5ed);
+  --theme-feature-ink: #fffef7;
+  --theme-feature-muted: #dcf4ff;
+  --theme-shadow-sm: 0 9px 24px rgb(32 117 166 / 10%);
+  --theme-shadow-md: 0 24px 60px rgb(31 104 147 / 18%);
+  --theme-card-radius: 22px;
+  --theme-control-radius: 14px;
+  --theme-modal-radius: 28px;
+  --theme-font-ui: "Avenir Next", Nunito, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --theme-font-display: "Avenir Next Rounded", "Arial Rounded MT Bold", "PingFang SC", sans-serif;
+  --theme-font-accent: var(--theme-font-display);
+  --theme-hero-image: var(--theme-asset-hero);
+  --theme-hero-image-opacity: 1;
+  --theme-tier-label-background: linear-gradient(
+    120deg,
+    #ffd166,
+    #fff1a6 36%,
+    #7bcfff 68%,
+    #ff9db2
+  );
+  --theme-tier-label-ink: #164361;
+  --theme-particle-heading-color: #268fcf;
+  --theme-pointer-trail-color: #4bb9ef;
+  --theme-pointer-trail-highlight: #fffef4;
+}
+
+:root[data-theme="seal-summer"] [data-ui-anchor="app-shell"] {
+  background-color: var(--theme-canvas);
+  background-image:
+    linear-gradient(rgb(238 249 255 / 36%), rgb(238 249 255 / 48%)), var(--theme-asset-ambient);
+  background-position: center top;
+  background-size: cover;
+  background-attachment: fixed;
+}
+
+:root[data-theme="seal-summer"] [data-ui-anchor="auth-shell"] {
+  background-color: var(--theme-canvas);
+  background-image:
+    linear-gradient(rgb(238 249 255 / 28%), rgb(238 249 255 / 42%)), var(--theme-asset-ambient);
+  background-position: center;
+  background-size: cover;
+  background-attachment: fixed;
+}
+
+:root[data-theme="seal-summer"] [data-ui-anchor="sidebar"] {
+  background:
+    linear-gradient(180deg, rgb(255 255 255 / 56%), transparent 28%),
+    linear-gradient(180deg, #d8f2ff, #c9eaff 76%, #f8fcff);
+}
+
+:root[data-theme="seal-summer"] [data-ui-anchor="brand"] {
+  color: transparent;
+  background: linear-gradient(135deg, #258fd6 12%, #ff8fa7 50%, #f0ad2d 88%);
+  background-clip: text;
+  font-family: var(--theme-font-display);
+  filter: drop-shadow(0 2px 0 rgb(255 255 255 / 86%));
+}
+
+:root[data-theme="seal-summer"] [data-ui-anchor="navigation"] button {
+  color: #52758b;
+}
+
+:root[data-theme="seal-summer"] [data-ui-anchor="navigation"] button > svg {
+  border-radius: 50%;
+  color: #258dce;
+  background: rgb(255 255 255 / 68%);
+  box-shadow:
+    0 0 0 4px rgb(255 255 255 / 46%),
+    0 5px 12px rgb(42 135 189 / 10%);
+}
+
+:root[data-theme="seal-summer"] [data-ui-anchor="navigation"] button:is(:hover, .selected) {
+  color: #165f8c;
+  background: linear-gradient(135deg, rgb(255 255 255 / 88%), rgb(255 238 243 / 84%));
+  box-shadow:
+    inset 0 0 0 1px #89ccee,
+    0 8px 18px rgb(42 135 189 / 12%);
+}
+
+:root[data-theme="seal-summer"] [data-ui-anchor="navigation"] button:is(:hover, .selected) > svg {
+  color: #fff;
+  background: linear-gradient(145deg, #36a9ed, #6ac8f2 56%, #ff9db2);
+}
+
+:root[data-theme="seal-summer"] [data-theme-slot="sidebar-ornament"] {
+  right: 7px;
+  bottom: 112px;
+  width: 90px;
+  height: 66px;
+  background-image: var(--theme-asset-sidebar-ornament);
+  background-position: center bottom;
+  background-size: contain;
+  filter: drop-shadow(0 8px 8px rgb(47 137 188 / 18%));
+  opacity: 1;
+}
+
+:root[data-theme="seal-summer"] .theme-artbook-trigger {
+  width: 86px;
+  min-height: 34px;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border: 1px solid #e5b84d;
+  border-radius: 12px;
+  padding: 6px 5px;
+  color: #6b4c13;
+  background: linear-gradient(135deg, #fff7c9, #fffef7 46%, #dff4ff);
+  box-shadow: 0 8px 18px rgb(41 126 174 / 12%);
+  font-size: 9px;
+  font-weight: 800;
+}
+
+:root[data-theme="seal-summer"] .theme-artbook-trigger svg {
+  color: #efa92b;
+}
+
+:root[data-theme="seal-summer"] .training-frame.nav-collapsed .theme-artbook-trigger {
+  width: 50px;
+  min-height: 34px;
+  padding-inline: 4px;
+}
+
+:root[data-theme="seal-summer"] .training-frame.nav-collapsed .theme-artbook-trigger span {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+
+:root[data-theme="seal-summer"] .training-frame.nav-collapsed [data-theme-slot="sidebar-ornament"] {
+  right: 4px;
+  width: 56px;
+  height: 48px;
+}
+
+:root[data-theme="seal-summer"] [data-ui-anchor="hero"] {
+  position: relative;
+  min-height: 590px;
+  border: 1px solid #76c2ed;
+  border-radius: 30px;
+  background: #94dafb;
+  box-shadow: 0 26px 70px rgb(44 132 184 / 20%);
+}
+
+:root[data-theme="seal-summer"] [data-theme-slot="hero-art"] {
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
+}
+
+:root[data-theme="seal-summer"] [data-ui-anchor="hero"] [data-ui-anchor="hero-copy"] {
+  align-self: end;
+  width: min(440px, 100%);
+  border: 1px solid rgb(255 255 255 / 84%);
+  border-radius: 24px;
+  padding: 20px 22px;
+  background: rgb(255 254 249 / 89%);
+  box-shadow: 0 15px 38px rgb(45 117 158 / 17%);
+  backdrop-filter: blur(14px) saturate(1.08);
+}
+
+:root[data-theme="seal-summer"] [data-ui-anchor="hero"] h2 {
+  max-width: 410px;
+  margin: 5px 0 9px;
+  color: #204c67;
+  font-family: var(--theme-font-display);
+  font-size: clamp(27px, 2.3vw, 36px);
+  font-weight: 750;
+  line-height: 1.16;
+  letter-spacing: -0.045em;
+  text-shadow: 0 2px 0 rgb(255 255 255 / 90%);
+  text-wrap: balance;
+}
+
+:root[data-theme="seal-summer"] [data-ui-anchor="hero"] [data-ui-anchor="hero-copy"] > p {
+  margin: 0 0 14px;
+  color: #4c7085;
+  font-size: 13px;
+  line-height: 1.62;
+}
+
+:root[data-theme="seal-summer"] [data-ui-anchor="hero"] .step-label {
+  color: #1379b8;
+}
+
+:root[data-theme="seal-summer"] [data-ui-anchor="hero"] .primary-button.strong-action {
+  border-color: #e96885;
+  color: #59323f;
+  background: linear-gradient(135deg, #ff9db2, #ffb1c1 48%, #ffd16d);
+  box-shadow: 0 8px 20px rgb(217 93 121 / 21%);
+}
+
+:root[data-theme="seal-summer"]
+  [data-ui-anchor="hero"]
+  .primary-button.strong-action:hover:not(:disabled) {
+  border-color: #dc5574;
+  background: linear-gradient(135deg, #ff8ca6, #ffacbc 48%, #ffc953);
+  transform: translateY(-1px);
+}
+
+:root[data-theme="seal-summer"] [data-ui-anchor="hero"] .session-brief {
+  align-self: start;
+  width: min(520px, 100%);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 0;
+  border: 1px solid rgb(255 255 255 / 82%);
+  border-radius: 18px;
+  padding: 7px 10px;
+  background: rgb(255 254 249 / 82%);
+  box-shadow: 0 11px 28px rgb(45 117 158 / 13%);
+  backdrop-filter: blur(11px);
+}
+
+:root[data-theme="seal-summer"] [data-ui-anchor="hero"] .session-brief div {
+  padding: 8px 11px;
+  border: 0;
+}
+
+:root[data-theme="seal-summer"] [data-ui-anchor="hero"] .session-brief div + div {
+  border-left: 1px dashed #9bcde7;
+}
+
+:root[data-theme="seal-summer"] [data-ui-anchor="hero"] .session-brief dt {
+  color: #4e788f;
+}
+
+:root[data-theme="seal-summer"] [data-ui-anchor="hero"] .session-brief dd {
+  color: #214d67;
+  font-size: 13px;
+}
+
+@media (min-width: 1101px) {
+  :root[data-theme="seal-summer"] [data-ui-anchor="hero"] {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto 1fr;
+    align-items: stretch;
+    gap: 0;
+    padding: 26px 34px 30px;
+  }
+
+  :root[data-theme="seal-summer"] [data-ui-anchor="hero"] .session-brief {
+    grid-row: 1;
+  }
+
+  :root[data-theme="seal-summer"] [data-ui-anchor="hero"] [data-ui-anchor="hero-copy"] {
+    grid-row: 2;
+  }
+}
+
+:root[data-theme="seal-summer"] [data-theme-slot="hero-sparkle"] {
+  top: 18px;
+  right: 22px;
+  width: 76px;
+  height: 84px;
+  background-image: var(--theme-asset-hero-accent);
+  background-position: center;
+  background-size: contain;
+  filter: drop-shadow(0 8px 10px rgb(48 134 181 / 14%));
+  opacity: 0.82;
+  animation: seal-summer-bob 4.8s ease-in-out infinite;
+}
+
+:root[data-theme="seal-summer"] [data-theme-slot="hero-trail"] {
+  right: 15%;
+  bottom: 20px;
+  width: 128px;
+  border-color: #f4cf56;
+  opacity: 0.7;
+}
+
+:root[data-theme="seal-summer"] [data-ui-anchor="workspace-header"] h1,
+:root[data-theme="seal-summer"] :is(.section-heading h2, .insight-heading h1, .assets-heading h1),
+:root[data-theme="seal-summer"] :is(.material-heading h1, .workspace-panel-intro h2) {
+  font-family: var(--theme-font-display);
+  font-weight: 720;
+  letter-spacing: -0.035em;
+  text-wrap: balance;
+}
+
+:root[data-theme="seal-summer"] [data-ui-anchor="workspace-header"] h1::after,
+:root[data-theme="seal-summer"] .section-heading h2::after {
+  display: inline-block;
+  width: 42px;
+  height: 9px;
+  margin-left: 11px;
+  border-radius: 60% 40% 55% 45%;
+  background: linear-gradient(90deg, #42b0ec, #83d8f8 55%, #ff9db2);
+  clip-path: polygon(
+    0 45%,
+    16% 8%,
+    32% 62%,
+    50% 22%,
+    69% 70%,
+    84% 30%,
+    100% 55%,
+    100% 100%,
+    0 100%
+  );
+  vertical-align: 0.12em;
+  content: "";
+}
+
+:root[data-theme="seal-summer"] [data-ui-anchor="primary-actions"] > article {
+  overflow: hidden;
+  border-color: #b8dff1;
+  background: linear-gradient(150deg, rgb(255 254 249 / 96%), rgb(232 247 255 / 91%));
+  box-shadow: 0 11px 28px rgb(41 124 170 / 9%);
+}
+
+:root[data-theme="seal-summer"] [data-ui-anchor="primary-actions"] > article::after {
+  position: absolute;
+  right: -9px;
+  bottom: -18px;
+  width: 82px;
+  height: 92px;
+  background: var(--theme-asset-card-corner-decor) center / contain no-repeat;
+  opacity: 0.16;
+  transform: rotate(8deg);
+  content: "";
+}
+
+:root[data-theme="seal-summer"] [data-ui-anchor="primary-actions"] > article:nth-child(2) {
+  background: linear-gradient(150deg, rgb(255 254 249 / 96%), rgb(255 240 244 / 90%));
+}
+
+:root[data-theme="seal-summer"] [data-ui-anchor="primary-actions"] > article:nth-child(3) {
+  background: linear-gradient(150deg, rgb(255 254 249 / 96%), rgb(255 247 213 / 88%));
+}
+
+:root[data-theme="seal-summer"] .home-card-icon {
+  border: 1px solid #9dd4ef;
+  border-radius: 50%;
+  padding: 5px;
+  color: #208bcf;
+  background: #fffef9;
+  box-shadow: 0 7px 16px rgb(39 127 176 / 12%);
+  opacity: 1;
+}
+
+:root[data-theme="seal-summer"]
+  [data-ui-anchor="primary-actions"]
+  > article:nth-child(2)
+  .home-card-icon {
+  border-color: #efb6c4;
+  color: #de6b87;
+  background: #fff8fa;
+}
+
+:root[data-theme="seal-summer"]
+  [data-ui-anchor="primary-actions"]
+  > article:nth-child(3)
+  .home-card-icon {
+  border-color: #e9c969;
+  color: #c88b1f;
+  background: #fffbed;
+}
+
+:root[data-theme="seal-summer"] :is(.weekly-track, .training-progress-track) > :is(span, i) {
+  background: linear-gradient(90deg, #37a9e9, #73d0f5 56%, #ff9db2);
+}
+
+:root[data-theme="seal-summer"] .history-section {
+  position: relative;
+  overflow: hidden;
+  border-color: #b8dff1;
+  background: rgb(255 254 249 / 88%);
+  box-shadow: var(--theme-shadow-sm);
+}
+
+:root[data-theme="seal-summer"] [data-theme-slot="history-easter-egg"] {
+  right: 16px;
+  bottom: 8px;
+  width: 82px;
+  height: 92px;
+  background-image: var(--theme-asset-history-easter-egg);
+  background-position: center;
+  background-size: contain;
+  opacity: 0.3;
+  transform: rotate(-4deg);
+}
+
+:root[data-theme="seal-summer"] [data-ui-anchor="empty-state"] {
+  position: relative;
+  overflow: hidden;
+  border-color: #a9d9f1;
+  border-style: dashed;
+  padding-top: 118px;
+  background:
+    linear-gradient(rgb(255 254 249 / 91%), rgb(255 254 249 / 96%)),
+    var(--theme-asset-ambient) center / cover;
+}
+
+:root[data-theme="seal-summer"] [data-ui-anchor="empty-state"]::before {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  width: 190px;
+  height: 118px;
+  background: var(--theme-asset-empty-state-illustration) center / contain no-repeat;
+  filter: drop-shadow(0 8px 10px rgb(45 136 187 / 10%));
+  transform: translateX(-50%);
+  content: "";
+}
+
+:root[data-theme="seal-summer"]
+  [data-ui-anchor="app-shell"]
+  :is(.primary-button.strong-action, .analysis-button) {
+  border-color: #1478bd;
+  background: linear-gradient(135deg, #1888cd, #40afe9);
+}
+
+:root[data-theme="seal-summer"]
+  [data-ui-anchor="app-shell"]
+  :is(.quiet-button, .setting-row select, input, textarea) {
+  border-radius: 14px;
+}
+
+/* Independent high-resolution companions: each page gets a semantic scene, never an atlas crop. */
+:root[data-theme="seal-summer"] .login-intro,
+:root[data-theme="seal-summer"] .login-card,
+:root[data-theme="seal-summer"] .insight-heading,
+:root[data-theme="seal-summer"] .profile-overview article,
+:root[data-theme="seal-summer"] .profile-dimension-card,
+:root[data-theme="seal-summer"] .assets-summary article,
+:root[data-theme="seal-summer"] .asset-library,
+:root[data-theme="seal-summer"] .preferences-form fieldset,
+:root[data-theme="seal-summer"] .onboarding-intro,
+:root[data-theme="seal-summer"] .completion-next,
+:root[data-theme="seal-summer"] .summary-next,
+:root[data-theme="seal-summer"] .stage-rest-card,
+:root[data-theme="seal-summer"] .wrapup-shell > header {
+  position: relative;
+}
+
+:root[data-theme="seal-summer"] .login-intro {
+  padding-bottom: 112px;
+}
+
+:root[data-theme="seal-summer"] .login-intro::after {
+  position: absolute;
+  right: 5%;
+  bottom: -8px;
+  width: 190px;
+  height: 120px;
+  background: var(--theme-asset-sidebar-ornament) center bottom / contain no-repeat;
+  filter: drop-shadow(0 12px 12px rgb(45 136 187 / 12%));
+  pointer-events: none;
+  content: "";
+}
+
+:root[data-theme="seal-summer"] .login-card {
+  overflow: hidden;
+  border-color: #a9d6ec;
+  background: rgb(255 254 249 / 88%);
+  backdrop-filter: blur(9px);
+}
+
+:root[data-theme="seal-summer"] .login-card::after,
+:root[data-theme="seal-summer"] .profile-overview article::after,
+:root[data-theme="seal-summer"] .assets-summary article::after {
+  position: absolute;
+  right: -9px;
+  bottom: -16px;
+  width: 70px;
+  height: 78px;
+  background: var(--theme-asset-card-corner-decor) center / contain no-repeat;
+  opacity: 0.13;
+  pointer-events: none;
+  content: "";
+}
+
+:root[data-theme="seal-summer"] .login-card::after {
+  top: 8px;
+  right: 8px;
+  bottom: auto;
+  width: 62px;
+  height: 68px;
+  opacity: 0.18;
+  transform: rotate(12deg);
+}
+
+:root[data-theme="seal-summer"] .assets-summary article,
+:root[data-theme="seal-summer"] .profile-overview article {
+  overflow: hidden;
+  background: rgb(255 254 249 / 86%);
+  backdrop-filter: blur(6px);
+}
+
+:root[data-theme="seal-summer"] .asset-library,
+:root[data-theme="seal-summer"] .asset-categories,
+:root[data-theme="seal-summer"] .preferences-form fieldset,
+:root[data-theme="seal-summer"] .profile-dimension-card:not(.next-focus-card) {
+  background: rgb(255 254 249 / 88%);
+  backdrop-filter: blur(6px);
+}
+
+:root[data-theme="seal-summer"] .insight-shell:not(.preferences-shell) > .insight-heading {
+  min-height: 168px;
+  align-items: flex-start;
+  padding-right: 280px;
+}
+
+:root[data-theme="seal-summer"] .insight-shell:not(.preferences-shell) > .insight-heading::after {
+  position: absolute;
+  right: 72px;
+  bottom: -10px;
+  width: 250px;
+  height: 148px;
+  background: var(--theme-asset-profile-companion) center bottom / contain no-repeat;
+  filter: drop-shadow(0 12px 13px rgb(45 136 187 / 12%));
+  pointer-events: none;
+  content: "";
+}
+
+:root[data-theme="seal-summer"] .profile-dimension-card:first-child {
+  overflow: hidden;
+}
+
+:root[data-theme="seal-summer"] .profile-dimension-card:first-child::after {
+  position: absolute;
+  right: -6px;
+  bottom: -22px;
+  width: 86px;
+  height: 96px;
+  background: var(--theme-asset-card-corner-decor) center / contain no-repeat;
+  opacity: 0.12;
+  transform: rotate(8deg);
+  pointer-events: none;
+  content: "";
+}
+
+:root[data-theme="seal-summer"] .preferences-shell > .insight-heading {
+  min-height: 186px;
+  padding-right: 250px;
+}
+
+:root[data-theme="seal-summer"] .preferences-shell > .insight-heading::after {
+  position: absolute;
+  right: 72px;
+  bottom: -18px;
+  width: 178px;
+  height: 184px;
+  background: var(--theme-asset-preferences-companion) center bottom / contain no-repeat;
+  filter: drop-shadow(0 12px 13px rgb(45 136 187 / 12%));
+  pointer-events: none;
+  content: "";
+}
+
+:root[data-theme="seal-summer"] .preferences-form fieldset {
+  overflow: hidden;
+}
+
+:root[data-theme="seal-summer"] .preferences-form fieldset::after {
+  position: absolute;
+  right: 12px;
+  bottom: -22px;
+  width: 62px;
+  height: 70px;
+  background: var(--theme-asset-card-corner-decor) center / contain no-repeat;
+  opacity: 0.08;
+  pointer-events: none;
+  content: "";
+}
+
+:root[data-theme="seal-summer"]
+  :is(.temporary-task-empty, .expression-board-empty, .empty-annotations) {
+  position: relative;
+  overflow: hidden;
+  padding-top: 116px;
+  background-color: rgb(255 254 249 / 90%);
+}
+
+:root[data-theme="seal-summer"]
+  :is(.temporary-task-empty, .expression-board-empty, .empty-annotations)::before {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  width: 150px;
+  height: 104px;
+  background: var(--theme-asset-workspace-companion) center / contain no-repeat;
+  filter: drop-shadow(0 8px 9px rgb(45 136 187 / 10%));
+  transform: translateX(-50%);
+  pointer-events: none;
+  content: "";
+}
+
+:root[data-theme="seal-summer"] .onboarding-intro {
+  overflow: hidden;
+  padding-bottom: 190px;
+  background:
+    linear-gradient(150deg, rgb(31 125 182 / 93%), rgb(79 182 229 / 88%)),
+    var(--theme-asset-ambient) center / cover;
+}
+
+:root[data-theme="seal-summer"] .onboarding-intro .step-label {
+  color: #e8f8ff;
+  text-shadow: 0 1px 1px rgb(17 78 115 / 24%);
+}
+
+:root[data-theme="seal-summer"] .onboarding-intro::after,
+:root[data-theme="seal-summer"] .completion-next::after,
+:root[data-theme="seal-summer"] .summary-next::after,
+:root[data-theme="seal-summer"] .stage-rest-card::after,
+:root[data-theme="seal-summer"] .wrapup-shell > header::after {
+  position: absolute;
+  right: 20px;
+  bottom: 8px;
+  width: 210px;
+  height: 170px;
+  background: var(--theme-asset-milestone-companion) center bottom / contain no-repeat;
+  filter: drop-shadow(0 12px 13px rgb(45 136 187 / 12%));
+  pointer-events: none;
+  content: "";
+}
+
+:root[data-theme="seal-summer"] .onboarding-intro::after {
+  right: 30px;
+  bottom: 20px;
+  width: 240px;
+  height: 192px;
+}
+
+:root[data-theme="seal-summer"]
+  :is(.completion-next, .summary-next, .stage-rest-card, .wrapup-shell > header) {
+  overflow: hidden;
+  padding-right: 245px;
+  background-color: rgb(255 254 249 / 88%);
+  backdrop-filter: blur(7px);
+}
+
+:root[data-theme="seal-summer"] .stage-rest-shell {
+  background:
+    linear-gradient(rgb(238 249 255 / 40%), rgb(238 249 255 / 52%)),
+    var(--theme-asset-ambient) center / cover fixed;
+}
+
+:root[data-theme="seal-summer"] .wrapup-shell > header::after {
+  right: 8px;
+  bottom: 12px;
+  width: 190px;
+  height: 154px;
+}
+
+:root[data-theme="seal-summer"] .skin-choice:has(input:checked) {
+  background: linear-gradient(145deg, #fffef9, #e5f6ff 64%, #fff1f4);
+  box-shadow:
+    inset 0 0 0 1px rgb(255 255 255 / 75%),
+    0 12px 26px rgb(45 136 187 / 12%);
+}
+
+:root[data-theme="seal-summer"] .theme-artbook {
+  border-color: #82c8ec;
+  background:
+    linear-gradient(rgb(255 254 249 / 94%), rgb(255 254 249 / 97%)),
+    var(--theme-asset-ambient) center / cover;
+}
+
+:root[data-theme="seal-summer"] .theme-artbook > header h2 {
+  color: #1b6694;
+  text-shadow: 0 2px 0 #fff;
+}
+
+:root[data-theme="seal-summer"] .theme-artbook-grid figure {
+  border-color: #b2ddef;
+  background: #fffef9;
+  box-shadow: 0 9px 20px rgb(45 136 187 / 9%);
+}
+
+@keyframes seal-summer-bob {
+  0%,
+  100% {
+    transform: translateY(0) rotate(-1deg);
+  }
+
+  50% {
+    transform: translateY(-5px) rotate(1deg);
+  }
+}
+
+@media (max-width: 1100px) {
+  :root[data-theme="seal-summer"]
+    :is(
+      .insight-shell:not(.preferences-shell) > .insight-heading,
+      .preferences-shell > .insight-heading
+    ) {
+    padding-right: 210px;
+  }
+
+  :root[data-theme="seal-summer"] .insight-shell:not(.preferences-shell) > .insight-heading::after,
+  :root[data-theme="seal-summer"] .preferences-shell > .insight-heading::after {
+    right: 58px;
+    width: 165px;
+  }
+
+  :root[data-theme="seal-summer"]
+    :is(.completion-next, .summary-next, .stage-rest-card, .wrapup-shell > header) {
+    padding-right: 200px;
+  }
+
+  :root[data-theme="seal-summer"] .completion-next::after,
+  :root[data-theme="seal-summer"] .summary-next::after,
+  :root[data-theme="seal-summer"] .stage-rest-card::after,
+  :root[data-theme="seal-summer"] .wrapup-shell > header::after {
+    width: 170px;
+    height: 138px;
+  }
+
+  :root[data-theme="seal-summer"] [data-ui-anchor="hero"] {
+    display: grid;
+    min-height: 0;
+    grid-template-columns: 1fr;
+    gap: 14px;
+    padding: clamp(360px, 56vw, 510px) 24px 24px;
+    background: #e4f6ff;
+  }
+
+  :root[data-theme="seal-summer"] [data-theme-slot="hero-art"] {
+    height: clamp(340px, 54vw, 490px);
+    background-color: #92d8fa;
+    background-position: center top;
+    background-size: cover;
+  }
+
+  :root[data-theme="seal-summer"] [data-ui-anchor="hero"] [data-ui-anchor="hero-copy"],
+  :root[data-theme="seal-summer"] [data-ui-anchor="hero"] .session-brief {
+    width: 100%;
+  }
+
+  :root[data-theme="seal-summer"] [data-ui-anchor="hero"] [data-ui-anchor="hero-copy"] {
+    grid-row: 2;
+  }
+
+  :root[data-theme="seal-summer"] [data-ui-anchor="hero"] .session-brief {
+    grid-row: 3;
+  }
+}
+
+@media (max-width: 760px) {
+  :root[data-theme="seal-summer"] .login-intro {
+    padding-bottom: 0;
+  }
+
+  :root[data-theme="seal-summer"] .login-intro::after,
+  :root[data-theme="seal-summer"] .insight-shell:not(.preferences-shell) > .insight-heading::after,
+  :root[data-theme="seal-summer"] .preferences-shell > .insight-heading::after {
+    display: none;
+  }
+
+  :root[data-theme="seal-summer"]
+    :is(
+      .insight-shell:not(.preferences-shell) > .insight-heading,
+      .preferences-shell > .insight-heading
+    ) {
+    min-height: 0;
+    padding-right: 0;
+  }
+
+  :root[data-theme="seal-summer"]
+    :is(.completion-next, .summary-next, .stage-rest-card, .wrapup-shell > header) {
+    padding-right: 24px;
+    padding-bottom: 138px;
+  }
+
+  :root[data-theme="seal-summer"] .completion-next::after,
+  :root[data-theme="seal-summer"] .summary-next::after,
+  :root[data-theme="seal-summer"] .stage-rest-card::after,
+  :root[data-theme="seal-summer"] .wrapup-shell > header::after {
+    right: 12px;
+    width: 150px;
+    height: 122px;
+  }
+
+  :root[data-theme="seal-summer"] [data-theme-slot="hero-art"] {
+    display: block;
+    height: clamp(240px, 58vw, 350px);
+    background-position: center top;
+  }
+
+  :root[data-theme="seal-summer"] [data-ui-anchor="hero"] {
+    padding: clamp(260px, 62vw, 370px) 16px 16px;
+    border-radius: 22px;
+  }
+
+  :root[data-theme="seal-summer"] [data-ui-anchor="hero"] h2 {
+    font-size: 27px;
+  }
+
+  :root[data-theme="seal-summer"] [data-ui-anchor="hero"] .session-brief {
+    grid-template-columns: 1fr;
+  }
+
+  :root[data-theme="seal-summer"] [data-ui-anchor="hero"] .session-brief div + div {
+    border-top: 1px dashed #9bcde7;
+    border-left: 0;
+  }
+
+  :root[data-theme="seal-summer"] [data-theme-slot="hero-sparkle"],
+  :root[data-theme="seal-summer"] [data-theme-slot="hero-trail"] {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root[data-theme="seal-summer"] [data-theme-slot="hero-sparkle"] {
+    animation: none;
+  }
+}
+
+@media (forced-colors: active) {
+  :root[data-theme="seal-summer"] [data-ui-anchor="app-shell"] {
+    background-image: none;
+  }
+
+  :root[data-theme="seal-summer"]
+    :is(
+      .login-intro,
+      .login-card,
+      .insight-heading,
+      .profile-overview article,
+      .profile-dimension-card,
+      .assets-summary article,
+      .preferences-form fieldset,
+      .onboarding-intro,
+      .completion-next,
+      .summary-next,
+      .stage-rest-card,
+      .wrapup-shell > header
+    )::after {
+    display: none;
+  }
+}

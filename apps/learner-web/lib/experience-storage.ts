@@ -1,6 +1,9 @@
 import type { LearnerProfileInput, LearnerRunView } from "./contracts";
+import type { ThemeId } from "../theme/registry";
+import { normalizeThemeId } from "../theme/registry";
 
 const EXPERIENCE_PREFIX = "binnagent:learner-experience:v1:";
+const PREFERENCES_PREFIX = "binnagent:learner-preferences:v1:";
 const SUMMARY_PREFIX = "binnagent:calibration-summary:v1:";
 const MAX_SESSION_RECORDS = 12;
 
@@ -12,6 +15,7 @@ export interface LearnerPreferences {
   temporaryTasksEnabled: boolean;
   readingComfort: "compact" | "comfortable" | "spacious";
   reducedMotion: boolean;
+  skin: ThemeId;
 }
 
 export const DEFAULT_PREFERENCES: LearnerPreferences = {
@@ -22,7 +26,49 @@ export const DEFAULT_PREFERENCES: LearnerPreferences = {
   temporaryTasksEnabled: true,
   readingComfort: "comfortable",
   reducedMotion: false,
+  skin: "paper",
 };
+
+function normalizePreferences(value: unknown): LearnerPreferences {
+  const preferences =
+    value && typeof value === "object" ? (value as Partial<LearnerPreferences>) : {};
+  return {
+    ...DEFAULT_PREFERENCES,
+    ...preferences,
+    skin: normalizeThemeId(preferences.skin),
+  };
+}
+
+function loadStoredPreferences(learnerId: string): LearnerPreferences | null {
+  try {
+    const raw = localStorage.getItem(`${PREFERENCES_PREFIX}${learnerId}`);
+    return raw ? normalizePreferences(JSON.parse(raw)) : null;
+  } catch {
+    return null;
+  }
+}
+
+function persistPreferences(learnerId: string, preferences: LearnerPreferences): void {
+  try {
+    localStorage.setItem(`${PREFERENCES_PREFIX}${learnerId}`, JSON.stringify(preferences));
+  } catch {
+    // A learner can keep using the in-memory preference state when storage is blocked.
+  }
+}
+
+export function loadLearnerPreferences(learnerId: string): LearnerPreferences {
+  const standalone = loadStoredPreferences(learnerId);
+  if (standalone) return standalone;
+
+  try {
+    const raw = localStorage.getItem(`${EXPERIENCE_PREFIX}${learnerId}`);
+    if (!raw) return DEFAULT_PREFERENCES;
+    const value = JSON.parse(raw) as Partial<LearnerExperienceState>;
+    return normalizePreferences(value.preferences);
+  } catch {
+    return DEFAULT_PREFERENCES;
+  }
+}
 
 export interface CompletedSessionRecord {
   workflowRunId: string;
@@ -72,10 +118,9 @@ export function loadExperience(learnerId: string): LearnerExperienceState | null
       schemaVersion: 1,
       profile: value.profile,
       sessions: value.sessions as CompletedSessionRecord[],
-      preferences: {
-        ...DEFAULT_PREFERENCES,
-        ...((value as Partial<LearnerExperienceState>).preferences ?? {}),
-      },
+      preferences:
+        loadStoredPreferences(learnerId) ??
+        normalizePreferences((value as Partial<LearnerExperienceState>).preferences),
       temporaryTasksCompleted:
         (value as Partial<LearnerExperienceState>).temporaryTasksCompleted ?? 0,
     };
@@ -101,7 +146,7 @@ export function saveExperienceProfile(
     schemaVersion: 1,
     profile,
     sessions: current?.sessions ?? [],
-    preferences: current?.preferences ?? DEFAULT_PREFERENCES,
+    preferences: current?.preferences ?? loadLearnerPreferences(learnerId),
     temporaryTasksCompleted: current?.temporaryTasksCompleted ?? 0,
   };
   persist(learnerId, state);
@@ -133,7 +178,7 @@ export function recordCompletedSession(
     schemaVersion: 1,
     profile,
     sessions,
-    preferences: current?.preferences ?? DEFAULT_PREFERENCES,
+    preferences: current?.preferences ?? loadLearnerPreferences(learnerId),
     temporaryTasksCompleted: current?.temporaryTasksCompleted ?? 0,
   };
   persist(learnerId, state);
@@ -144,6 +189,7 @@ export function saveLearnerPreferences(
   learnerId: string,
   preferences: LearnerPreferences,
 ): LearnerExperienceState | null {
+  persistPreferences(learnerId, preferences);
   const current = loadExperience(learnerId);
   if (!current) return null;
   const state = { ...current, preferences };

@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useRef, useState, useTransition } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useTransition } from "react";
 import type { KeyboardEvent } from "react";
+import { layout as layoutPretext, prepare as preparePretext } from "@chenglou/pretext";
 import {
   ArrowLineUp,
   BookOpen,
@@ -9,6 +10,7 @@ import {
   DotsSixVertical,
   Lock,
   LockOpen,
+  MagnifyingGlass,
   PlusSquare,
   Target,
   TextT,
@@ -24,6 +26,7 @@ import {
   LearnerApiError,
   pauseTask,
   recordDifficulty,
+  revealGrammarChallengeAnswer,
   revealGrammarChallengeHint,
   requestH1Hint,
   requestPriorityFeedback,
@@ -59,7 +62,11 @@ import {
   dismissCalibrationSummary,
   type LearnerPreferences,
 } from "../lib/experience-storage";
-import type { LearningAssetInput, LearningAssetKind } from "../lib/learning-assets-storage";
+import type {
+  LearningAsset,
+  LearningAssetInput,
+  LearningAssetKind,
+} from "../lib/learning-assets-storage";
 import {
   classifySelection,
   defaultAnalysisQuestion,
@@ -67,6 +74,9 @@ import {
   selectionScope,
   type SelectionScale,
 } from "../lib/annotation-selection";
+import { locateContextMatches, type ContextMatch } from "../lib/context-locator";
+import { ExpressionLab } from "./expression-lab";
+import { ResizableTaskGrid } from "./resizable-task-grid";
 
 const ANNOTATION_LABELS: Record<AnnotationKind, string> = {
   vocabulary: "生词 / 短语",
@@ -151,6 +161,7 @@ interface LearningWorkspaceProps {
   preferences: LearnerPreferences;
   onTemporaryTaskComplete: () => void;
   onLearningAssetCapture: (input: LearningAssetInput) => void;
+  learningAssets: LearningAsset[];
 }
 
 function messageFor(error: unknown): string {
@@ -291,7 +302,7 @@ function CompletedStageRest({
 
   return (
     <main className="stage-rest-shell">
-      <section className="stage-rest-card" aria-labelledby="stage-rest-title">
+      <section className="stage-rest-card" aria-labelledby="stage-rest-title" data-ui-anchor="card">
         <p className="eyebrow">
           {endedEarly ? "本步已提前结束 · 记录已保留" : "本步已保存 · 可以休息"}
         </p>
@@ -354,6 +365,7 @@ function ActiveTaskWorkspace({
   preferences,
   onTemporaryTaskComplete,
   onLearningAssetCapture,
+  learningAssets,
 }: ActiveTaskWorkspaceProps) {
   const { material, task } = workspace;
   const isReading = material.content_type !== "micro_expression";
@@ -398,6 +410,13 @@ function ActiveTaskWorkspace({
   const [noteSaveState, setNoteSaveState] = useState<"clean" | "pending" | "local" | "memory">(
     storedWorkspaceNote ? "local" : "clean",
   );
+  const cacheSnapshotRef = useRef({
+    choice,
+    text,
+    workspaceNote,
+    saveState,
+    noteSaveState,
+  });
   const [noteCaptured, setNoteCaptured] = useState(false);
   const [showEarlyEndConfirm, setShowEarlyEndConfirm] = useState(false);
   const [showRevisionEditor, setShowRevisionEditor] = useState(false);
@@ -413,6 +432,36 @@ function ActiveTaskWorkspace({
   const earlyEndTriggerRef = useRef<HTMLButtonElement>(null);
   const earlyEndConfirmRef = useRef<HTMLElement>(null);
   const temporaryTaskCounterRef = useRef(0);
+
+  useLayoutEffect(() => {
+    cacheSnapshotRef.current = { choice, text, workspaceNote, saveState, noteSaveState };
+  }, [choice, noteSaveState, saveState, text, workspaceNote]);
+
+  useEffect(
+    () => () => {
+      const cached = cacheSnapshotRef.current;
+      if (cached.saveState === "pending" || cached.saveState === "memory") {
+        saveDraft({
+          schemaVersion: 1,
+          taskId: task.task_id,
+          contentVersionId: task.current_content_version_id,
+          choice: cached.choice,
+          text: cached.text,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+      if (cached.noteSaveState === "pending" || cached.noteSaveState === "memory") {
+        saveWorkspaceNote({
+          schemaVersion: 1,
+          taskId: task.task_id,
+          contentVersionId: task.current_content_version_id,
+          text: cached.workspaceNote,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+    },
+    [task.current_content_version_id, task.task_id],
+  );
 
   useEffect(() => {
     if (saveState !== "pending") return;
@@ -781,6 +830,24 @@ function ActiveTaskWorkspace({
     }
   };
 
+  const revealGrammarAnswer = async () => {
+    if (!isReading || isGrammarPending) return;
+    onError(null);
+    setGrammarFeedback(null);
+    setIsGrammarPending(true);
+    try {
+      const update = await revealGrammarChallengeAnswer(task.task_id);
+      applyGrammarChallengeUpdate(update);
+      setGrammarCorrection("");
+      setGrammarFeedback(update.feedback);
+      setProgressMessage("已显示语法找茬答案，文章也已恢复为正确原文。");
+    } catch (error) {
+      onError(messageFor(error));
+    } finally {
+      setIsGrammarPending(false);
+    }
+  };
+
   const submitGrammarCorrection = async () => {
     if (!isReading || !grammarCorrection.trim() || isGrammarPending) {
       if (!grammarCorrection.trim()) setGrammarFeedback("先输入你认为正确的英文写法。");
@@ -887,6 +954,7 @@ function ActiveTaskWorkspace({
           updatedAt: new Date().toISOString(),
         });
         onTaskChange(updated);
+        setShowRevisionEditor(true);
         const intervention = updated.interventions.at(-1);
         if (intervention) {
           onLearningAssetCapture({
@@ -1094,17 +1162,15 @@ function ActiveTaskWorkspace({
     <main
       className={`workspace-shell comfort-${preferences.readingComfort}${preferences.reducedMotion ? " reduced-motion" : ""}`}
       onKeyDown={onWorkspaceKeyDown}
+      data-ui-anchor="task-workspace"
     >
-      <header className="workspace-header">
+      <header className="workspace-header" data-ui-anchor="workspace-header">
         <div className="stage-heading">
           <p className="eyebrow">{STAGE_LABELS[workspace.run.stage]}</p>
           <h1>{isReading ? "先留下你的判断，再请求帮助" : "把读到的思路变成自己的表达"}</h1>
         </div>
         <div className="workspace-status" aria-live="polite">
           <span>{saveLabel}</span>
-          <span>
-            第 {Math.max(stageIndex + 1, 1)} / {stageOrder.length} 步
-          </span>
           {preferences.temporaryTasksEnabled ? (
             <button
               type="button"
@@ -1132,7 +1198,7 @@ function ActiveTaskWorkspace({
       </div>
 
       {task.state === "paused" ? (
-        <section className="paused-panel" aria-labelledby="paused-title">
+        <section className="paused-panel" aria-labelledby="paused-title" data-ui-anchor="card">
           <p className="step-label">安静暂停</p>
           <h2 id="paused-title">先停在这里，不需要把这一段一口气做完</h2>
           <p>
@@ -1148,14 +1214,27 @@ function ActiveTaskWorkspace({
           </button>
         </section>
       ) : (
-        <div className={`task-grid ${isReading ? "reading-grid" : "expression-grid"}`}>
+        <ResizableTaskGrid
+          className={isReading ? "reading-grid" : "expression-grid"}
+          defaultSplit={isReading ? 64 : 52}
+          storageKey={`binnagent:workspace-split:${isReading ? "reading" : "expression"}:v1`}
+          separatorLabel={isReading ? "调整阅读材料与任务区宽度" : "调整表达实验室与任务区宽度"}
+        >
           {material.content_type === "micro_expression" ? (
-            <ExpressionBrief material={material} materialRef={materialRef} />
+            <ExpressionLab
+              material={material}
+              task={task}
+              learningAssets={learningAssets}
+              reducedMotion={preferences.reducedMotion}
+              materialRef={materialRef}
+              onLearningAssetCapture={onLearningAssetCapture}
+            />
           ) : (
             <ReadingPane
               material={material}
               materialRef={materialRef}
               annotations={savedAnnotations}
+              reducedMotion={preferences.reducedMotion}
               onSelectText={selectText}
               onPromptUncertain={promptUncertainSelection}
               onOpenTemporaryTask={addTemporaryTask}
@@ -1163,7 +1242,12 @@ function ActiveTaskWorkspace({
             />
           )}
 
-          <section className="response-pane" ref={responsePaneRef} aria-label="任务与学习记录">
+          <section
+            className="response-pane"
+            ref={responsePaneRef}
+            aria-label="任务与学习记录"
+            data-ui-anchor="context-panel"
+          >
             <div
               className="workspace-tabs"
               role="tablist"
@@ -1235,7 +1319,11 @@ function ActiveTaskWorkspace({
                 aria-labelledby="workspace-tab-task"
               >
                 {selection && isReading ? (
-                  <section className="annotation-composer" aria-labelledby="annotation-title">
+                  <section
+                    className="annotation-composer"
+                    aria-labelledby="annotation-title"
+                    data-ui-anchor="composer"
+                  >
                     <div className="annotation-composer-heading">
                       <div>
                         <p className="step-label">正在标记选中的原文</p>
@@ -1355,6 +1443,18 @@ function ActiveTaskWorkspace({
                               : "只翻译当前选区，不回答题目、不代读全文"}
                           </small>
                         </div>
+                        {isAnnotationAnalysisPending ? (
+                          <div
+                            className="annotation-streaming-placeholder"
+                            role="status"
+                            aria-label="正在生成并稳定排版当前选区分析"
+                          >
+                            <span />
+                            <span />
+                            <span />
+                            <small>内容到达时会在预留区域内逐段排版，避免正文反复跳动。</small>
+                          </div>
+                        ) : null}
                         {annotationAnalysisError ? (
                           <p className="annotation-analysis-error" role="alert">
                             {annotationAnalysisError} 你的文字仍保留，可稍后重试。
@@ -1440,7 +1540,7 @@ function ActiveTaskWorkspace({
                         <p className="step-label">语法找茬 · 随机 1 处</p>
                         <h2 id="grammar-challenge-title">
                           {(material as ReadingMaterialView).grammar_challenge.status === "resolved"
-                            ? "已找出并改正，原文已恢复"
+                            ? "语法找茬已完成，原文已恢复"
                             : "文章中藏着 1 处语法错误"}
                         </h2>
                       </div>
@@ -1454,7 +1554,12 @@ function ActiveTaskWorkspace({
                     </div>
                     {(material as ReadingMaterialView).grammar_challenge.status === "resolved" ? (
                       <p className="grammar-challenge-success" role="status">
-                        验证通过后，文章中的错误片段已经替换为正确写法；刷新页面也会保留正确原文。
+                        正确写法：
+                        <strong>
+                          {(material as ReadingMaterialView).grammar_challenge.answer ??
+                            "原文已恢复"}
+                        </strong>
+                        <span>文章中的错误片段已经替换，刷新页面也会保留正确原文。</span>
                       </p>
                     ) : (
                       <>
@@ -1492,6 +1597,27 @@ function ActiveTaskWorkspace({
                           </button>
                         </form>
                         <div className="grammar-hint-row">
+                          <div className="grammar-assistance-actions">
+                            {(material as ReadingMaterialView).grammar_challenge
+                              .hint_revealed ? null : (
+                              <button
+                                type="button"
+                                className="quiet-button"
+                                onClick={() => void revealGrammarHint()}
+                                disabled={isGrammarPending}
+                              >
+                                查看提示（错误类型）
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              className="grammar-give-up-button"
+                              onClick={() => void revealGrammarAnswer()}
+                              disabled={isGrammarPending}
+                            >
+                              放弃并显示答案
+                            </button>
+                          </div>
                           {(material as ReadingMaterialView).grammar_challenge.hint_revealed ? (
                             <div className="grammar-hint" role="status">
                               <strong>
@@ -1502,16 +1628,7 @@ function ActiveTaskWorkspace({
                                 {(material as ReadingMaterialView).grammar_challenge.hint}
                               </span>
                             </div>
-                          ) : (
-                            <button
-                              type="button"
-                              className="quiet-button"
-                              onClick={() => void revealGrammarHint()}
-                              disabled={isGrammarPending}
-                            >
-                              查看提示（错误类型）
-                            </button>
-                          )}
+                          ) : null}
                           {(material as ReadingMaterialView).grammar_challenge.attempt_count > 0 ? (
                             <small>
                               已验证{" "}
@@ -1529,7 +1646,11 @@ function ActiveTaskWorkspace({
                   </section>
                 ) : null}
 
-                <section className="task-checklist" aria-labelledby="task-checklist-title">
+                <section
+                  className="task-checklist"
+                  aria-labelledby="task-checklist-title"
+                  data-ui-anchor="card"
+                >
                   <div>
                     <p className="step-label">完成本步还需要</p>
                     <h2 id="task-checklist-title">
@@ -1567,7 +1688,11 @@ function ActiveTaskWorkspace({
                 ) : null}
 
                 {!hasAttempt ? (
-                  <section className="thinking-scaffold" aria-labelledby="thinking-scaffold-title">
+                  <section
+                    className="thinking-scaffold"
+                    aria-labelledby="thinking-scaffold-title"
+                    data-ui-anchor="card"
+                  >
                     <button
                       type="button"
                       className="thinking-toggle"
@@ -1638,6 +1763,7 @@ function ActiveTaskWorkspace({
 
                 <label
                   className={`response-editor${hasAttempt && (!hasUnansweredIntervention || revisionEditorCollapsed) ? " saved-response" : ""}`}
+                  data-ui-anchor="composer"
                 >
                   <span>
                     {isReading
@@ -1671,7 +1797,11 @@ function ActiveTaskWorkspace({
                 </label>
 
                 {isReading && hasAttempt && !latestIntervention ? (
-                  <section className="intervention-offer" aria-labelledby="h1-offer-title">
+                  <section
+                    className="intervention-offer"
+                    aria-labelledby="h1-offer-title"
+                    data-ui-anchor="card"
+                  >
                     <div>
                       <p className="step-label">反馈与纠偏 · 可选最小帮助</p>
                       <h3 id="h1-offer-title">基于 V1 只指出一个偏差方向，然后由你写 V2</h3>
@@ -1692,6 +1822,7 @@ function ActiveTaskWorkspace({
                   <section
                     className="intervention-offer expression-feedback-offer"
                     aria-labelledby="expression-feedback-title"
+                    data-ui-anchor="card"
                   >
                     <div>
                       <p className="step-label">反馈与纠偏 · 模型单项检查</p>
@@ -1761,6 +1892,7 @@ function ActiveTaskWorkspace({
                     tabIndex={-1}
                     aria-labelledby="early-end-title"
                     aria-describedby="early-end-description"
+                    data-ui-anchor="popover"
                   >
                     <p className="step-label">结束前确认</p>
                     <h3 id="early-end-title">确定提前结束这一步吗？</h3>
@@ -1919,7 +2051,7 @@ function ActiveTaskWorkspace({
               </div>
             ) : null}
           </section>
-        </div>
+        </ResizableTaskGrid>
       )}
 
       {selection && selectionAnchor && showSelectionToolbar && isReading ? (
@@ -1927,6 +2059,7 @@ function ActiveTaskWorkspace({
           className="selection-toolbar"
           role="toolbar"
           aria-label="选区语义工具"
+          data-ui-anchor="popover"
           style={{ left: selectionAnchor.left, top: selectionAnchor.top }}
         >
           {(
@@ -1951,7 +2084,7 @@ function ActiveTaskWorkspace({
         </div>
       ) : null}
 
-      <footer className="workspace-footer">
+      <footer className="workspace-footer" data-ui-anchor="status-area">
         <span>当前标记：{task.annotation_count} 条</span>
         <span>最高帮助：H{task.highest_hint_level}</span>
         <button
@@ -1967,7 +2100,7 @@ function ActiveTaskWorkspace({
       </footer>
 
       {showShortcuts ? (
-        <aside className="shortcut-panel" aria-label="快捷键帮助">
+        <aside className="shortcut-panel" aria-label="快捷键帮助" data-ui-anchor="popover">
           <strong>快捷键</strong>
           <span>Ctrl/Cmd + S：保存本地草稿</span>
           <span>Alt/Option + 1：聚焦材料</span>
@@ -2024,7 +2157,7 @@ function ImmediateFeedback({
     <section className="immediate-feedback" role="status" aria-live="polite">
       <div>
         <p className="step-label">刚刚反馈</p>
-        <h3>{title}</h3>
+        <h2>{title}</h2>
         <p>{detail}</p>
       </div>
       <dl>
@@ -2047,6 +2180,7 @@ function AttemptTimeline({
   revisions,
   preferences,
 }: AttemptTimelineProps) {
+  const [decisionTraceOpen, setDecisionTraceOpen] = useState(false);
   const latestIntervention = interventions.at(-1);
   const isPriorityFeedback = latestIntervention?.intervention_type === "priority_feedback";
   const linkedRevision = latestIntervention
@@ -2097,7 +2231,11 @@ function AttemptTimeline({
         <p className="no-hint-evidence">当前仍是 H0；不领取帮助可以直接完成本步。</p>
       )}
       {latestIntervention && preferences.showDecisionTrace ? (
-        <details className="decision-trace" open={preferences.feedbackDetail !== "concise"}>
+        <details
+          className="decision-trace"
+          open={decisionTraceOpen}
+          onToggle={(event) => setDecisionTraceOpen(event.currentTarget.open)}
+        >
           <summary>查看这条反馈为什么出现</summary>
           <dl>
             <div>
@@ -2309,7 +2447,11 @@ function TemporaryTaskList({
   const completedCount = tasks.filter((task) => task.completed).length;
 
   return (
-    <section className="temporary-task-panel" aria-labelledby="temporary-task-list-title">
+    <section
+      className="temporary-task-panel"
+      aria-labelledby="temporary-task-list-title"
+      data-ui-anchor="modal"
+    >
       <header>
         <div>
           <p className="eyebrow">临时任务清单 · 每项约 2 分钟</p>
@@ -2420,6 +2562,7 @@ interface ReadingPaneProps {
   material: ReadingMaterialView;
   materialRef: React.RefObject<HTMLElement | null>;
   annotations: AnnotationView[];
+  reducedMotion: boolean;
   onSelectText: () => void;
   onPromptUncertain: () => void;
   onOpenTemporaryTask: () => void;
@@ -2430,6 +2573,7 @@ function ReadingPane({
   material,
   materialRef,
   annotations,
+  reducedMotion,
   onSelectText,
   onPromptUncertain,
   onOpenTemporaryTask,
@@ -2440,6 +2584,10 @@ function ReadingPane({
   const [textScale, setTextScale] = useState<"compact" | "default" | "large">("default");
   const [dockLocked, setDockLocked] = useState(true);
   const [dockPosition, setDockPosition] = useState<DockPosition | null>(null);
+  const [locatorQuery, setLocatorQuery] = useState("");
+  const [locatorMatches, setLocatorMatches] = useState<ContextMatch[]>([]);
+  const [locatorSearched, setLocatorSearched] = useState(false);
+  const [expandedAnnotationId, setExpandedAnnotationId] = useState<string | null>(null);
   const dockRef = useRef<HTMLDivElement>(null);
   const dockDragRef = useRef<
     | (DockPosition & {
@@ -2505,6 +2653,23 @@ function ReadingPane({
     dockRef.current.style.width = `${rect.width}px`;
   };
 
+  const focusLocatedParagraph = (paragraphId: string) => {
+    document.getElementById(`reading-paragraph-${paragraphId}`)?.scrollIntoView({
+      block: "center",
+      behavior: reducedMotion ? "auto" : "smooth",
+    });
+  };
+
+  const locateContext = () => {
+    const matches = locateContextMatches(locatorQuery, material, annotations);
+    setLocatorMatches(matches);
+    setLocatorSearched(true);
+    const firstMatch = matches[0];
+    if (firstMatch) {
+      window.requestAnimationFrame(() => focusLocatedParagraph(firstMatch.paragraphId));
+    }
+  };
+
   return (
     <article
       className={`material-pane${focusMode ? " focus-reading" : ""}`}
@@ -2568,7 +2733,7 @@ function ReadingPane({
       </div>
       <div className="material-heading">
         <p className="step-label">项目自写开发材料 · 难度待校准</p>
-        <h2 id="material-title">{material.title}</h2>
+        <h1 id="material-title">{material.title}</h1>
         <div className="reading-instruction">
           <p>选中原文后，标记工具会直接出现在选区旁边。</p>
           <button type="button" onClick={onPromptUncertain}>
@@ -2576,17 +2741,79 @@ function ReadingPane({
           </button>
         </div>
       </div>
+      <form
+        className="context-locator"
+        role="search"
+        onSubmit={(event) => {
+          event.preventDefault();
+          locateContext();
+        }}
+      >
+        <label htmlFor="context-locator-query">
+          <MagnifyingGlass size={17} />
+          <span className="sr-only">在文章中智能定位</span>
+          <input
+            id="context-locator-query"
+            value={locatorQuery}
+            onChange={(event) => {
+              setLocatorQuery(event.target.value);
+              setLocatorSearched(false);
+            }}
+            placeholder="问：刚才关于定语从句的段落在哪？"
+          />
+        </label>
+        <button type="submit" disabled={!locatorQuery.trim()}>
+          定位
+        </button>
+        {locatorSearched ? (
+          <div className="context-locator-results" role="status">
+            <strong>
+              {locatorMatches.length > 0 ? `定位到 ${locatorMatches.length} 处` : "暂未定位到"}
+            </strong>
+            {locatorMatches.length > 0 ? (
+              <div>
+                {locatorMatches.map((match, index) => (
+                  <button
+                    key={match.paragraphId}
+                    type="button"
+                    onClick={() => focusLocatedParagraph(match.paragraphId)}
+                  >
+                    <span>
+                      第{" "}
+                      {material.paragraphs.findIndex(
+                        (item) => item.paragraph_id === match.paragraphId,
+                      ) + 1}{" "}
+                      段
+                    </span>
+                    <small>{match.reason || `匹配结果 ${index + 1}`}</small>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <small>试试原文关键词，或“定语从句、转折、因果、观点”等概念。</small>
+            )}
+          </div>
+        ) : null}
+      </form>
       <div className={`reading-copy reading-scale-${textScale}`}>
         {material.paragraphs.map((paragraph, index) => (
-          <div className="reading-paragraph-group" key={paragraph.paragraph_id}>
-            <p data-paragraph-id={paragraph.paragraph_id}>
-              <AnnotatedParagraph
-                paragraphId={paragraph.paragraph_id}
-                text={paragraph.text}
-                annotations={annotations}
-                onReviewAnnotation={onReviewAnnotation}
-              />
-            </p>
+          <div
+            className={`reading-paragraph-group${locatorMatches.some((match) => match.paragraphId === paragraph.paragraph_id) ? " context-located" : ""}`}
+            id={`reading-paragraph-${paragraph.paragraph_id}`}
+            key={paragraph.paragraph_id}
+          >
+            <PremeasuredAnnotatedParagraph
+              paragraphId={paragraph.paragraph_id}
+              text={paragraph.text}
+              annotations={annotations}
+              onReviewAnnotation={onReviewAnnotation}
+              expandedAnnotationId={expandedAnnotationId}
+              onToggleInlineAnnotation={(annotationId) =>
+                setExpandedAnnotationId((current) =>
+                  current === annotationId ? null : annotationId,
+                )
+              }
+            />
             {index === 1 && material.paragraphs.length > 2 ? (
               <div className="reading-breathing-marker" role="note">
                 <span aria-hidden="true" />
@@ -2687,6 +2914,76 @@ interface AnnotatedParagraphProps {
   text: string;
   annotations: AnnotationView[];
   onReviewAnnotation: (annotationId: string) => void;
+  expandedAnnotationId: string | null;
+  onToggleInlineAnnotation: (annotationId: string) => void;
+}
+
+function PremeasuredAnnotatedParagraph(props: AnnotatedParagraphProps) {
+  const paragraphRef = useRef<HTMLParagraphElement>(null);
+  const [predictedLayout, setPredictedLayout] = useState<{ height: number; lines: number } | null>(
+    null,
+  );
+  const preparedRef = useRef<{ key: string; value: ReturnType<typeof preparePretext> } | null>(
+    null,
+  );
+
+  useEffect(() => {
+    const paragraph = paragraphRef.current;
+    if (!paragraph) return;
+    let disposed = false;
+
+    const predict = () => {
+      const styles = window.getComputedStyle(paragraph);
+      const horizontalPadding =
+        Number.parseFloat(styles.paddingLeft) + Number.parseFloat(styles.paddingRight);
+      const width = Math.max(1, paragraph.clientWidth - horizontalPadding);
+      const lineHeight = Number.parseFloat(styles.lineHeight);
+      const letterSpacing = Number.parseFloat(styles.letterSpacing);
+      const font = `${styles.fontStyle} ${styles.fontWeight} ${styles.fontSize} ${styles.fontFamily}`;
+      if (!Number.isFinite(lineHeight) || !font.trim()) return;
+      const key = `${props.text}\u0000${font}\u0000${Number.isFinite(letterSpacing) ? letterSpacing : 0}`;
+      try {
+        if (preparedRef.current?.key !== key) {
+          preparedRef.current = {
+            key,
+            value: preparePretext(props.text, font, {
+              letterSpacing: Number.isFinite(letterSpacing) ? letterSpacing : 0,
+            }),
+          };
+        }
+        const result = layoutPretext(preparedRef.current.value, width, lineHeight);
+        if (!disposed) {
+          setPredictedLayout((current) =>
+            current?.height === result.height && current.lines === result.lineCount
+              ? current
+              : { height: result.height, lines: result.lineCount },
+          );
+        }
+      } catch {
+        // Native browser layout remains the safe fallback when a font cannot be measured.
+      }
+    };
+
+    predict();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(predict);
+    observer?.observe(paragraph);
+    void document.fonts?.ready.then(predict);
+    return () => {
+      disposed = true;
+      observer?.disconnect();
+    };
+  }, [props.text]);
+
+  return (
+    <p
+      ref={paragraphRef}
+      data-paragraph-id={props.paragraphId}
+      data-pretext-lines={predictedLayout?.lines}
+      style={predictedLayout ? { minHeight: `${Math.ceil(predictedLayout.height)}px` } : undefined}
+    >
+      <AnnotatedParagraph {...props} />
+    </p>
+  );
 }
 
 function AnnotatedParagraph({
@@ -2694,6 +2991,8 @@ function AnnotatedParagraph({
   text,
   annotations,
   onReviewAnnotation,
+  expandedAnnotationId,
+  onToggleInlineAnnotation,
 }: AnnotatedParagraphProps) {
   return paragraphSegments(paragraphId, text, annotations).map((segment) => {
     const value = text.slice(segment.start, segment.end);
@@ -2702,17 +3001,34 @@ function AnnotatedParagraph({
       return <span key={`${segment.start}-${segment.end}`}>{value}</span>;
     }
     const labels = segment.annotations.map((annotation) => ANNOTATION_LABELS[annotation.kind]);
+    const expandsInline = primary.kind === "vocabulary";
+    const expanded = expandedAnnotationId === primary.annotation_id;
     return (
-      <button
-        key={`${segment.start}-${segment.end}`}
-        type="button"
-        className={`inline-annotation annotation-kind-${primary.kind}`}
-        aria-label={`${labels.join("、")}标记：${value}`}
-        title={`${labels.join("、")} · 点击查看你的解释`}
-        onClick={() => onReviewAnnotation(primary.annotation_id)}
-      >
-        {value}
-      </button>
+      <span className="inline-annotation-wrap" key={`${segment.start}-${segment.end}`}>
+        <button
+          type="button"
+          className={`inline-annotation annotation-kind-${primary.kind}`}
+          aria-label={`${labels.join("、")}标记：${value}`}
+          aria-expanded={expandsInline ? expanded : undefined}
+          title={`${labels.join("、")} · 点击查看你的解释`}
+          onClick={() =>
+            expandsInline
+              ? onToggleInlineAnnotation(primary.annotation_id)
+              : onReviewAnnotation(primary.annotation_id)
+          }
+        >
+          {value}
+        </button>
+        {expandsInline && expanded ? (
+          <span className="inline-anchor-note" role="note">
+            <strong>语境锚点</strong>
+            <span>{primary.user_explanation}</span>
+            <button type="button" onClick={() => onReviewAnnotation(primary.annotation_id)}>
+              查看完整记录
+            </button>
+          </span>
+        ) : null}
+      </span>
     );
   });
 }
@@ -2801,43 +3117,6 @@ function ThinkingGuide({ isReading }: { isReading: boolean }) {
         </>
       )}
     </div>
-  );
-}
-
-interface ExpressionBriefProps {
-  material: ExpressionMaterialView;
-  materialRef: React.RefObject<HTMLElement | null>;
-}
-
-function ExpressionBrief({ material, materialRef }: ExpressionBriefProps) {
-  return (
-    <article className="expression-brief" ref={materialRef} tabIndex={0}>
-      <p className="step-label">表达实验室 · 2–4 句</p>
-      <h2>{material.title}</h2>
-      <div className="situation-card">
-        <span>情境</span>
-        <p>{material.situation}</p>
-      </div>
-      <dl className="brief-details">
-        <div>
-          <dt>写给谁</dt>
-          <dd>{material.audience}</dd>
-        </div>
-        <div>
-          <dt>表达目的</dt>
-          <dd>{material.purpose}</dd>
-        </div>
-        <div>
-          <dt>思路动作</dt>
-          <dd>{material.target_argument_move}</dd>
-        </div>
-      </dl>
-      <section className="resource-card">
-        <span>可选表达资源</span>
-        <p>{material.optional_active_resource}</p>
-        <small>可以借用思路或结构，但不要原句照搬。</small>
-      </section>
-    </article>
   );
 }
 
@@ -2931,7 +3210,7 @@ function CalibrationSummary({
         </article>
       </section>
 
-      <section className="summary-next" aria-labelledby="summary-next-title">
+      <section className="summary-next" aria-labelledby="summary-next-title" data-ui-anchor="card">
         <div>
           <p className="step-label">下一步 · 语境实验室</p>
           <h2 id="summary-next-title">开始第一篇匹配阅读</h2>
@@ -3019,7 +3298,11 @@ function WrapUpWorkspace({
           </label>
         ))}
       </fieldset>
-      <section className="session-gains" aria-labelledby="session-gains-title">
+      <section
+        className="session-gains"
+        aria-labelledby="session-gains-title"
+        data-ui-anchor="card"
+      >
         <p className="step-label">本次收获总结</p>
         <h2 id="session-gains-title">把完成记录变成下一次可复用的提醒</h2>
         <div className="session-gain-grid">

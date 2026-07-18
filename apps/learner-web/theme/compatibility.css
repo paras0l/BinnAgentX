@@ -1,0 +1,242 @@
+/*
+ * Temporary bridge for pre-theme components. New components should consume
+ * semantic tokens or expose data-ui-anchor instead of extending this list.
+ */
+
+[data-ui-anchor="auth-shell"].login-shell {
+  background:
+    radial-gradient(
+      circle at 20% 20%,
+      color-mix(in srgb, var(--theme-accent-soft) 76%, transparent),
+      transparent 36%
+    ),
+    var(--theme-canvas);
+}
+
+[data-ui-anchor="auth-shell"]
+  :is(.login-card, .account-list button, .experience-login-panel, .invite-preview) {
+  border-color: var(--theme-line);
+  color: var(--theme-ink);
+  background: var(--theme-surface-raised);
+  box-shadow: var(--theme-shadow-md);
+}
+
+[data-ui-anchor="auth-shell"]
+  :is(.login-intro h1, .login-card h2, .register-form h3, .account-list span) {
+  color: var(--theme-ink);
+}
+
+[data-ui-anchor="auth-shell"]
+  :is(
+    .login-intro > p:not(.eyebrow),
+    .login-assurance,
+    .login-form label,
+    .register-form label,
+    .account-list small
+  ) {
+  color: var(--theme-ink-muted);
+}
+
+[data-ui-anchor="auth-shell"] :is(.login-principles span, .text-button) {
+  border-color: var(--theme-line);
+  color: var(--theme-accent-strong);
+  background: color-mix(in srgb, var(--theme-surface-raised) 72%, transparent);
+}
+
+[data-ui-anchor="auth-shell"] :is(.login-form input, .register-form input) {
+  border-color: var(--theme-line-strong);
+  border-radius: var(--theme-control-radius);
+  color: var(--theme-ink);
+  background: var(--theme-control-background);
+}
+
+[data-ui-anchor="auth-shell"] .auth-error {
+  border-color: var(--theme-danger);
+  color: var(--theme-danger);
+  background: var(--theme-danger-soft);
+}
+
+[data-ui-anchor="app-shell"]
+  :is(
+    .onboarding-grid,
+    .profile-form fieldset,
+    .summary-findings,
+    .completion-card,
+    .stage-rest-card,
+    .wrapup-shell,
+    .paused-panel
+  ) {
+  border-color: var(--theme-line);
+  color: var(--theme-ink);
+  background: var(--theme-surface-raised);
+  box-shadow: var(--theme-shadow-sm);
+}
+
+[data-ui-anchor="app-shell"]
+  :is(
+    .asset-group-tabs,
+    .workspace-tabs,
+    .reading-viewbar,
+    .annotation-color-legend,
+    .temporary-task-summary
+  ) {
+  border-color: var(--theme-line);
+  background: var(--theme-surface-soft);
+}
+
+[data-ui-anchor="app-shell"]
+  :is(
+    .asset-group-tabs button,
+    .asset-kind-list > button,
+    .workspace-tabs button,
+    .reading-viewbar button,
+    .asset-star-filter,
+    .annotation-types button
+  ) {
+  border-color: var(--theme-line);
+  color: var(--theme-ink-muted);
+}
+
+[data-ui-anchor="app-shell"]
+  :is(
+    .asset-group-tabs button.selected,
+    .asset-kind-list > button:is(:hover, .selected),
+    .workspace-tabs button[aria-selected="true"],
+    .reading-viewbar button:is(:hover, .active),
+    .asset-star-filter.selected
+  ) {
+  border-color: var(--theme-line-strong);
+  color: var(--theme-accent-strong);
+  background: var(--theme-accent-soft);
+}
+
+[data-ui-anchor="app-shell"]
+  :is(
+    .asset-search,
+    .asset-form-grid input,
+    .asset-form-grid select,
+    .asset-form-grid textarea,
+    .response-editor,
+    .response-editor textarea,
+    .annotation-composer textarea,
+    .temporary-task-item-body textarea,
+    .context-locator
+  ) {
+  border-color: var(--theme-line-strong);
+  border-radius: var(--theme-control-radius);
+  color: var(--theme-ink);
+  background: var(--theme-control-background);
+}
+
+[data-ui-anchor="app-shell"]
+  :is(.asset-card, .asset-add-form, .temporary-task-item, .summary-next, .session-gains) {
+  border-color: var(--theme-line);
+  color: var(--theme-ink);
+  background: var(--theme-surface-raised);
+  box-shadow: var(--theme-shadow-sm);
+}
+
+[data-ui-anchor="app-shell"]
+  :is(
+    .asset-card h3,
+    .asset-add-form h3,
+    .asset-toolbar h2,
+    .temporary-task-item strong,
+    .summary-next h2,
+    .session-gains h2
+  ) {
+  color: var(--theme-ink);
+}
+
+[data-ui-anchor="app-shell"]
+  :is(
+    .asset-card > p,
+    .asset-mastery > span,
+    .asset-mastery small,
+    .asset-add-form footer > span,
+    .temporary-task-item small,
+    .asset-empty,
+    .summary-next p:last-child
+  ) {
+  color: var(--theme-ink-muted);
+}
+
+[data-ui-anchor="app-shell"] :is(.asset-kind-list i, .asset-mastery i, .weekly-track) {
+  background: var(--theme-line);
+}
+
+[data-ui-anchor="app-shell"] :is(.asset-kind-list i b, .asset-mastery i b, .weekly-track span) {
+  background: var(--theme-accent);
+}
+
+[data-ui-anchor="app-shell"] .asset-card blockquote {
+  border-color: var(--theme-warning);
+  color: var(--theme-warning);
+  background: var(--theme-warning-soft);
+}
+
+[data-ui-anchor="app-shell"]
+  :is(.annotation-composer, .response-editor, .task-checklist, .thinking-scaffold) {
+  border-color: var(--theme-line);
+  color: var(--theme-ink);
+  background: var(--theme-surface-raised);
+}
+
+[data-ui-anchor="app-shell"] :is(.shortcut-panel, .selection-toolbar, .early-end-confirmation) {
+  border-color: var(--theme-line-strong);
+  color: var(--theme-ink);
+  background: var(--theme-popover-background);
+  box-shadow: var(--theme-shadow-md);
+}
+
+[data-ui-anchor="app-shell"] .temporary-task-panel {
+  border-color: var(--theme-line-strong);
+  color: var(--theme-ink);
+  background: var(--theme-popover-background);
+}
+
+[data-ui-anchor="app-shell"] .workspace-splitter > span {
+  border-color: var(--theme-line-strong);
+  background-color: var(--theme-control-background);
+  box-shadow: var(--theme-shadow-sm);
+}
+
+[data-ui-anchor="app-shell"] .workspace-footer {
+  border-color: var(--theme-line-strong);
+  color: var(--theme-ink-muted);
+  background: var(--theme-surface-soft);
+}
+
+[data-ui-anchor="app-shell"] :is(.primary-button, .secondary-button, .quiet-button) {
+  border-radius: var(--theme-control-radius);
+}
+
+[data-ui-anchor="app-shell"] :is(.secondary-button, .quiet-button) {
+  border-color: var(--theme-line-strong);
+  color: var(--theme-ink);
+  background: var(--theme-control-background);
+}
+
+[data-ui-anchor="app-shell"] :is(.secondary-button, .quiet-button):hover:not(:disabled) {
+  border-color: var(--theme-accent);
+  color: var(--theme-accent-strong);
+  background: var(--theme-control-hover);
+}
+
+[data-ui-anchor="app-shell"] :is(.global-error, .annotation-analysis-error) {
+  border-color: var(--theme-danger);
+  color: var(--theme-danger);
+  background: var(--theme-danger-soft);
+}
+
+[data-ui-anchor="app-shell"]
+  :is(.grammar-challenge-success, .temporary-task-feedback, .revision-link-confirmed) {
+  border-color: var(--theme-success);
+  color: var(--theme-success);
+  background: var(--theme-success-soft);
+}
+
+[data-ui-anchor="app-shell"]
+  :is(.no-hint-evidence, .progress-message, .annotation-analysis-boundary) {
+  color: var(--theme-info);
+}

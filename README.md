@@ -40,9 +40,10 @@ scripts/                    # 可重复执行的开发与运维脚本
 docs/                       # 产品、架构、研发记录和 ADR
 ```
 
-新增一键部署：
+本地一键启动：
 
-- `scripts/deploy.sh`：拉起 PostgreSQL、执行迁移、可选运行 Agent 内容生成，并启动 API/Worker（可选启动前端）。
+- `./scripts/deploy.sh`：先安全清理当前项目上次遗留的实例，再默认启动 PostgreSQL、迁移、一次性 Worker 就绪检查、API、学习端和控制舱；控制台只显示关键状态，详细输出写入 `logs/`。
+- 不需要某个前端时使用 `--no-learner` 或 `--no-control`；排障时追加 `--verbose`。按 `Ctrl-C` 会停止本次脚本启动的进程和数据库，不影响原本已在运行的数据库。
 
 Agent 核心代码统一从 `binnagent_agent` 导入；模型提供方、预算、安全策略和未来的持久记忆都必须留在该包定义的边界内。可再生依赖、缓存、测试报告与视觉验收截图不进入版本库。
 

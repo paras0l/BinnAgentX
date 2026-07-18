@@ -1,0 +1,69 @@
+:root[data-theme="ocean"] {
+  --theme-canvas: #e7f1f1;
+  --theme-canvas-muted: #dcebea;
+  --theme-surface: #f7fbfb;
+  --theme-surface-raised: #fbfefe;
+  --theme-surface-soft: #e3f0f0;
+  --theme-ink: #294a50;
+  --theme-ink-muted: #526d71;
+  --theme-accent: #3c7d83;
+  --theme-accent-strong: #27646b;
+  --theme-accent-soft: #e2f0ef;
+  --theme-line: #bfd4d6;
+  --theme-line-strong: #9ebec1;
+  --theme-focus: rgb(60 125 131 / 42%);
+  --theme-danger-soft: #fff0ef;
+  --theme-success: #387469;
+  --theme-success-soft: #e2f1ed;
+  --theme-warning: #80651e;
+  --theme-warning-soft: #fff7df;
+  --theme-info: #3c7d83;
+  --theme-info-soft: #dcefee;
+  --theme-control-background: #fbfefe;
+  --theme-control-hover: #edf7f6;
+  --theme-control-active: #dceceb;
+  --theme-popover-background: #fbfefe;
+  --theme-selection-background: #cee5e3;
+  --theme-selection-ink: #24474c;
+  --theme-scrollbar-thumb: #a5c3c4;
+  --theme-scrollbar-thumb-hover: #6d989b;
+  --theme-icon-background: #dcefee;
+  --theme-icon-ink: #2f7178;
+  --theme-hero-background:
+    radial-gradient(circle at 82% 16%, rgb(205 235 232 / 20%), transparent 32%),
+    linear-gradient(145deg, #214c53, #34747b);
+  --theme-hero-ink: #f8ffff;
+  --theme-hero-muted: #d7ecec;
+  --theme-hero-label: #c7e5e3;
+  --theme-hero-button-background: #d8efeb;
+  --theme-hero-button-ink: #204f55;
+  --theme-feature-background: linear-gradient(145deg, #245b62, #397f84);
+  --theme-feature-ink: #f8ffff;
+  --theme-feature-muted: #d3e9e8;
+  --theme-shadow-sm: 0 6px 16px rgb(35 83 88 / 8%);
+  --theme-shadow-md: 0 18px 42px rgb(35 83 88 / 11%);
+  --theme-font-display: "Avenir Next", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --theme-tier-label-background: #d5ebea;
+  --theme-tier-label-ink: #315f64;
+}
+
+:root[data-theme="ocean"] [data-ui-anchor="app-shell"] {
+  background-image:
+    radial-gradient(circle at 82% 12%, rgb(179 218 216 / 18%), transparent 30%),
+    linear-gradient(180deg, rgb(255 255 255 / 22%), transparent 38%);
+}
+
+:root[data-theme="ocean"] [data-ui-anchor="workspace-header"] :is(h1, h2),
+:root[data-theme="ocean"] :is(.insight-heading h1, .assets-heading h1, .section-heading h2) {
+  font-family: var(--theme-font-display);
+  font-weight: 600;
+  letter-spacing: -0.035em;
+  text-wrap: balance;
+}
+
+:root[data-theme="ocean"] [data-ui-anchor="navigation"] button > svg,
+:root[data-theme="ocean"] .home-card-icon {
+  border-radius: 10px;
+  color: var(--theme-icon-ink);
+  background: var(--theme-icon-background);
+}

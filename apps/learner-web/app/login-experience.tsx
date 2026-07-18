@@ -108,7 +108,7 @@ export function LoginExperience({ serviceError, onRetry, onAuthenticated }: Logi
   };
 
   return (
-    <main className="login-shell">
+    <main className="login-shell" data-ui-anchor="auth-shell">
       <section className="login-intro">
         <p className="eyebrow">BinnAgent · 考研英语</p>
         <h1>把每一次独立完成，积累成可验证的进步</h1>
@@ -267,6 +267,7 @@ export function LoginExperience({ serviceError, onRetry, onAuthenticated }: Logi
       {experienceOpen ? (
         <section
           className="experience-login-panel"
+          data-ui-anchor="modal"
           role="dialog"
           aria-modal="false"
           aria-labelledby="experience-login-title"

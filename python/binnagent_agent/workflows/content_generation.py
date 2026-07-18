@@ -611,9 +611,7 @@ class ContentGenerationWorkflow:
             correct_option = normalized_options[0].get("option_id", "A")
 
         randomizer.shuffle(normalized_options)
-        for option_id, option in zip(
-            ("A", "B", "C", "D", "E"), normalized_options, strict=False
-        ):
+        for option_id, option in zip(("A", "B", "C", "D", "E"), normalized_options, strict=False):
             option["option_id"] = option_id
             if option.get("text") == question.get("correct_answer"):
                 correct_option = option_id

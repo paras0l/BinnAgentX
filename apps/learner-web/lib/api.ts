@@ -6,6 +6,7 @@ import {
 import type {
   AnnotationAnalysisView,
   AnnotationKind,
+  ExpressionReviewView,
   GrammarChallengeUpdateView,
   LearnerProfileInput,
   LearnerResumeWorkspaceView,
@@ -98,6 +99,10 @@ export function revealGrammarChallengeHint(taskId: string): Promise<GrammarChall
   return command(`/v1/tasks/${taskId}/grammar-challenge/hint`, "grammar_challenge_hint", {});
 }
 
+export function revealGrammarChallengeAnswer(taskId: string): Promise<GrammarChallengeUpdateView> {
+  return command(`/v1/tasks/${taskId}/grammar-challenge/answer`, "grammar_challenge_answer", {});
+}
+
 export function verifyGrammarChallenge(
   taskId: string,
   correction: string,
@@ -150,6 +155,21 @@ export async function analyzeAnnotation(
         text_hash: await sha256Text(selection.textQuote),
       },
       learner_question: learnerQuestion,
+    }),
+  });
+}
+
+export function reviewExpression(
+  task: LearnerTaskView,
+  draft: string,
+  recentAssets: Array<{ title: string; content: string }>,
+): Promise<ExpressionReviewView> {
+  return request(`/v1/tasks/${task.task_id}/expression-lab/review`, {
+    method: "POST",
+    body: JSON.stringify({
+      expected_version: task.version,
+      draft,
+      recent_assets: recentAssets.slice(0, 4),
     }),
   });
 }

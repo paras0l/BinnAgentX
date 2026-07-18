@@ -61,10 +61,7 @@ class FakeSuccessfulGenerator:
                         "Second paragraph explains the effect and why the new rule "
                         "works in practice."
                     ),
-                    (
-                        "Third paragraph gives a concrete example and a measurable "
-                        "outcome."
-                    ),
+                    ("Third paragraph gives a concrete example and a measurable outcome."),
                 ],
                 "main_question": {
                     "prompt": (

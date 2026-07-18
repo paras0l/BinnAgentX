@@ -48,7 +48,7 @@ export function AuthGate() {
 
   if (checking) {
     return (
-      <main className="loading-shell" aria-busy="true">
+      <main className="loading-shell" aria-busy="true" data-ui-anchor="auth-shell">
         <p className="eyebrow">BinnAgent · 考研英语</p>
         <h1>正在确认登录状态…</h1>
       </main>

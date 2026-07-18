@@ -105,7 +105,7 @@ export function LearningAssetsPanel({
 
   return (
     <main className="assets-shell">
-      <header className="assets-heading">
+      <header className="assets-heading" data-ui-anchor="workspace-header">
         <div>
           <p className="eyebrow">学习资产 · 由真实学习动作积累</p>
           <h1>把读过的痕迹，变成下一次能复用的能力</h1>
@@ -117,7 +117,7 @@ export function LearningAssetsPanel({
         </button>
       </header>
 
-      <section className="assets-summary" aria-label="学习资产总览">
+      <section className="assets-summary" aria-label="学习资产总览" data-ui-anchor="summary">
         <article>
           <Books size={20} />
           <span>累计资产</span>
@@ -145,7 +145,7 @@ export function LearningAssetsPanel({
       </section>
 
       <div className="assets-layout">
-        <aside className="asset-categories" aria-label="资产分类">
+        <aside className="asset-categories" aria-label="资产分类" data-ui-anchor="context-panel">
           <div className="asset-group-tabs">
             {(["all", "knowledge", "experience"] as const).map((value) => (
               <button
@@ -188,7 +188,7 @@ export function LearningAssetsPanel({
         </aside>
 
         <section className="asset-library" aria-labelledby="asset-library-title">
-          <div className="asset-toolbar">
+          <div className="asset-toolbar" data-ui-anchor="toolbar">
             <div>
               <p className="step-label">当前视图</p>
               <h2 id="asset-library-title">
@@ -224,6 +224,7 @@ export function LearningAssetsPanel({
           {showAddForm ? (
             <form
               className="asset-add-form"
+              data-ui-anchor="composer"
               onSubmit={(event) => {
                 event.preventDefault();
                 if (!draft.title.trim() || !draft.content.trim()) return;
@@ -325,7 +326,7 @@ export function LearningAssetsPanel({
           {filteredItems.length ? (
             <div className="asset-list">
               {filteredItems.map((item) => (
-                <article className="asset-card" key={item.assetId}>
+                <article className="asset-card" key={item.assetId} data-ui-anchor="card">
                   <header>
                     <span>{KIND_META[item.kind].label}</span>
                     <button
@@ -373,7 +374,7 @@ export function LearningAssetsPanel({
               ))}
             </div>
           ) : (
-            <div className="asset-empty">
+            <div className="asset-empty" data-ui-anchor="empty-state">
               <Books size={34} />
               <h3>
                 {state.items.length ? "这个筛选下还没有内容" : "第一条资产，应该来自真实学习动作"}

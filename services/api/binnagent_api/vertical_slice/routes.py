@@ -11,6 +11,7 @@ from uuid import uuid4
 import sqlalchemy as sa
 from binnagent_agent import (
     AnnotationAnalysisGateway,
+    ExpressionReviewGateway,
     GatewayOutcome,
     ModelBudget,
     PriorityFeedbackGateway,
@@ -18,6 +19,9 @@ from binnagent_agent import (
 )
 from binnagent_agent import (
     AnnotationAnalysisRequest as GatewayAnnotationAnalysisRequest,
+)
+from binnagent_agent import (
+    ExpressionReviewRequest as GatewayExpressionReviewRequest,
 )
 from binnagent_domain.public_errors import PublicErrorCode
 from binnagent_domain.vertical_slice.aggregate import LearningTask, Transition
@@ -45,7 +49,11 @@ from fastapi import APIRouter, Depends, Header
 
 from binnagent_api.auth import ControlIdentity, require_control_identity
 from binnagent_api.database import get_engine
-from binnagent_api.model_adapters import annotation_analysis_adapter, priority_feedback_adapter
+from binnagent_api.model_adapters import (
+    annotation_analysis_adapter,
+    expression_review_adapter,
+    priority_feedback_adapter,
+)
 from binnagent_api.settings import get_settings
 from binnagent_api.vertical_slice import tables
 from binnagent_api.vertical_slice.content_catalog import LocalContentCatalog
@@ -54,6 +62,7 @@ from binnagent_api.vertical_slice.grammar_challenges import (
     grammar_challenge_view,
     load_grammar_challenge_state,
     project_reading_paragraphs,
+    reveal_grammar_challenge_answer,
     reveal_grammar_challenge_hint,
     verify_grammar_correction,
 )
@@ -67,6 +76,9 @@ from binnagent_api.vertical_slice.schemas import (
     AttemptRequest,
     AttemptView,
     ControlReplayView,
+    ExpressionReviewRequest,
+    ExpressionReviewView,
+    ExpressionStyleVersionView,
     GrammarChallengeUpdateView,
     GrammarCorrectionRequest,
     HintRequest,
@@ -111,6 +123,28 @@ async def reveal_grammar_hint(task_id: str) -> GrammarChallengeUpdateView:
             challenge.challenge_id,
         )
         return _grammar_challenge_update(task, challenge, state)
+
+
+@learner_router.post(
+    "/tasks/{task_id}/grammar-challenge/answer",
+    response_model=GrammarChallengeUpdateView,
+)
+async def reveal_grammar_answer(task_id: str) -> GrammarChallengeUpdateView:
+    async with get_engine().begin() as connection:
+        task = await repository.load(connection, task_id)
+        challenge = _reading_grammar_challenge(task)
+        state = await reveal_grammar_challenge_answer(
+            connection,
+            task.task_id,
+            task.current_material.content_version_id,
+            challenge,
+        )
+        return _grammar_challenge_update(
+            task,
+            challenge,
+            state,
+            feedback="已放弃本次作答，正确写法和恢复后的原文已显示。",
+        )
 
 
 @learner_router.post(
@@ -303,6 +337,122 @@ async def analyze_annotation(
         source=("model" if result.outcome is GatewayOutcome.VALIDATED_MODEL else "local_fallback"),
         reason_code=result.reason_code,
         boundary_note="只解释当前选区，不回答题目；整句翻译不会扩展为全文代读。",
+    )
+
+
+@learner_router.post(
+    "/tasks/{task_id}/expression-lab/review",
+    response_model=ExpressionReviewView,
+)
+async def review_expression(
+    task_id: str,
+    body: ExpressionReviewRequest,
+) -> ExpressionReviewView:
+    async with get_engine().begin() as connection:
+        task = await repository.load(connection, task_id)
+        if body.expected_version != task.version:
+            raise DomainError(
+                PublicErrorCode.SESSION_CONFLICT,
+                "expected_version_mismatch",
+                task.version,
+            )
+        if task.task_type is not TaskType.MICRO_EXPRESSION:
+            raise DomainError(
+                PublicErrorCode.SAVE_NOT_CONFIRMED,
+                "expression_review_expression_only",
+            )
+        attempt = next(
+            (item for item in reversed(task.current_attempts) if item.text == body.draft.strip()),
+            None,
+        )
+        if attempt is None:
+            raise DomainError(
+                PublicErrorCode.SAVE_NOT_CONFIRMED,
+                "expression_review_saved_attempt_required",
+            )
+
+        budget_row = (
+            (
+                await connection.execute(
+                    sa.select(
+                        tables.workflow_runs.c.model_call_count,
+                        tables.workflow_runs.c.cost_usd,
+                    ).where(tables.workflow_runs.c.workflow_run_id == task.workflow_run_id)
+                )
+            )
+            .mappings()
+            .one()
+        )
+        settings = get_settings()
+        result = await ExpressionReviewGateway(
+            expression_review_adapter(settings),
+            timeout_seconds=settings.model_timeout_seconds,
+            allow_remote=bool(settings.enable_remote_model_calls),
+        ).generate(
+            GatewayExpressionReviewRequest(
+                workflow_run_id=task.workflow_run_id,
+                task_id=task.task_id,
+                content_version_id=task.current_material.content_version_id,
+                draft=body.draft.strip(),
+                recent_assets=tuple((asset.title, asset.content) for asset in body.recent_assets),
+            ),
+            ModelBudget(
+                call_count=int(budget_row["model_call_count"]),
+                cost_usd=Decimal(str(budget_row["cost_usd"])),
+                max_calls=settings.model_max_calls_per_slice,
+                max_cost_usd=settings.model_max_cost_usd_per_slice,
+            ),
+        )
+        now = datetime.now(UTC)
+        await connection.execute(
+            tables.model_invocations.insert().values(
+                invocation_id=_id("model_invocation"),
+                workflow_run_id=task.workflow_run_id,
+                task_id=task.task_id,
+                input_attempt_version_id=attempt.attempt_version_id,
+                purpose="expression_style_review",
+                adapter=result.adapter,
+                prompt_version=result.prompt_version,
+                outcome=result.outcome.value,
+                is_remote=result.used_remote_call,
+                estimated_cost_usd=result.estimated_cost_usd,
+                actual_cost_usd=result.actual_cost_usd,
+                latency_ms=result.latency_ms,
+                output_hash=result.output_hash,
+                focus="style_transfer",
+                evidence_start=result.evidence_start,
+                evidence_end=result.evidence_end,
+                evidence_hash=result.evidence_hash,
+                rejection_code=result.rejection_code,
+                created_at=now,
+            )
+        )
+        if result.used_remote_call:
+            await connection.execute(
+                tables.workflow_runs.update()
+                .where(tables.workflow_runs.c.workflow_run_id == task.workflow_run_id)
+                .values(
+                    model_call_count=tables.workflow_runs.c.model_call_count + 1,
+                    cost_usd=tables.workflow_runs.c.cost_usd + result.actual_cost_usd,
+                    updated_at=now,
+                )
+            )
+
+    return ExpressionReviewView(
+        review_id=_id("expression_review"),
+        source=("model" if result.outcome is GatewayOutcome.VALIDATED_MODEL else "local_fallback"),
+        reason_code=result.reason_code,
+        thinking_difference=result.thinking_difference,
+        versions=[
+            ExpressionStyleVersionView(
+                style=version.style,
+                label=version.label,
+                text=version.text,
+                explanation=version.explanation,
+            )
+            for version in result.versions
+        ],
+        boundary_note="风格版本用于比较思维与表达差异，不覆盖学习者原文，也不计为独立输出。",
     )
 
 
