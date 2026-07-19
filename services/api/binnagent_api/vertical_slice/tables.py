@@ -339,4 +339,40 @@ content_generation_jobs = sa.Table(
     sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("published_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("current_stage", sa.String(64), nullable=False),
+    sa.Column("current_item_id", sa.String(160), nullable=True),
+    sa.Column("progress_completed", sa.Integer(), nullable=False),
+    sa.Column("progress_total", sa.Integer(), nullable=False),
+    sa.Column("attempt_count", sa.Integer(), nullable=False),
+    sa.Column("heartbeat_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("cancel_requested_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("langfuse_trace_id", sa.String(64), nullable=True),
+    sa.Column("model_provider", sa.String(32), nullable=True),
+    sa.Column("model_name", sa.String(128), nullable=True),
+    sa.Column("prefect_task_run_id", sa.String(36), nullable=True),
+)
+
+content_generation_events = sa.Table(
+    "content_generation_events",
+    metadata,
+    sa.Column("event_id", sa.BigInteger(), primary_key=True, autoincrement=True),
+    sa.Column("job_id", sa.String(128), nullable=False),
+    sa.Column("event_type", sa.String(64), nullable=False),
+    sa.Column("stage", sa.String(64), nullable=False),
+    sa.Column("agent_role", sa.String(64), nullable=True),
+    sa.Column("item_id", sa.String(160), nullable=True),
+    sa.Column("attempt", sa.Integer(), nullable=True),
+    sa.Column("message", sa.Text(), nullable=False),
+    sa.Column("detail", postgresql.JSONB(), nullable=False),
+    sa.Column("occurred_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+content_worker_runtime = sa.Table(
+    "content_worker_runtime",
+    metadata,
+    sa.Column("worker_id", sa.String(64), primary_key=True),
+    sa.Column("state", sa.String(32), nullable=False),
+    sa.Column("current_job_id", sa.String(128), nullable=True),
+    sa.Column("started_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("heartbeat_at", sa.DateTime(timezone=True), nullable=False),
 )

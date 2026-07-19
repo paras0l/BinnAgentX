@@ -9,6 +9,7 @@ import httpx2
 from pydantic import BaseModel, Field
 
 from binnagent_agent.agents.content_generator import ContentType, ProviderName
+from binnagent_agent.observability import observe
 
 
 class ContentQualityScores(BaseModel):
@@ -121,16 +122,29 @@ class RemoteContentReviewerAdapter:
             headers["Authorization"] = f"Bearer {self._api_key}"
         if self._provider != "ollama" and not self._api_key:
             raise RuntimeError(f"{self._provider}_api_key_not_configured")
-        with httpx2.Client(
-            base_url=self._base_url,
-            timeout=self._timeout_seconds,
-            headers=headers,
-            transport=self._transport,
-        ) as client:
-            response = client.post(self._path(), json=payload)
-            response.raise_for_status()
-            content = self._final_content(response.json())
-        return ContentReviewResult.model_validate_json(_strip_json_fence(content))
+        with observe(
+            "content.reviewer",
+            as_type="generation",
+            input=payload.get("messages"),
+            metadata={"provider": self._provider, "agent_role": "review_agent"},
+            model=self._model,
+            model_parameters={
+                "temperature": payload.get("temperature"),
+                "max_tokens": payload.get("max_tokens"),
+            },
+        ) as observation:
+            with httpx2.Client(
+                base_url=self._base_url,
+                timeout=self._timeout_seconds,
+                headers=headers,
+                transport=self._transport,
+            ) as client:
+                response = client.post(self._path(), json=payload)
+                response.raise_for_status()
+                content = self._final_content(response.json())
+            if observation is not None:
+                observation.update(output=content)
+        return _parse_review_result(content)
 
     @staticmethod
     def _system_prompt(schema: dict[str, Any]) -> str:
@@ -192,3 +206,34 @@ def _strip_json_fence(content: str) -> str:
         if len(lines) >= 3:
             return "\n".join(lines[1:-1]).strip()
     return value
+
+
+def _parse_review_result(content: str) -> ContentReviewResult:
+    payload = json.loads(_strip_json_fence(content))
+    if not isinstance(payload, dict):
+        raise ValueError("review_response_must_be_an_object")
+    summary = payload.get("summary")
+    if isinstance(summary, str):
+        payload["summary"] = summary[:800]
+    limitations = payload.get("limitations")
+    if isinstance(limitations, list):
+        payload["limitations"] = [str(value)[:600] for value in limitations[:6]]
+    issues = payload.get("issues")
+    if isinstance(issues, list):
+        normalized_issues: list[object] = []
+        for raw_issue in issues[:8]:
+            if not isinstance(raw_issue, dict):
+                normalized_issues.append(raw_issue)
+                continue
+            issue = dict(raw_issue)
+            for field, maximum in (
+                ("field_path", 200),
+                ("explanation", 600),
+                ("required_fix", 600),
+            ):
+                value = issue.get(field)
+                if isinstance(value, str):
+                    issue[field] = value[:maximum]
+            normalized_issues.append(issue)
+        payload["issues"] = normalized_issues
+    return ContentReviewResult.model_validate(payload)

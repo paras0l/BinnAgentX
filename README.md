@@ -42,9 +42,9 @@ docs/                       # 产品、架构、研发记录和 ADR
 
 本地一键启动：
 
-- `./scripts/deploy.sh`：默认以独立的 `binnagentx` Compose 项目构建并后台启动 PostgreSQL、迁移、常驻内容生成 Worker、API、学习端和控制舱；Docker Desktop 中对应 `binnagentx-worker-1`、`binnagentx-app-1`、`binnagentx-learner-1` 和 `binnagentx-control-1`。
+- `./scripts/deploy.sh`：默认以独立的 `binnagentx` Compose 项目构建并后台启动 PostgreSQL、迁移、Prefect Server、内容 Task Worker、API、学习端和控制舱；只有 Prefect、API、所选前端均健康且内容 Worker 已向 Prefect 注册后才报告成功。入口包括控制舱 `http://127.0.0.1:3001`、Prefect `http://127.0.0.1:4200` 和复用旧 BinnAgent 的 Langfuse `http://127.0.0.1:3100`。
 - `./scripts/deploy.sh --restart`：运行代码未变化时跳过镜像构建并强制重建容器；如果代码指纹与上次成功构建不同，会自动升级为重新构建，避免启动旧代码。默认构建过程每 10 秒显示一次心跳，详细输出仍保存在 `logs/compose.log`。
-- 不需要某个前端时使用 `--no-learner` 或 `--no-control`；排障时追加 `--verbose`。使用 `docker compose -p binnagentx down` 停止容器，数据库保存在独立的 `binnagentx_postgres_data` 卷中。
+- 不需要某个前端时使用 `--no-learner` 或 `--no-control`；排障时追加 `--verbose`。使用 `docker compose -p binnagentx down` 停止容器；业务数据库、Prefect 元数据和跨容器任务参数分别保存在明确命名的持久卷中。
 - 需要逐个调试宿主机进程时使用 `./scripts/deploy.sh --host-services`，此模式保留原来的 `uv` / `pnpm` 启动与 `Ctrl-C` 清理行为。
 
 Agent 核心代码统一从 `binnagent_agent` 导入；模型提供方、预算、安全策略和未来的持久记忆都必须留在该包定义的边界内。可再生依赖、缓存、测试报告与视觉验收截图不进入版本库。

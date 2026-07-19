@@ -133,6 +133,28 @@ class Settings(BaseSettings):
     longcat_chat_model: str = compatible_field(
         "LONGCAT_CHAT_MODEL", "LONGCAT_CHAT_MODEL", default="LongCat-2.0"
     )
+    langfuse_enabled: bool = compatible_field("LANGFUSE_ENABLED", "LANGFUSE_ENABLED", default=False)
+    langfuse_public_key: SecretStr | None = compatible_field(
+        "LANGFUSE_PUBLIC_KEY", "LANGFUSE_PUBLIC_KEY", default=None
+    )
+    langfuse_secret_key: SecretStr | None = compatible_field(
+        "LANGFUSE_SECRET_KEY", "LANGFUSE_SECRET_KEY", default=None
+    )
+    langfuse_base_url: str = Field(
+        default="http://localhost:3100",
+        validation_alias=AliasChoices(
+            "BINNAGENT_LANGFUSE_BASE_URL",
+            "BINN_LANGFUSE_DOCKER_BASE_URL",
+            "BINN_LANGFUSE_BASE_URL",
+        ),
+    )
+    langfuse_external_url: str = "http://localhost:3100"
+    langfuse_environment: str = compatible_field(
+        "LANGFUSE_ENVIRONMENT", "LANGFUSE_ENVIRONMENT", default="development"
+    )
+    prefect_enabled: bool = True
+    prefect_api_url: str = "http://localhost:4200/api"
+    prefect_external_url: str = "http://localhost:4200"
 
     content_manifest: str = "fixtures/content/v1/manifest.json"
     content_generation_output_directory: str = "fixtures/content/v1/generated"

@@ -13,6 +13,7 @@ from binnagent_agent.agents.content_reviewer import (
     ContentReviewResult,
 )
 from binnagent_agent.workflows.content_generation import (
+    ContentGenerationProgress,
     ContentGenerationWorkflow,
     ContentGeneratorError,
 )
@@ -348,11 +349,13 @@ def test_workflow_rejects_generated_article_that_copies_source_span(tmp_path: Pa
 def test_workflow_promotes_candidates_approved_by_review_agent(tmp_path: Path) -> None:
     source_manifest = _build_source_manifest(tmp_path)
     reviewer = FakeApprovingReviewer()
+    events: list[ContentGenerationProgress] = []
     workflow = ContentGenerationWorkflow(
         source_manifest=source_manifest,
         output_directory=tmp_path / "generated",
         content_generator=FakeSuccessfulGenerator(),
         content_reviewer=reviewer,
+        progress_callback=events.append,
     )
 
     result = workflow.run(seed=10)
@@ -365,3 +368,8 @@ def test_workflow_promotes_candidates_approved_by_review_agent(tmp_path: Path) -
     assert first_item["review"]["status"] == "agent_reviewed"
     assert first_item["review"]["judge_report"]["verdict"] == "approve"
     assert first_item["question_bank"][0]["question_type"] == "vocabulary_in_context"
+    event_types = [event.event_type for event in events]
+    assert event_types.count("item_started") == 6
+    assert event_types.count("review_started") == 6
+    assert event_types.count("review_approved") == 6
+    assert event_types[-1] == "validation_started"

@@ -7,11 +7,12 @@ import random
 import re
 import shutil
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, TypedDict, cast
+from typing import Any, Literal, TypedDict, cast
 
 from binnagent_evaluation.content_integrity import validate_content_pack
 from jsonschema import Draft202012Validator
@@ -46,6 +47,26 @@ class ContentGeneratorError(RuntimeError):
     pass
 
 
+class ContentGenerationCancelled(ContentGeneratorError):
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class ContentGenerationProgress:
+    event_type: str
+    stage: str
+    message: str
+    agent_role: Literal["generator_agent", "review_agent", "validator"] | None = None
+    item_id: str | None = None
+    attempt: int | None = None
+    completed: int | None = None
+    total: int = 6
+    detail: dict[str, Any] | None = None
+
+
+ProgressCallback = Callable[[ContentGenerationProgress], None]
+
+
 class _EvidenceSpan(TypedDict):
     paragraph_index: int
     start: int
@@ -66,6 +87,7 @@ class ContentGenerationWorkflow:
         content_reviewer: ContentReviewerAdapter | None = None,
         allow_deterministic_fallback: bool = False,
         generation_attempts: int = 3,
+        progress_callback: ProgressCallback | None = None,
     ) -> None:
         root = repository_root or _project_root()
         self.source_manifest = (
@@ -88,6 +110,7 @@ class ContentGenerationWorkflow:
         if generation_attempts < 1:
             raise ValueError("generation_attempts must be positive")
         self._generation_attempts = generation_attempts
+        self._progress_callback = progress_callback
         self._item_count_per_type = 2
         self._root = root
         self._item_schema = _read_json(root / "contracts/content/v1/content-item.schema.json")
@@ -103,6 +126,7 @@ class ContentGenerationWorkflow:
         randomizer = random.Random(random_seed)
         pack_token = sha256(self.pack_id.encode("utf-8")).hexdigest()[:8]
         source_manifest = self._read_json(self.source_manifest)
+        self._emit("workflow_started", "preparing", "正在读取源材料与内容约束")
         raw_items = source_manifest.get("items")
         if not isinstance(raw_items, list):
             raise ContentGeneratorError("source manifest missing items")
@@ -158,6 +182,17 @@ class ContentGenerationWorkflow:
                         f"{randomizer.randint(100, 999)}"
                     )
 
+                    completed = len(generated_item_files)
+                    self._emit(
+                        "item_started",
+                        "generating",
+                        f"生成 Agent 开始处理第 {completed + 1}/6 项材料",
+                        agent_role="generator_agent",
+                        item_id=source_version,
+                        completed=completed,
+                        detail={"content_type": content_type},
+                    )
+
                     try:
                         if self._content_generator is None:
                             raise ContentGeneratorError("content generator disabled")
@@ -195,6 +230,15 @@ class ContentGenerationWorkflow:
                             "difficulty_status": candidate["difficulty"]["difficulty_status"],
                         }
                     )
+                    self._emit(
+                        "item_completed",
+                        "item_completed",
+                        f"第 {len(generated_item_files)}/6 项已通过生成与独立审核",
+                        agent_role="review_agent",
+                        item_id=target_version,
+                        completed=len(generated_item_files),
+                        detail={"content_type": content_type},
+                    )
 
             generated_manifest = {
                 "schema_version": "1.0.0",
@@ -215,6 +259,13 @@ class ContentGenerationWorkflow:
                     json.dumps(item, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
                 )
 
+            self._emit(
+                "validation_started",
+                "validating",
+                "确定性校验器正在检查 Schema、证据与发布门禁",
+                agent_role="validator",
+                completed=len(generated_item_files),
+            )
             errors = validate_content_pack(self._root, content_directory=staging)
             if errors:
                 return GenerationOutput(
@@ -280,6 +331,14 @@ class ContentGenerationWorkflow:
                 review_feedback=review_feedback,
             )
             try:
+                self._emit(
+                    "generation_attempt_started",
+                    "generating",
+                    f"生成 Agent 第 {attempt + 1}/{self._generation_attempts} 次尝试",
+                    agent_role="generator_agent",
+                    item_id=target_content_version_id,
+                    attempt=attempt + 1,
+                )
                 payload = parse_generation_payload(
                     request.content_type,
                     self._content_generator.generate(request),
@@ -301,6 +360,14 @@ class ContentGenerationWorkflow:
                 self._assert_original_enough(source_item, candidate)
                 if self._content_reviewer is None:
                     return candidate
+                self._emit(
+                    "review_started",
+                    "reviewing",
+                    "审核 Agent 正在独立检查答案、证据、难度和语言质量",
+                    agent_role="review_agent",
+                    item_id=target_content_version_id,
+                    attempt=attempt + 1,
+                )
                 review = self._content_reviewer.review(
                     ContentReviewRequest(
                         content_type=request.content_type,
@@ -309,15 +376,43 @@ class ContentGenerationWorkflow:
                     )
                 )
                 if not review.passes_release_gate():
+                    self._emit(
+                        "review_revision_requested",
+                        "revision_requested",
+                        f"审核 Agent 要求修改: {review.summary[:240]}",
+                        agent_role="review_agent",
+                        item_id=target_content_version_id,
+                        attempt=attempt + 1,
+                        detail={"verdict": review.verdict, "scores": review.scores.model_dump()},
+                    )
                     review_feedback = review.revision_feedback()
                     raise ContentGeneratorError(
                         "content judge requested revision: " + "; ".join(review_feedback)
                     )
                 self._mark_agent_reviewed(candidate, review)
                 self._assert_item_valid(candidate)
+                self._emit(
+                    "review_approved",
+                    "review_approved",
+                    "审核 Agent 已批准该项材料",
+                    agent_role="review_agent",
+                    item_id=target_content_version_id,
+                    attempt=attempt + 1,
+                    detail={"verdict": review.verdict, "scores": review.scores.model_dump()},
+                )
                 return candidate
             except Exception as exc:
+                if isinstance(exc, ContentGenerationCancelled):
+                    raise
                 last_error = exc
+                self._emit(
+                    "generation_attempt_failed",
+                    "retrying" if attempt + 1 < self._generation_attempts else "failed",
+                    f"第 {attempt + 1} 次尝试未通过: {type(exc).__name__}: {str(exc)[:300]}",
+                    agent_role="generator_agent",
+                    item_id=target_content_version_id,
+                    attempt=attempt + 1,
+                )
                 if isinstance(exc, ContentGeneratorError) and not review_feedback:
                     review_feedback = (str(exc),)
 
@@ -326,6 +421,33 @@ class ContentGenerationWorkflow:
             f"agent output invalid after {self._generation_attempts} attempts: "
             f"{type(last_error).__name__}: {last_error}"
         ) from last_error
+
+    def _emit(
+        self,
+        event_type: str,
+        stage: str,
+        message: str,
+        *,
+        agent_role: Literal["generator_agent", "review_agent", "validator"] | None = None,
+        item_id: str | None = None,
+        attempt: int | None = None,
+        completed: int | None = None,
+        detail: dict[str, Any] | None = None,
+    ) -> None:
+        if self._progress_callback is None:
+            return
+        self._progress_callback(
+            ContentGenerationProgress(
+                event_type=event_type,
+                stage=stage,
+                message=message,
+                agent_role=agent_role,
+                item_id=item_id,
+                attempt=attempt,
+                completed=completed,
+                detail=detail,
+            )
+        )
 
     def _build_reading_item(
         self,

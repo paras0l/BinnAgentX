@@ -43,9 +43,19 @@ def test_compose_project_is_isolated_and_contains_the_full_app_stack() -> None:
     compose = COMPOSE_FILE.read_text(encoding="utf-8")
 
     assert compose.startswith("name: binnagentx\n")
-    for service in ("postgres", "migrate", "worker", "app", "learner", "control"):
+    for service in (
+        "prefect-server",
+        "postgres",
+        "migrate",
+        "worker",
+        "app",
+        "learner",
+        "control",
+    ):
         assert f"  {service}:\n" in compose
     assert "name: binnagentx_postgres_data" in compose
+    assert "name: binnagentx_prefect_task_storage" in compose
+    assert compose.count("binnagent_prefect_task_storage:/opt/prefect/task-storage") == 2
     deploy = DEPLOY_SCRIPT.read_text(encoding="utf-8")
     assert "--no-build --force-recreate" in deploy
     assert "run_logged_with_heartbeat" in deploy
@@ -64,7 +74,10 @@ def test_container_restart_skips_build_only_when_source_fingerprint_matches(
         fake_bin / "docker",
         '#!/usr/bin/env bash\nprintf \'%s\\n\' "$*" >> "$FAKE_DOCKER_CALLS"\nexit 0\n',
     )
-    _write_executable(fake_bin / "curl", "#!/usr/bin/env bash\nexit 0\n")
+    _write_executable(
+        fake_bin / "curl",
+        "#!/usr/bin/env bash\nprintf '%s\\n' '{\"prefect\":{\"active_workers\":1}}'\n",
+    )
     _write_executable(fake_bin / "lsof", "#!/usr/bin/env bash\nexit 1\n")
     env = {
         **os.environ,
@@ -165,7 +178,10 @@ def test_frontend_uses_npm_fallback_and_stops_child_on_interrupt(
         '#!/bin/bash\nprintf \'%s\\n\' "$*" > "$FAKE_NPM_MARKER"\n'
         "trap 'exit 0' TERM INT\nwhile :; do sleep 1; done\n",
     )
-    _write_executable(fake_bin / "curl", "#!/usr/bin/env bash\nexit 0\n")
+    _write_executable(
+        fake_bin / "curl",
+        "#!/usr/bin/env bash\nprintf '%s\\n' '{\"prefect\":{\"active_workers\":1}}'\n",
+    )
     _write_executable(fake_bin / "lsof", "#!/usr/bin/env bash\nexit 1\n")
     env = {
         **os.environ,
@@ -219,7 +235,10 @@ def test_new_deploy_cleans_previous_project_instance(tmp_path: Path) -> None:
         fake_bin / "npm",
         "#!/bin/bash\ntrap 'exit 0' TERM INT\nwhile :; do sleep 1; done\n",
     )
-    _write_executable(fake_bin / "curl", "#!/usr/bin/env bash\nexit 0\n")
+    _write_executable(
+        fake_bin / "curl",
+        "#!/usr/bin/env bash\nprintf '%s\\n' '{\"prefect\":{\"active_workers\":1}}'\n",
+    )
     _write_executable(fake_bin / "lsof", "#!/usr/bin/env bash\nexit 1\n")
     state_dir = tmp_path / "state"
     env = {
@@ -299,7 +318,10 @@ def test_new_deploy_discovers_legacy_instance_from_listener(tmp_path: Path) -> N
         '#!/bin/bash\nprintf \'%s\\n\' "$$" > "$FAKE_LISTENER_MARKER"\n'
         "trap 'exit 0' TERM INT\nwhile :; do sleep 1; done\n",
     )
-    _write_executable(fake_bin / "curl", "#!/usr/bin/env bash\nexit 0\n")
+    _write_executable(
+        fake_bin / "curl",
+        "#!/usr/bin/env bash\nprintf '%s\\n' '{\"prefect\":{\"active_workers\":1}}'\n",
+    )
     _write_executable(
         fake_bin / "lsof",
         "#!/bin/bash\n"

@@ -8,14 +8,44 @@ x-python-service: &python-service
     args:
       PYTHON_BASE_IMAGE: ${BINNAGENT_PYTHON_BASE_IMAGE:-python:3.13-slim-bookworm}
   env_file:
-    - .env
+    - path: ../BinnAgent/.env
+      required: false
+    - path: .env
+      required: false
   environment:
     BINNAGENT_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-binnagent}:${POSTGRES_PASSWORD:-binnagent_dev_only}@postgres:5432/${POSTGRES_DB:-binnagent}
     BINNAGENT_OLLAMA_BASE_URL: ${BINNAGENT_DOCKER_OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+    BINNAGENT_LANGFUSE_EXTERNAL_URL: ${BINNAGENT_LANGFUSE_EXTERNAL_URL:-http://localhost:3100}
+    PREFECT_API_URL: ${PREFECT_API_URL:-http://prefect-server:4200/api}
+    PREFECT_LOCAL_STORAGE_PATH: /opt/prefect/task-storage
+    PREFECT_LOGGING_TO_API_WHEN_MISSING_FLOW: ignore
+    BINNAGENT_PREFECT_API_URL: ${PREFECT_API_URL:-http://prefect-server:4200/api}
+    BINNAGENT_PREFECT_EXTERNAL_URL: ${BINNAGENT_PREFECT_EXTERNAL_URL:-http://localhost:4200}
   extra_hosts:
     - "host.docker.internal:host-gateway"
 
 services:
+  prefect-server:
+    <<: *python-service
+    command: ["prefect", "server", "start", "--host", "0.0.0.0"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:4200:4200"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:4200/api/health', timeout=2)",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 15s
+    volumes:
+      - binnagent_prefect_data:/root/.prefect
+
   postgres:
     image: postgres:18-alpine
     restart: unless-stopped
@@ -47,9 +77,12 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+      prefect-server:
+        condition: service_healthy
     restart: unless-stopped
     volumes:
       - binnagent_generated_content:/app/fixtures/content/v1/generated
+      - binnagent_prefect_task_storage:/opt/prefect/task-storage
 
   app:
     <<: *python-service
@@ -66,6 +99,8 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
+      prefect-server:
+        condition: service_healthy
     restart: unless-stopped
     ports:
       - "127.0.0.1:8000:8000"
@@ -83,6 +118,7 @@ services:
       start_period: 10s
     volumes:
       - binnagent_generated_content:/app/fixtures/content/v1/generated
+      - binnagent_prefect_task_storage:/opt/prefect/task-storage
 
   learner:
     build:
@@ -151,3 +187,7 @@ volumes:
     name: binnagentx_postgres_data
   binnagent_generated_content:
     name: binnagentx_generated_content
+  binnagent_prefect_data:
+    name: binnagentx_prefect_data
+  binnagent_prefect_task_storage:
+    name: binnagentx_prefect_task_storage

@@ -21,7 +21,7 @@ export interface CreatedExperienceCode extends ExperienceCode {
 export class ControlApiError extends Error {}
 
 export type ContentGenerationJobStatus =
-  "queued" | "running" | "generated" | "validation_failed" | "generation_failed";
+  "queued" | "running" | "generated" | "validation_failed" | "generation_failed" | "cancelled";
 
 export interface ContentGenerationJob {
   job_id: string;
@@ -38,6 +38,65 @@ export interface ContentGenerationJob {
   published_at: string | null;
   is_active: boolean;
   can_publish: boolean;
+  current_stage: string;
+  current_item_id: string | null;
+  progress_completed: number;
+  progress_total: number;
+  attempt_count: number;
+  heartbeat_at: string | null;
+  cancel_requested_at: string | null;
+  langfuse_trace_id: string | null;
+  langfuse_trace_url: string | null;
+  model_provider: string | null;
+  model_name: string | null;
+  can_cancel: boolean;
+  can_retry: boolean;
+  prefect_task_run_id: string | null;
+  prefect_task_run_url: string | null;
+}
+
+export interface ContentGenerationEvent {
+  event_id: number;
+  event_type: string;
+  stage: string;
+  agent_role: string | null;
+  item_id: string | null;
+  attempt: number | null;
+  message: string;
+  detail: Record<string, unknown>;
+  occurred_at: string;
+}
+
+export interface ContentGenerationJobDetail {
+  job: ContentGenerationJob;
+  events: ContentGenerationEvent[];
+}
+
+export interface ContentControlStatus {
+  worker: {
+    online: boolean;
+    state: string;
+    current_job_id: string | null;
+    started_at: string | null;
+    heartbeat_at: string | null;
+  };
+  langfuse: {
+    configured: boolean;
+    reachable: boolean;
+    url: string;
+  };
+  prefect: {
+    configured: boolean;
+    reachable: boolean;
+    url: string;
+    active_workers: number;
+  };
+  model_provider: string;
+  model_name: string;
+  queue_depth: number;
+  running_count: number;
+  failed_count: number;
+  active_pack_job_id: string | null;
 }
 
 async function controlRequest<T>(path: string, init?: RequestInit): Promise<T> {
@@ -81,6 +140,14 @@ export function listContentGenerationJobs(): Promise<ContentGenerationJob[]> {
   return controlRequest("content-generation/jobs");
 }
 
+export function getContentControlStatus(): Promise<ContentControlStatus> {
+  return controlRequest("content-generation/status");
+}
+
+export function getContentGenerationJob(jobId: string): Promise<ContentGenerationJobDetail> {
+  return controlRequest(`content-generation/jobs/${jobId}`);
+}
+
 export function createContentGenerationJob(seed?: number): Promise<ContentGenerationJob> {
   return controlRequest("content-generation/jobs", {
     method: "POST",
@@ -90,4 +157,12 @@ export function createContentGenerationJob(seed?: number): Promise<ContentGenera
 
 export function publishContentGenerationJob(jobId: string): Promise<ContentGenerationJob> {
   return controlRequest(`content-generation/jobs/${jobId}/publish`, { method: "POST" });
+}
+
+export function cancelContentGenerationJob(jobId: string): Promise<ContentGenerationJob> {
+  return controlRequest(`content-generation/jobs/${jobId}/cancel`, { method: "POST" });
+}
+
+export function retryContentGenerationJob(jobId: string): Promise<ContentGenerationJob> {
+  return controlRequest(`content-generation/jobs/${jobId}/retry`, { method: "POST" });
 }

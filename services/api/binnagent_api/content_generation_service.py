@@ -9,7 +9,8 @@ from typing import Any, cast
 
 from binnagent_agent.agents.content_generator import RemoteContentGenerationAdapter
 from binnagent_agent.agents.content_reviewer import RemoteContentReviewerAdapter
-from binnagent_agent.workflows.content_generation import ContentGenerationWorkflow
+from binnagent_agent.observability import LangfuseConfiguration, configure_langfuse
+from binnagent_agent.workflows.content_generation import ContentGenerationWorkflow, ProgressCallback
 from binnagent_evaluation.content_integrity import validate_content_pack
 
 from binnagent_api.settings import Settings
@@ -21,7 +22,25 @@ def build_content_generation_workflow(
     output_directory: Path,
     pack_id: str,
     pack_version: str,
+    progress_callback: ProgressCallback | None = None,
 ) -> ContentGenerationWorkflow:
+    configure_langfuse(
+        LangfuseConfiguration(
+            enabled=settings.langfuse_enabled,
+            public_key=(
+                settings.langfuse_public_key.get_secret_value()
+                if settings.langfuse_public_key
+                else None
+            ),
+            secret_key=(
+                settings.langfuse_secret_key.get_secret_value()
+                if settings.langfuse_secret_key
+                else None
+            ),
+            base_url=settings.langfuse_base_url,
+            environment=settings.langfuse_environment,
+        )
+    )
     generator: RemoteContentGenerationAdapter | None = None
     reviewer: RemoteContentReviewerAdapter | None = None
     if settings.model_adapter == "ollama":
@@ -91,6 +110,7 @@ def build_content_generation_workflow(
         content_reviewer=reviewer,
         pack_version=pack_version,
         pack_id=pack_id,
+        progress_callback=progress_callback,
     )
 
 

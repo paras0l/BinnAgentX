@@ -103,3 +103,48 @@ def test_longcat_review_agent_uses_reasoning_but_parses_final_judgment() -> None
 
     assert captured["thinking"] == {"type": "enabled"}
     assert result.verdict == "approve"
+
+
+def test_review_agent_normalizes_overlong_explanation_without_discarding_verdict() -> None:
+    final_report = {
+        "verdict": "approve",
+        "scores": {
+            "factual_coherence": 5,
+            "answerability": 5,
+            "evidence_grounding": 5,
+            "difficulty_alignment": 4,
+            "question_diversity": 5,
+            "hint_progression": 4,
+            "language_quality": 5,
+        },
+        "issues": [],
+        "summary": "x" * 1200,
+        "limitations": ["Human sampling remains required"],
+    }
+
+    adapter = RemoteContentReviewerAdapter(
+        provider="longcat",
+        base_url="https://api.longcat.test/openai",
+        model="LongCat-2.0",
+        api_key="test-key",
+        estimated_cost_usd=Decimal("0.02"),
+        max_tokens=4000,
+        timeout_seconds=120,
+        transport=httpx2.MockTransport(
+            lambda _request: httpx2.Response(
+                200,
+                json={"choices": [{"message": {"content": json.dumps(final_report)}}]},
+            )
+        ),
+    )
+
+    result = adapter.review(
+        ContentReviewRequest(
+            content_type="micro_expression",
+            source_item={"title": "source"},
+            candidate_item={"title": "candidate"},
+        )
+    )
+
+    assert result.verdict == "approve"
+    assert len(result.summary) == 800

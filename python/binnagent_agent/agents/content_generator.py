@@ -9,6 +9,7 @@ import httpx2
 from pydantic import BaseModel, Field, ValidationError
 
 from binnagent_agent.gateways.model import ModelAdapterResponse
+from binnagent_agent.observability import observe
 
 ProviderName = Literal["ollama", "deepseek", "longcat"]
 ContentType = Literal["calibration_reading", "matched_reading", "micro_expression"]
@@ -183,16 +184,30 @@ class _RemoteContentGenerationAdapterBase:
             headers["Authorization"] = f"Bearer {self._api_key}"
         if self._provider != "ollama" and not self._api_key:
             raise RuntimeError(f"{self._provider}_api_key_not_configured")
-        with httpx2.Client(
-            base_url=self._base_url,
-            timeout=self._timeout_seconds,
-            headers=headers,
-            transport=self._transport,
-        ) as client:
-            response = client.post(self._path(), json=payload)
-            response.raise_for_status()
+        with observe(
+            "content.generator",
+            as_type="generation",
+            input=payload.get("messages"),
+            metadata={"provider": self._provider, "agent_role": "generator_agent"},
+            model=self._model,
+            model_parameters={
+                "temperature": payload.get("temperature"),
+                "max_tokens": payload.get("max_tokens"),
+            },
+        ) as observation:
+            with httpx2.Client(
+                base_url=self._base_url,
+                timeout=self._timeout_seconds,
+                headers=headers,
+                transport=self._transport,
+            ) as client:
+                response = client.post(self._path(), json=payload)
+                response.raise_for_status()
+                content = self._content(response.json())
+            if observation is not None:
+                observation.update(output=content)
             return ModelAdapterResponse(
-                payload=json.loads(_strip_json_fence(self._content(response.json()))),
+                payload=json.loads(_strip_json_fence(content)),
                 actual_cost_usd=self.estimated_cost_usd,
             )
 
