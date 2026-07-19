@@ -35,6 +35,7 @@ def test_deploy_script_has_valid_syntax_and_concise_help() -> None:
     assert "Compose 项目名" in help_result.stdout
     assert "binnagentx" in help_result.stdout
     assert "--host-services" in help_result.stdout
+    assert "--restart" in help_result.stdout
     assert "控制台只显示关键状态" in help_result.stdout
 
 
@@ -45,9 +46,63 @@ def test_compose_project_is_isolated_and_contains_the_full_app_stack() -> None:
     for service in ("postgres", "migrate", "worker", "app", "learner", "control"):
         assert f"  {service}:\n" in compose
     assert "name: binnagentx_postgres_data" in compose
+    deploy = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    assert "--no-build --force-recreate" in deploy
+    assert "run_logged_with_heartbeat" in deploy
+    assert "background_command_is_running" in deploy
+    assert "runtime_source_fingerprint" in deploy
+    assert "--restart 自动升级为构建并重启" in deploy
 
 
-def test_worker_only_check_does_not_require_or_invoke_docker(tmp_path: Path) -> None:
+def test_container_restart_skips_build_only_when_source_fingerprint_matches(
+    tmp_path: Path,
+) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    docker_calls = tmp_path / "docker-calls"
+    _write_executable(
+        fake_bin / "docker",
+        '#!/usr/bin/env bash\nprintf \'%s\\n\' "$*" >> "$FAKE_DOCKER_CALLS"\nexit 0\n',
+    )
+    _write_executable(fake_bin / "curl", "#!/usr/bin/env bash\nexit 0\n")
+    _write_executable(fake_bin / "lsof", "#!/usr/bin/env bash\nexit 1\n")
+    env = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "FAKE_DOCKER_CALLS": str(docker_calls),
+        "LOG_DIR": str(tmp_path / "logs"),
+        "DEPLOY_STATE_DIR": str(tmp_path / "state"),
+    }
+
+    built = subprocess.run(
+        ["bash", str(DEPLOY_SCRIPT)],
+        cwd=PROJECT_ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    restarted = subprocess.run(
+        ["bash", str(DEPLOY_SCRIPT), "--restart"],
+        cwd=PROJECT_ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert built.returncode == 0, built.stderr
+    assert restarted.returncode == 0, restarted.stderr
+    calls = docker_calls.read_text(encoding="utf-8")
+    assert "up --detach --remove-orphans --build" in calls
+    assert "up --detach --remove-orphans --no-build --force-recreate" in calls
+    assert "运行代码未变化" in restarted.stdout
+    assert "跳过镜像构建" in restarted.stdout
+
+
+def test_host_worker_starts_without_requiring_or_invoking_docker(tmp_path: Path) -> None:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     docker_marker = tmp_path / "docker-invoked"
@@ -55,7 +110,10 @@ def test_worker_only_check_does_not_require_or_invoke_docker(tmp_path: Path) -> 
         fake_bin / "docker",
         '#!/usr/bin/env bash\ntouch "$FAKE_DOCKER_MARKER"\nexit 99\n',
     )
-    _write_executable(fake_bin / "uv", "#!/usr/bin/env bash\nexit 0\n")
+    _write_executable(
+        fake_bin / "uv",
+        "#!/usr/bin/env bash\ntrap 'exit 0' TERM INT\nwhile :; do sleep 1; done\n",
+    )
     _write_executable(fake_bin / "pg_isready", "#!/usr/bin/env bash\nexit 0\n")
     env = {
         **os.environ,
@@ -65,7 +123,7 @@ def test_worker_only_check_does_not_require_or_invoke_docker(tmp_path: Path) -> 
         "DEPLOY_STATE_DIR": str(tmp_path / "state"),
     }
 
-    result = subprocess.run(
+    process = subprocess.Popen(
         [
             "bash",
             str(DEPLOY_SCRIPT),
@@ -77,15 +135,22 @@ def test_worker_only_check_does_not_require_or_invoke_docker(tmp_path: Path) -> 
         ],
         cwd=PROJECT_ROOT,
         env=env,
-        check=False,
-        capture_output=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
         text=True,
-        timeout=5,
     )
+    try:
+        time.sleep(0.5)
+        process.send_signal(signal.SIGINT)
+        output, _ = process.communicate(timeout=6)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=3)
 
-    assert result.returncode == 0, result.stderr
-    assert "Worker 就绪检查通过" in result.stdout
-    assert "一次性检查完成" in result.stdout
+    assert process.returncode == 130, output
+    assert "内容生成 Worker 已启动" in output
+    assert "停止本次启动的服务" in output
     assert not docker_marker.exists()
 
 

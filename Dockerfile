@@ -1,4 +1,5 @@
-FROM python:3.13-slim-bookworm AS python-runtime
+ARG PYTHON_BASE_IMAGE=python:3.13-slim-bookworm
+FROM ${PYTHON_BASE_IMAGE} AS python-runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \

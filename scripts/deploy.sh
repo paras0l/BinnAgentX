@@ -27,6 +27,8 @@ RUN_CONTROL=1
 MONITOR_WORKER=0
 CLEAN_OLD_INSTANCES=1
 RUN_CONTAINER_STACK=1
+REBUILD_IMAGES=1
+ACTIVE_COMMAND_PID=""
 
 declare -a COMPOSE_FILES=()
 declare -a SERVICE_NAMES=()
@@ -37,13 +39,14 @@ declare -a PNPM_CMD=()
 COMPOSE_STARTED_BY_SCRIPT=0
 CLEANUP_DONE=0
 INSTANCE_STATE_FILE=""
+IMAGE_FINGERPRINT_FILE=""
 
 show_help() {
   cat <<'EOF'
 用法:
   bash scripts/deploy.sh [选项]
 
-默认构建并后台启动 PostgreSQL、迁移、Worker 检查、API、学习端和控制舱容器。
+默认构建并后台启动 PostgreSQL、迁移、常驻 Worker、API、学习端和控制舱容器。
 控制台只显示关键状态；完整构建输出写入 ./logs。
 
 选项:
@@ -53,19 +56,21 @@ show_help() {
   --skip-compose            使用已有数据库，不操作 Docker Compose
   --skip-migrate            跳过 Alembic 迁移
   --no-api                  不启动 API
-  --no-worker               不运行 Worker 就绪检查
+  --no-worker               不启动内容生成 Worker
   --learner                 启动 Learner 前端（默认开启）
   --control                 启动 Control 前端（默认开启）
   --no-learner              不启动 Learner 前端
   --no-control              不启动 Control 前端
-  --monitor-worker          兼容旧参数；Worker 是一次性检查，不再监控
+  --monitor-worker          兼容旧参数；Worker 现已默认常驻
   --no-cleanup              不清理当前项目上次遗留的服务实例
+  --restart                 代码未变时快速重启；检测到变更会自动重新构建
   --log-dir <dir>           日志目录（默认: ./logs）
   --verbose                 在控制台同步显示 Compose/迁移输出
   --help                    打印帮助
 
 常用:
   bash scripts/deploy.sh
+  bash scripts/deploy.sh --restart
   bash scripts/deploy.sh --no-control
   bash scripts/deploy.sh --host-services
   bash scripts/deploy.sh --host-services --skip-compose --skip-migrate --no-api --no-worker
@@ -249,6 +254,10 @@ while [[ $# -gt 0 ]]; do
       CLEAN_OLD_INSTANCES=0
       shift
       ;;
+    --restart)
+      REBUILD_IMAGES=0
+      shift
+      ;;
     --log-dir)
       require_option_value "$1" "$#" "${2:-}"
       LOG_DIR="$2"
@@ -284,6 +293,7 @@ case "$DEPLOY_STATE_DIR" in
   *) DEPLOY_STATE_DIR="$PROJECT_ROOT/$DEPLOY_STATE_DIR" ;;
 esac
 INSTANCE_STATE_FILE="$DEPLOY_STATE_DIR/deploy.state"
+IMAGE_FINGERPRINT_FILE="$DEPLOY_STATE_DIR/deploy.image-fingerprint"
 mkdir -p "$LOG_DIR" "$DEPLOY_STATE_DIR"
 : > "$LOG_DIR/bootstrap.log"
 
@@ -344,6 +354,90 @@ run_logged() {
     return "$status"
   fi
   "$@" >> "$logfile" 2>&1
+}
+
+run_logged_with_heartbeat() {
+  local logfile="$1"
+  local label="$2"
+  shift 2
+  if (( VERBOSE == 1 )); then
+    run_logged "$logfile" "$@"
+    return
+  fi
+
+  "$@" >> "$logfile" 2>&1 &
+  ACTIVE_COMMAND_PID="$!"
+  local elapsed=0
+  local status=0
+  while background_command_is_running "$ACTIVE_COMMAND_PID"; do
+    sleep 2
+    elapsed=$((elapsed + 2))
+    if (( elapsed % 10 == 0 )); then
+      info "${label}（已等待 ${elapsed}s；详细日志: ${logfile}）"
+    fi
+  done
+  wait "$ACTIVE_COMMAND_PID" || status=$?
+  ACTIVE_COMMAND_PID=""
+  return "$status"
+}
+
+background_command_is_running() {
+  local pid="$1"
+  local process_state=""
+  kill -0 "$pid" >/dev/null 2>&1 || return 1
+  process_state="$(ps -p "$pid" -o stat= 2>/dev/null | tr -d '[:space:]')"
+  [[ -n "$process_state" && "$process_state" != Z* ]]
+}
+
+runtime_source_fingerprint() {
+  command -v git >/dev/null 2>&1 || return 1
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 1
+
+  local files
+  files="$(
+    git ls-files -co --exclude-standard -- \
+      .dockerignore Dockerfile Dockerfile.frontend compose.yaml \
+      pyproject.toml uv.lock package.json pnpm-lock.yaml pnpm-workspace.yaml \
+      apps packages python services contracts fixtures \
+      | LC_ALL=C sort
+  )"
+  [[ -n "$files" ]] || return 1
+  while IFS= read -r file; do
+    [[ -f "$file" ]] || continue
+    printf '%s %s\n' "$file" "$(git hash-object "$file")"
+  done <<< "$files" | git hash-object --stdin
+}
+
+ensure_restart_matches_sources() {
+  if (( REBUILD_IMAGES == 1 )); then
+    return 0
+  fi
+  local current_fingerprint=""
+  local built_fingerprint=""
+  if [[ -f "$IMAGE_FINGERPRINT_FILE" ]]; then
+    built_fingerprint="$(tr -d '[:space:]' < "$IMAGE_FINGERPRINT_FILE")"
+  fi
+  if ! current_fingerprint="$(runtime_source_fingerprint)"; then
+    warn "无法计算运行代码指纹；为避免启动旧代码，将重新构建镜像"
+    REBUILD_IMAGES=1
+    return
+  fi
+  if [[ -z "$built_fingerprint" || "$current_fingerprint" != "$built_fingerprint" ]]; then
+    warn "检测到运行代码自上次构建后有变化；--restart 自动升级为构建并重启"
+    REBUILD_IMAGES=1
+    return
+  fi
+  info "运行代码未变化，跳过镜像构建"
+}
+
+record_built_source_fingerprint() {
+  if (( REBUILD_IMAGES == 0 )); then
+    return 0
+  fi
+  local fingerprint=""
+  if fingerprint="$(runtime_source_fingerprint)"; then
+    printf '%s\n' "$fingerprint" > "$IMAGE_FINGERPRINT_FILE"
+  fi
 }
 
 show_log_tail() {
@@ -414,15 +508,17 @@ run_migrations() {
   success "数据库迁移完成"
 }
 
-run_worker_check() {
+start_worker_service() {
   local logfile="$LOG_DIR/worker.log"
-  : > "$logfile"
-  info "检查 Worker"
-  if ! run_logged "$logfile" uv run binnagent-worker; then
+  info "启动内容生成 Worker"
+  register_service "Worker" "$logfile" uv run binnagent-worker
+  local index=$((${#SERVICE_PIDS[@]} - 1))
+  sleep 0.2
+  if ! kill -0 "${SERVICE_PIDS[$index]}" >/dev/null 2>&1; then
     show_log_tail "$logfile"
-    die "Worker 就绪检查失败"
+    die "内容生成 Worker 启动失败"
   fi
-  success "Worker 就绪检查通过"
+  success "内容生成 Worker 已启动"
 }
 
 port_is_listening() {
@@ -757,6 +853,7 @@ cleanup() {
 
 start_container_stack() {
   local -a targets=()
+  local -a up_args=(up --detach --remove-orphans)
   local needs_app=0
 
   if (( RUN_API == 1 || RUN_LEARNER == 1 || RUN_CONTROL == 1 )); then
@@ -767,18 +864,25 @@ start_container_stack() {
   (( RUN_LEARNER == 0 )) || targets+=(learner)
   (( RUN_CONTROL == 0 )) || targets+=(control)
   (( ${#targets[@]} > 0 )) || die "未选择任何容器服务"
+  ensure_restart_matches_sources
 
   if (( SKIP_MIGRATE == 1 )); then
     warn "容器模式始终执行幂等数据库迁移；--skip-migrate 仅适用于 --host-services"
   fi
   if (( MONITOR_WORKER == 1 )); then
-    warn "--monitor-worker 已无需使用：容器中的 Worker 仍是一次性就绪检查"
+    warn "--monitor-worker 已无需使用：容器中的 Worker 已默认常驻"
   fi
 
-  info "构建并启动 BinnAgentX 容器"
+  if (( REBUILD_IMAGES == 1 )); then
+    up_args+=(--build)
+    info "构建并重启 BinnAgentX 容器"
+  else
+    up_args+=(--no-build --force-recreate)
+    info "使用现有镜像重启 BinnAgentX 容器"
+  fi
   : > "$LOG_DIR/compose.log"
-  if ! run_logged "$LOG_DIR/compose.log" \
-    "${compose_cmd[@]}" up --build --detach --remove-orphans "${targets[@]}"; then
+  if ! run_logged_with_heartbeat "$LOG_DIR/compose.log" "容器仍在构建或重启" \
+    "${compose_cmd[@]}" "${up_args[@]}" "${targets[@]}"; then
     show_log_tail "$LOG_DIR/compose.log" 50
     die "容器构建或启动失败"
   fi
@@ -789,6 +893,7 @@ start_container_stack() {
     wait_for_container_url "Learner" "http://127.0.0.1:3000"
   (( RUN_CONTROL == 0 )) || \
     wait_for_container_url "Control" "http://127.0.0.1:3001"
+  record_built_source_fingerprint
 
   printf '\n已启动（Compose 项目: %s）：\n' "$COMPOSE_PROJECT_NAME"
   (( needs_app == 0 )) || printf '  API      http://127.0.0.1:8000\n'
@@ -799,8 +904,14 @@ start_container_stack() {
 }
 
 handle_signal() {
+  if [[ -n "$ACTIVE_COMMAND_PID" ]] && kill -0 "$ACTIVE_COMMAND_PID" >/dev/null 2>&1; then
+    terminate_process_tree "$ACTIVE_COMMAND_PID"
+  fi
   exit "$1"
 }
+
+trap 'handle_signal 130' INT
+trap 'handle_signal 143' TERM
 
 if (( RUN_CONTAINER_STACK == 1 )); then
   if (( CLEAN_OLD_INSTANCES == 1 )); then
@@ -811,8 +922,6 @@ if (( RUN_CONTAINER_STACK == 1 )); then
   exit 0
 fi
 
-trap 'handle_signal 130' INT
-trap 'handle_signal 143' TERM
 trap cleanup EXIT
 
 if (( CLEAN_OLD_INSTANCES == 1 )); then
@@ -840,10 +949,10 @@ if (( NEED_DATABASE == 1 )); then
 fi
 
 if (( MONITOR_WORKER == 1 )); then
-  warn "--monitor-worker 已无需使用：当前 Worker 是一次性就绪检查"
+  warn "--monitor-worker 已无需使用：当前 Worker 已默认常驻"
 fi
 if (( RUN_WORKER == 1 )); then
-  run_worker_check
+  start_worker_service
 fi
 
 if (( RUN_API == 1 )); then
@@ -872,6 +981,7 @@ if (( ${#SERVICE_PIDS[@]-0} == 0 )); then
 fi
 
 printf '\n已启动：\n'
+(( RUN_WORKER == 1 )) && printf '  Worker   内容生成队列\n'
 (( RUN_API == 1 )) && printf '  API      http://127.0.0.1:8000\n'
 (( RUN_LEARNER == 1 )) && printf '  Learner  http://127.0.0.1:3000\n'
 (( RUN_CONTROL == 1 )) && printf '  Control  http://127.0.0.1:3001\n'

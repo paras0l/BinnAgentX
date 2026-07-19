@@ -23,7 +23,7 @@
     "test:integration": "uv run pytest tests/integration",
     "test:e2e": "playwright test",
     "test:unit": "pnpm --recursive --if-present test && uv run pytest tests/unit",
-    "typecheck": "pnpm --recursive --if-present typecheck && uv run mypy python services tests",
+    "typecheck": "pnpm --recursive --if-present typecheck && uv run python -m mypy python services tests",
     "api": "uv run binnagent-api",
     "worker": "uv run binnagent-worker"
   },

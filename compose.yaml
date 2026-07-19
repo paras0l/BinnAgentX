@@ -5,6 +5,8 @@ x-python-service: &python-service
     context: .
     dockerfile: Dockerfile
     target: python-runtime
+    args:
+      PYTHON_BASE_IMAGE: ${BINNAGENT_PYTHON_BASE_IMAGE:-python:3.13-slim-bookworm}
   env_file:
     - .env
   environment:
@@ -45,7 +47,9 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
-    restart: "no"
+    restart: unless-stopped
+    volumes:
+      - binnagent_generated_content:/app/fixtures/content/v1/generated
 
   app:
     <<: *python-service
@@ -85,6 +89,8 @@ services:
       context: .
       dockerfile: Dockerfile.frontend
       target: learner-runtime
+      args:
+        NODE_BASE_IMAGE: ${BINNAGENT_NODE_BASE_IMAGE:-node:24.14.0-bookworm-slim}
     environment:
       HOSTNAME: 0.0.0.0
       PORT: 3000
@@ -113,6 +119,8 @@ services:
       context: .
       dockerfile: Dockerfile.frontend
       target: control-runtime
+      args:
+        NODE_BASE_IMAGE: ${BINNAGENT_NODE_BASE_IMAGE:-node:24.14.0-bookworm-slim}
     environment:
       HOSTNAME: 0.0.0.0
       PORT: 3001

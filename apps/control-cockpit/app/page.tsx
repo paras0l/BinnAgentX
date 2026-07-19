@@ -4,9 +4,14 @@ import { useEffect, useState, useTransition } from "react";
 
 import {
   ControlApiError,
+  createContentGenerationJob,
   createExperienceCode,
+  listContentGenerationJobs,
   listExperienceCodes,
+  publishContentGenerationJob,
   revokeExperienceCode,
+  type ContentGenerationJob,
+  type ContentGenerationJobStatus,
   type CreatedExperienceCode,
   type ExperienceCode,
   type ExperienceCodeStatus,
@@ -26,6 +31,14 @@ const STATUS_LABELS: Record<ExperienceCodeStatus, string> = {
   revoked: "已停用",
 };
 
+const GENERATION_STATUS_LABELS: Record<ContentGenerationJobStatus, string> = {
+  queued: "等待 Worker",
+  running: "生成与审核中",
+  generated: "审核已通过",
+  validation_failed: "完整性未通过",
+  generation_failed: "生成失败",
+};
+
 const DATE_FORMATTER = new Intl.DateTimeFormat("zh-CN", {
   month: "2-digit",
   day: "2-digit",
@@ -35,31 +48,62 @@ const DATE_FORMATTER = new Intl.DateTimeFormat("zh-CN", {
 
 export default function ControlHomePage() {
   const [codes, setCodes] = useState<ExperienceCode[]>([]);
+  const [contentJobs, setContentJobs] = useState<ContentGenerationJob[]>([]);
   const [label, setLabel] = useState("小范围体验");
   const [maxUses, setMaxUses] = useState(25);
   const [validDays, setValidDays] = useState(7);
   const [created, setCreated] = useState<CreatedExperienceCode | null>(null);
+  const [contentSeed, setContentSeed] = useState(20260719);
   const [loading, setLoading] = useState(true);
+  const [contentLoading, setContentLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [contentError, setContentError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [isPending, startTransition] = useTransition();
 
   useEffect(() => {
     let active = true;
-    void listExperienceCodes()
-      .then((items) => {
-        if (active) setCodes(items);
-      })
-      .catch((reason: unknown) => {
-        if (active) setError(controlErrorMessage(reason));
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
+    void Promise.allSettled([listExperienceCodes(), listContentGenerationJobs()]).then(
+      ([codesResult, jobsResult]) => {
+        if (!active) return;
+        if (codesResult.status === "fulfilled") {
+          setCodes((current) => [
+            ...current,
+            ...codesResult.value.filter(
+              (candidate) => !current.some((item) => item.code_id === candidate.code_id),
+            ),
+          ]);
+        } else setError(controlErrorMessage(codesResult.reason));
+        if (jobsResult.status === "fulfilled") {
+          setContentJobs((current) => [
+            ...current,
+            ...jobsResult.value.filter(
+              (candidate) => !current.some((item) => item.job_id === candidate.job_id),
+            ),
+          ]);
+        } else setContentError(contentErrorMessage(jobsResult.reason));
+        setLoading(false);
+        setContentLoading(false);
+      },
+    );
     return () => {
       active = false;
     };
   }, []);
+
+  const generationInProgress = contentJobs.some(
+    (job) => job.status === "queued" || job.status === "running",
+  );
+
+  useEffect(() => {
+    if (!generationInProgress) return;
+    const interval = window.setInterval(() => {
+      void listContentGenerationJobs()
+        .then(setContentJobs)
+        .catch((reason: unknown) => setContentError(contentErrorMessage(reason)));
+    }, 3000);
+    return () => window.clearInterval(interval);
+  }, [generationInProgress]);
 
   const createCode = () => {
     setError(null);
@@ -94,6 +138,37 @@ export default function ControlHomePage() {
     });
   };
 
+  const queueContentGeneration = () => {
+    setContentError(null);
+    startTransition(async () => {
+      try {
+        const job = await createContentGenerationJob(contentSeed);
+        setContentJobs((current) => [job, ...current]);
+      } catch (reason) {
+        setContentError(contentErrorMessage(reason));
+      }
+    });
+  };
+
+  const publishContent = (jobId: string) => {
+    setContentError(null);
+    startTransition(async () => {
+      try {
+        const published = await publishContentGenerationJob(jobId);
+        setContentJobs((current) =>
+          current.map((job) => ({
+            ...job,
+            is_active: job.job_id === published.job_id,
+            published_at:
+              job.job_id === published.job_id ? published.published_at : job.published_at,
+          })),
+        );
+      } catch (reason) {
+        setContentError(contentErrorMessage(reason));
+      }
+    });
+  };
+
   return (
     <main className="control-shell">
       <header className="control-header">
@@ -113,6 +188,93 @@ export default function ControlHomePage() {
           <h2 id="boundary-title">体验码可写入，训练内容仍按学习者隔离</h2>
         </div>
         <span>操作留痕</span>
+      </section>
+
+      <section className="content-management" aria-labelledby="content-management-title">
+        <div className="content-management-heading">
+          <div>
+            <p>CONTENT / AGENT PIPELINE</p>
+            <h2 id="content-management-title">材料生成与发布</h2>
+            <span>生成 Agent 与审核 Agent 均通过后才可发布；发布只影响之后创建的训练。</span>
+          </div>
+          <strong>{contentJobs.find((job) => job.is_active)?.pack_version ?? "基础材料"}</strong>
+        </div>
+
+        {contentError ? (
+          <div className="control-error" role="alert">
+            {contentError}
+          </div>
+        ) : null}
+
+        <div className="content-management-grid">
+          <form
+            className="content-generation-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              queueContentGeneration();
+            }}
+          >
+            <h3>创建新材料包</h3>
+            <p>一次生成 2 篇校准阅读、2 篇匹配阅读和 2 项微型表达，并逐项独立审核。</p>
+            <label>
+              <span>生成种子</span>
+              <input
+                type="number"
+                min={0}
+                max={2 ** 31 - 1}
+                value={contentSeed}
+                onChange={(event) => setContentSeed(event.target.valueAsNumber)}
+                required
+              />
+            </label>
+            <button type="submit" disabled={isPending || generationInProgress}>
+              {generationInProgress ? "已有任务处理中" : "生成并交给 Agent 审核"}
+            </button>
+            <small>生成在后台 Worker 中运行，关闭页面不会中断。</small>
+          </form>
+
+          <div className="content-job-list" aria-busy={contentLoading}>
+            <div className="content-job-list-heading">
+              <h3>材料包记录</h3>
+              <span>{contentLoading ? "正在读取…" : `${contentJobs.length} 个任务`}</span>
+            </div>
+            {!contentLoading && contentJobs.length === 0 ? (
+              <p className="control-empty">还没有 Agent 材料包。创建后可在这里跟踪审核结果。</p>
+            ) : null}
+            {contentJobs.map((job) => (
+              <article key={job.job_id}>
+                <div className="content-job-main">
+                  <span className={`generation-status ${job.status}`}>
+                    {job.is_active ? "当前已发布" : GENERATION_STATUS_LABELS[job.status]}
+                  </span>
+                  <h4>{job.pack_id}</h4>
+                  <code>{job.job_id}</code>
+                </div>
+                <div className="content-job-metrics">
+                  <span>
+                    <strong>{job.agent_reviewed_count}</strong> / {job.item_count || 6} 已审核
+                  </span>
+                  <span>种子 {job.seed ?? "自动"}</span>
+                  <span>{formatDate(job.completed_at ?? job.created_at)}</span>
+                </div>
+                <div className="content-job-action">
+                  {job.validation_errors.length > 0 ? (
+                    <small title={job.validation_errors.join("\n")}>
+                      {job.validation_errors[0]}
+                    </small>
+                  ) : null}
+                  <button
+                    type="button"
+                    disabled={isPending || !job.can_publish || job.is_active}
+                    onClick={() => publishContent(job.job_id)}
+                  >
+                    {job.is_active ? "使用中" : job.can_publish ? "发布给新训练" : "等待审核"}
+                  </button>
+                </div>
+              </article>
+            ))}
+          </div>
+        </div>
       </section>
 
       <section className="experience-management" aria-labelledby="experience-management-title">
@@ -254,4 +416,15 @@ function controlErrorMessage(reason: unknown): string {
   if (!(reason instanceof ControlApiError)) return "操作没有完成，请稍后重试。";
   if (reason.message === "control_api_unreachable") return "暂时无法连接控制服务。";
   return "体验码操作没有完成，请检查控制服务状态。";
+}
+
+function contentErrorMessage(reason: unknown): string {
+  if (!(reason instanceof ControlApiError)) return "材料操作没有完成，请稍后重试。";
+  const messages: Record<string, string> = {
+    control_api_unreachable: "暂时无法连接内容服务。",
+    content_generation_job_already_in_progress: "已经有一个材料生成任务正在处理。",
+    content_generation_job_not_publishable: "该材料包尚未通过全部 Agent 审核。",
+    generated_pack_not_fully_agent_reviewed: "材料包没有全部通过审核，不能发布。",
+  };
+  return messages[reason.message] ?? `材料操作没有完成：${reason.message}`;
 }

@@ -101,6 +101,7 @@ class ContentGenerationWorkflow:
     ) -> GenerationOutput:
         random_seed = seed if seed is not None else int(datetime.now(UTC).strftime("%Y%m%d"))
         randomizer = random.Random(random_seed)
+        pack_token = sha256(self.pack_id.encode("utf-8")).hexdigest()[:8]
         source_manifest = self._read_json(self.source_manifest)
         raw_items = source_manifest.get("items")
         if not isinstance(raw_items, list):
@@ -148,11 +149,13 @@ class ContentGenerationWorkflow:
                         source_item.get("content_version_id"), "content_version_id"
                     )
                     target_version = (
-                        f"{source_version}_ai_{ordinal:02d}_{randomizer.randint(100, 999)}"
+                        f"{source_version}_ai_{pack_token}_{ordinal:02d}_"
+                        f"{randomizer.randint(100, 999)}"
                     )
                     source_content_id = self._as_str(source_item.get("content_id"), "content_id")
                     target_content_id = (
-                        f"{source_content_id}_ai_{ordinal:02d}_{randomizer.randint(100, 999)}"
+                        f"{source_content_id}_ai_{pack_token}_{ordinal:02d}_"
+                        f"{randomizer.randint(100, 999)}"
                     )
 
                     try:

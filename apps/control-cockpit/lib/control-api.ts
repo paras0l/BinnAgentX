@@ -20,6 +20,26 @@ export interface CreatedExperienceCode extends ExperienceCode {
 
 export class ControlApiError extends Error {}
 
+export type ContentGenerationJobStatus =
+  "queued" | "running" | "generated" | "validation_failed" | "generation_failed";
+
+export interface ContentGenerationJob {
+  job_id: string;
+  status: ContentGenerationJobStatus;
+  seed: number | null;
+  pack_id: string;
+  pack_version: string;
+  item_count: number;
+  agent_reviewed_count: number;
+  validation_errors: string[];
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  published_at: string | null;
+  is_active: boolean;
+  can_publish: boolean;
+}
+
 async function controlRequest<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`/api/control/v1/${path}`, {
     ...init,
@@ -27,8 +47,13 @@ async function controlRequest<T>(path: string, init?: RequestInit): Promise<T> {
     headers: { "Content-Type": "application/json", ...init?.headers },
   });
   if (!response.ok) {
-    const body = (await response.json().catch(() => null)) as { detail?: string } | null;
-    throw new ControlApiError(body?.detail ?? "control_request_failed");
+    const body = (await response.json().catch(() => null)) as {
+      detail?: string | { message?: string };
+    } | null;
+    const detail = body?.detail;
+    throw new ControlApiError(
+      typeof detail === "string" ? detail : (detail?.message ?? "control_request_failed"),
+    );
   }
   return (await response.json()) as T;
 }
@@ -50,4 +75,19 @@ export function createExperienceCode(input: {
 
 export function revokeExperienceCode(codeId: string): Promise<ExperienceCode> {
   return controlRequest(`experience-codes/${codeId}/revoke`, { method: "POST" });
+}
+
+export function listContentGenerationJobs(): Promise<ContentGenerationJob[]> {
+  return controlRequest("content-generation/jobs");
+}
+
+export function createContentGenerationJob(seed?: number): Promise<ContentGenerationJob> {
+  return controlRequest("content-generation/jobs", {
+    method: "POST",
+    body: JSON.stringify({ seed }),
+  });
+}
+
+export function publishContentGenerationJob(jobId: string): Promise<ContentGenerationJob> {
+  return controlRequest(`content-generation/jobs/${jobId}/publish`, { method: "POST" });
 }

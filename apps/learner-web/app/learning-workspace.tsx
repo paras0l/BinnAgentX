@@ -161,7 +161,7 @@ const EXPRESSION_TAB_LABELS: Record<ExpressionWorkspaceTab, string> = {
   brief: "任务",
   board: "白板",
   review: "写后复盘",
-  task: "本步任务",
+  task: "作品区",
   temporary: "临时任务",
   notes: "随时记",
 };
@@ -1311,6 +1311,40 @@ function ActiveTaskWorkspace({
   const revisionEditorCollapsed = isReading && hasUnansweredIntervention && !showRevisionEditor;
   const showSubmittedAnswer =
     isReading && hasAttempt && (!hasUnansweredIntervention || revisionEditorCollapsed);
+  const responseEditor = (
+    <label
+      className={`response-editor${hasAttempt && (!hasUnansweredIntervention || revisionEditorCollapsed) ? " saved-response" : ""}`}
+      data-ui-anchor="composer"
+    >
+      <span>
+        {isReading
+          ? hasUnansweredIntervention || task.attempts.length > 1
+            ? "我的解释 · V2"
+            : "我的解释 · V1"
+          : hasUnansweredIntervention || task.attempts.length > 1
+            ? "我的作品 · V2"
+            : "我的作品 · V1"}
+        <small>{isReading ? "先说清判断与证据的关系" : `当前约 ${wordCount} 个英文词`}</small>
+      </span>
+      <textarea
+        ref={responseRef}
+        value={text}
+        readOnly={hasAttempt && !hasUnansweredIntervention}
+        disabled={isPending}
+        placeholder={
+          isReading
+            ? "不要抄整句。用自己的话说明：这段原文为什么支持你的选择？"
+            : "可以从关键词或不完整句开始，但最终请亲自组织成 2–4 句英文。"
+        }
+        onCompositionStart={() => setIsComposing(true)}
+        onCompositionEnd={() => setIsComposing(false)}
+        onChange={(event) => {
+          setText(event.target.value);
+          setSaveState("pending");
+        }}
+      />
+    </label>
+  );
 
   const reviewAnnotation = (annotationId: string) => {
     setShowSavedAnnotations(true);
@@ -1916,6 +1950,24 @@ function ActiveTaskWorkspace({
                       </section>
                     ) : null}
 
+                    {!isReading ? (
+                      <section
+                        className="expression-work-composer"
+                        aria-labelledby="response-title"
+                        data-ui-anchor="primary-composer"
+                      >
+                        <ExpressionResponseHeader
+                          material={material}
+                          wordCount={wordCount}
+                          isRevision={hasUnansweredIntervention || task.attempts.length > 1}
+                        />
+                        {responseEditor}
+                        <p className="expression-composer-guidance">
+                          先完成自己的草稿；白板、临时任务和写后复盘只在需要时辅助你。
+                        </p>
+                      </section>
+                    ) : null}
+
                     <section
                       className="task-checklist"
                       aria-labelledby="task-checklist-title"
@@ -1981,13 +2033,7 @@ function ActiveTaskWorkspace({
                       </section>
                     ) : null}
 
-                    {material.content_type === "micro_expression" ? (
-                      <ExpressionResponseHeader
-                        material={material}
-                        wordCount={wordCount}
-                        isRevision={hasUnansweredIntervention || task.attempts.length > 1}
-                      />
-                    ) : (
+                    {material.content_type === "micro_expression" ? null : (
                       <>
                         <p className="step-label">本步任务</p>
                         <p className="question-adaptive-label">
@@ -2041,40 +2087,7 @@ function ActiveTaskWorkspace({
                       </>
                     )}
 
-                    <label
-                      className={`response-editor${hasAttempt && (!hasUnansweredIntervention || revisionEditorCollapsed) ? " saved-response" : ""}`}
-                      data-ui-anchor="composer"
-                    >
-                      <span>
-                        {isReading
-                          ? hasUnansweredIntervention || task.attempts.length > 1
-                            ? "我的解释 · V2"
-                            : "我的解释 · V1"
-                          : hasUnansweredIntervention || task.attempts.length > 1
-                            ? "我的作品 · V2"
-                            : "我的作品 · V1"}
-                        <small>
-                          {isReading ? "先说清判断与证据的关系" : `当前约 ${wordCount} 个英文词`}
-                        </small>
-                      </span>
-                      <textarea
-                        ref={responseRef}
-                        value={text}
-                        readOnly={hasAttempt && !hasUnansweredIntervention}
-                        disabled={isPending}
-                        placeholder={
-                          isReading
-                            ? "不要抄整句。用自己的话说明：这段原文为什么支持你的选择？"
-                            : "可以从关键词或不完整句开始，但最终请亲自组织成 2–4 句英文。"
-                        }
-                        onCompositionStart={() => setIsComposing(true)}
-                        onCompositionEnd={() => setIsComposing(false)}
-                        onChange={(event) => {
-                          setText(event.target.value);
-                          setSaveState("pending");
-                        }}
-                      />
-                    </label>
+                    {isReading ? responseEditor : null}
 
                     {isReading && hasAttempt && !latestIntervention ? (
                       <section
@@ -3025,6 +3038,12 @@ function ReadingPane({
     }
   };
 
+  const clearLocatedContext = () => {
+    setLocatorQuery("");
+    setLocatorMatches([]);
+    setLocatorSearched(false);
+  };
+
   return (
     <article
       className={`material-pane${focusMode ? " focus-reading" : ""}`}
@@ -3113,6 +3132,7 @@ function ReadingPane({
             value={locatorQuery}
             onChange={(event) => {
               setLocatorQuery(event.target.value);
+              setLocatorMatches([]);
               setLocatorSearched(false);
             }}
             placeholder="问：刚才关于定语从句的段落在哪？"
@@ -3122,12 +3142,19 @@ function ReadingPane({
           定位
         </button>
         {locatorSearched ? (
-          <div className="context-locator-results" role="status">
-            <strong>
-              {locatorMatches.length > 0 ? `定位到 ${locatorMatches.length} 处` : "暂未定位到"}
-            </strong>
+          <div className="context-locator-results" aria-live="polite">
+            <div className="context-locator-results-heading">
+              <strong>
+                {locatorMatches.length > 0 ? `定位到 ${locatorMatches.length} 处` : "暂未定位到"}
+              </strong>
+              {locatorMatches.length > 0 ? (
+                <button type="button" onClick={clearLocatedContext}>
+                  清除定位
+                </button>
+              ) : null}
+            </div>
             {locatorMatches.length > 0 ? (
-              <div>
+              <div className="context-locator-result-list">
                 {locatorMatches.map((match, index) => (
                   <button
                     key={match.paragraphId}
@@ -3491,7 +3518,7 @@ function ExpressionResponseHeader({
     wordCount >= material.output_requirement.word_min &&
     wordCount <= material.output_requirement.word_max;
   return (
-    <>
+    <header className="expression-response-header">
       <p className="step-label">我的作品 · {isRevision ? "V2" : "V1"}</p>
       <h2 id="response-title">
         {isRevision ? "只处理一个优先问题，保留自己的表达" : "先把立场、条件和建议写出来"}
@@ -3505,7 +3532,7 @@ function ExpressionResponseHeader({
         要求 {material.output_requirement.word_min}–{material.output_requirement.word_max} 词 ·
         当前约 {wordCount} 词
       </p>
-    </>
+    </header>
   );
 }
 

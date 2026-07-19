@@ -51,6 +51,15 @@ class LocalContentCatalog:
         )
         return tuple(dict.fromkeys(paths).keys())
 
+    def _compatible_manifest_candidates(self) -> tuple[Path, ...]:
+        settings = get_settings()
+        generated_root = Path(settings.content_generation_output_directory)
+        paths = [*self._manifest_candidates()]
+        packs_root = generated_root / "packs"
+        if packs_root.is_dir():
+            paths.extend(sorted(packs_root.glob("*/manifest.json"), reverse=True))
+        return tuple(dict.fromkeys(paths).keys())
+
     def _active_manifest_items(self) -> tuple[Path, list[dict[str, Any]]]:
         for manifest_path in self._manifest_candidates():
             items = self._safe_read_manifest_items(manifest_path)
@@ -89,7 +98,7 @@ class LocalContentCatalog:
             }:
                 return None
 
-        return raw_entries
+        return [dict(entry, _manifest_dir=str(parent)) for entry in raw_entries]
 
     def _active_content_entry(self, content_version_id: str) -> dict[str, Any] | None:
         _, manifest_items = self._active_manifest_items()
@@ -118,12 +127,14 @@ class LocalContentCatalog:
 
     def learner_item(self, content_version_id: str) -> dict[str, Any]:
         """Return an eligible source item for an API presenter to redact."""
-        entry = self._active_content_entry(content_version_id)
+        entry = self._entry(content_version_id)
         if entry is None or not self._eligible(entry):
             self._not_eligible("selected_material_is_not_eligible")
         self._material(entry)
-        manifest_dir, _ = self._active_manifest_items()
-        return self._read_json(manifest_dir / str(entry.get("file", "")))
+        item_path = self._resolve_entry_path(entry)
+        if item_path is None:
+            self._not_eligible("selected_material_is_not_eligible")
+        return self._read_json(item_path)
 
     def reading_question_for(
         self,
@@ -246,10 +257,12 @@ class LocalContentCatalog:
 
     def expression_candidates(self) -> tuple[ExpressionMaterialCandidate, ...]:
         candidates: list[ExpressionMaterialCandidate] = []
-        manifest_dir, _manifest_items = self._active_manifest_items()
         for entry in self._eligible_entries(TaskType.MICRO_EXPRESSION):
             material = self._material(entry)
-            item = self._read_json(manifest_dir / str(entry.get("file", "")))
+            item_path = self._resolve_entry_path(entry)
+            if item_path is None:
+                self._not_eligible("expression_candidate_unavailable")
+            item = self._read_json(item_path)
             difficulty = item.get("difficulty")
             source_ids = item.get("source_reading_content_ids")
             if not isinstance(difficulty, dict) or not isinstance(source_ids, list):
@@ -281,10 +294,12 @@ class LocalContentCatalog:
 
     def candidates_for(self, task_type: TaskType) -> tuple[MaterialCandidate, ...]:
         candidates: list[MaterialCandidate] = []
-        manifest_dir, _manifest_items = self._active_manifest_items()
         for entry in self._eligible_entries(task_type):
             material = self._material(entry)
-            item = self._read_json(manifest_dir / str(entry.get("file", "")))
+            item_path = self._resolve_entry_path(entry)
+            if item_path is None:
+                self._not_eligible("material_candidate_unavailable")
+            item = self._read_json(item_path)
             difficulty = item.get("difficulty")
             if not isinstance(difficulty, dict):
                 self._not_eligible("candidate_difficulty_missing")
@@ -340,8 +355,10 @@ class LocalContentCatalog:
         if entry is None or not self._eligible(entry):
             self._not_eligible("annotation_content_is_not_eligible")
         self._material(entry)
-        manifest_dir, _ = self._active_manifest_items()
-        item = self._read_json(manifest_dir / str(entry.get("file", "")))
+        item_path = self._resolve_entry_path(entry)
+        if item_path is None:
+            self._not_eligible("annotation_content_is_not_eligible")
+        item = self._read_json(item_path)
         paragraphs = item.get("paragraphs")
         paragraph_map = (
             {
@@ -419,7 +436,14 @@ class LocalContentCatalog:
             ) from exc
 
     def _entry(self, content_version_id: str) -> dict[str, Any] | None:
-        return self._active_content_entry(content_version_id)
+        for manifest_path in self._compatible_manifest_candidates():
+            items = self._safe_read_manifest_items(manifest_path)
+            if items is None:
+                continue
+            for entry in items:
+                if str(entry.get("content_version_id")) == content_version_id:
+                    return entry
+        return None
 
     def _eligible_entries(self, task_type: TaskType) -> list[dict[str, Any]]:
         content_type = _CONTENT_TYPE[task_type]
@@ -486,7 +510,11 @@ class LocalContentCatalog:
         return manifest_items
 
     def _resolve_entry_path(self, entry: dict[str, Any]) -> Path | None:
-        manifest_dir, _ = self._active_manifest_items()
+        raw_manifest_dir = entry.get("_manifest_dir")
+        if isinstance(raw_manifest_dir, str) and raw_manifest_dir:
+            manifest_dir = Path(raw_manifest_dir)
+        else:
+            manifest_dir, _ = self._active_manifest_items()
         return manifest_dir / str(entry.get("file", ""))
 
     @staticmethod

@@ -42,7 +42,8 @@ docs/                       # 产品、架构、研发记录和 ADR
 
 本地一键启动：
 
-- `./scripts/deploy.sh`：默认以独立的 `binnagentx` Compose 项目构建并后台启动 PostgreSQL、迁移、一次性 Worker 就绪检查、API、学习端和控制舱；Docker Desktop 中对应 `binnagentx-app-1`、`binnagentx-learner-1` 和 `binnagentx-control-1`。
+- `./scripts/deploy.sh`：默认以独立的 `binnagentx` Compose 项目构建并后台启动 PostgreSQL、迁移、常驻内容生成 Worker、API、学习端和控制舱；Docker Desktop 中对应 `binnagentx-worker-1`、`binnagentx-app-1`、`binnagentx-learner-1` 和 `binnagentx-control-1`。
+- `./scripts/deploy.sh --restart`：运行代码未变化时跳过镜像构建并强制重建容器；如果代码指纹与上次成功构建不同，会自动升级为重新构建，避免启动旧代码。默认构建过程每 10 秒显示一次心跳，详细输出仍保存在 `logs/compose.log`。
 - 不需要某个前端时使用 `--no-learner` 或 `--no-control`；排障时追加 `--verbose`。使用 `docker compose -p binnagentx down` 停止容器，数据库保存在独立的 `binnagentx_postgres_data` 卷中。
 - 需要逐个调试宿主机进程时使用 `./scripts/deploy.sh --host-services`，此模式保留原来的 `uv` / `pnpm` 启动与 `Ctrl-C` 清理行为。
 

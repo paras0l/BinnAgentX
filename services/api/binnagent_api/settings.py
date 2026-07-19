@@ -108,6 +108,7 @@ class Settings(BaseSettings):
     content_generation_max_tokens: int = 16000
     content_review_timeout_seconds: int = 180
     content_review_max_tokens: int = 8000
+    content_worker_poll_seconds: float = 2.0
     ollama_base_url: str = compatible_field(
         "OLLAMA_BASE_URL", "OLLAMA_BASE_URL", default="http://localhost:11434"
     )

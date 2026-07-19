@@ -319,3 +319,24 @@ outbox_messages = sa.Table(
     sa.Column("available_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("processed_at", sa.DateTime(timezone=True), nullable=True),
 )
+
+content_generation_jobs = sa.Table(
+    "content_generation_jobs",
+    metadata,
+    sa.Column("job_id", sa.String(128), primary_key=True),
+    sa.Column("status", sa.String(32), nullable=False),
+    sa.Column("seed", sa.Integer(), nullable=True),
+    sa.Column("pack_id", sa.String(160), nullable=False),
+    sa.Column("pack_version", sa.String(64), nullable=False),
+    sa.Column("output_directory", sa.Text(), nullable=False),
+    sa.Column("manifest_path", sa.Text(), nullable=True),
+    sa.Column("item_count", sa.Integer(), nullable=False),
+    sa.Column("agent_reviewed_count", sa.Integer(), nullable=False),
+    sa.Column("validation_errors", postgresql.JSONB(), nullable=False),
+    sa.Column("requested_by_role", sa.String(64), nullable=False),
+    sa.Column("published_by_role", sa.String(64), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("published_at", sa.DateTime(timezone=True), nullable=True),
+)

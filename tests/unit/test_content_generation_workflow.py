@@ -3,6 +3,7 @@ from __future__ import annotations
 import shutil
 from decimal import Decimal
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from binnagent_agent.agents.content_generator import ContentGenerationRequest
@@ -36,10 +37,10 @@ def _build_source_manifest(tmp_path: Path) -> Path:
     return manifest_path
 
 
-def json_load(path: Path) -> dict:
+def json_load(path: Path) -> dict[str, Any]:
     import json
 
-    return json.loads(path.read_text(encoding="utf-8"))
+    return cast(dict[str, Any], json.loads(path.read_text(encoding="utf-8")))
 
 
 def json_dump(value: object) -> str:
@@ -56,7 +57,7 @@ class FakeSuccessfulGenerator:
     def __init__(self) -> None:
         self.calls: list[tuple[str, int | None]] = []
 
-    def generate(self, request: ContentGenerationRequest) -> dict:
+    def generate(self, request: ContentGenerationRequest) -> dict[str, Any]:
         self.calls.append((request.content_type, request.random_seed))
         if request.content_type in {"calibration_reading", "matched_reading"}:
             paragraphs = [
@@ -196,12 +197,12 @@ class FailingGenerator:
     is_remote = False
     estimated_cost_usd = Decimal("0")
 
-    def generate(self, request: ContentGenerationRequest) -> dict:
+    def generate(self, request: ContentGenerationRequest) -> dict[str, Any]:
         raise RuntimeError("mocked failure")
 
 
 class WrongGrammarParagraphGenerator(FakeSuccessfulGenerator):
-    def generate(self, request: ContentGenerationRequest) -> dict:
+    def generate(self, request: ContentGenerationRequest) -> dict[str, Any]:
         payload = super().generate(request)
         if request.content_type in {"calibration_reading", "matched_reading"}:
             payload["grammar_challenges"][0]["paragraph_index"] = 2
@@ -209,7 +210,7 @@ class WrongGrammarParagraphGenerator(FakeSuccessfulGenerator):
 
 
 class FlakyGenerator(FakeSuccessfulGenerator):
-    def generate(self, request: ContentGenerationRequest) -> dict:
+    def generate(self, request: ContentGenerationRequest) -> dict[str, Any]:
         if not self.calls:
             self.calls.append((request.content_type, request.random_seed))
             raise RuntimeError("temporary model failure")

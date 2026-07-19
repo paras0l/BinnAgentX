@@ -13,6 +13,7 @@ from binnagent_domain.vertical_slice.models import (
     FeedbackDensity,
     LearnerProfileSnapshot,
     SelfReportedLevel,
+    TaskType,
 )
 
 
@@ -41,7 +42,7 @@ def _write_reading_item(
             ("advanced", "inference"),
         )
     ]
-    item = {
+    item: dict[str, object] = {
         "content_id": f"{content_version_id}_content",
         "content_version_id": content_version_id,
         "content_type": "calibration_reading",
@@ -69,7 +70,7 @@ def _write_reading_item(
     }
     file_path = directory / filename
     file_path.write_text(json.dumps(item, ensure_ascii=False, indent=2), encoding="utf-8")
-    manifest_item = {
+    manifest_item: dict[str, object] = {
         "content_id": item["content_id"],
         "content_version_id": content_version_id,
         "content_type": "calibration_reading",
@@ -81,7 +82,12 @@ def _write_reading_item(
     return item, manifest_item, file_path
 
 
-def _profile(level: SelfReportedLevel, *, target_score: int, evidence_count: int = 3):
+def _profile(
+    level: SelfReportedLevel,
+    *,
+    target_score: int,
+    evidence_count: int = 3,
+) -> LearnerProfileSnapshot:
     return LearnerProfileSnapshot(
         learner_snapshot_id="learner_snapshot_catalog_test",
         exam_track=ExamTrack.ENGLISH_1,
@@ -142,7 +148,7 @@ def test_expression_feedback_refuses_text_too_short_to_support_a_claim_check() -
     assert raised.value.reason == "expression_v1_too_short_for_priority_feedback"
 
 
-def test_catalog_prefers_generated_manifest_when_valid(
+def test_catalog_prefers_generated_manifest_for_new_assignments_but_keeps_base_versions_readable(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     gen_dir = tmp_path / "generated"
@@ -174,8 +180,10 @@ def test_catalog_prefers_generated_manifest_when_valid(
     catalog = LocalContentCatalog()
     try:
         assert catalog.learner_item("generated_calibration_v1")["title"] == "generated"
-        with pytest.raises(DomainError):
-            catalog.learner_item("base_calibration_v1")
+        assert catalog.learner_item("base_calibration_v1")["title"] == "base"
+        assert catalog.first_for(TaskType.CALIBRATION_READING).content_version_id == (
+            "generated_calibration_v1"
+        )
     finally:
         get_settings.cache_clear()
 
