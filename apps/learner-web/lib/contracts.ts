@@ -157,9 +157,21 @@ export interface ReadingMaterialView {
   allowed_annotations: AnnotationKind[];
   question: {
     question_id: string;
+    question_type?:
+      | "vocabulary_in_context"
+      | "grammar_cloze"
+      | "detail_comprehension"
+      | "main_idea"
+      | "inference"
+      | "rhetorical_purpose"
+      | "sentence_insertion"
+      | "paragraph_logic"
+      | "evidence_reasoning";
+    difficulty_tier?: "foundation" | "standard" | "advanced";
     prompt: string;
     options: Array<{ option_id: string; text: string }>;
   };
+  question_count?: number;
   grammar_challenge: GrammarChallengeView;
 }
 

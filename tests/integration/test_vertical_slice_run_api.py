@@ -516,4 +516,4 @@ async def test_complete_cross_task_run_with_conservative_matching_and_replay() -
         )
         assert task_count == 5
         assert completion_count == 4
-        assert decision_count == 2
+        assert decision_count == 3

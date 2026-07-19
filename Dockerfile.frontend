@@ -1,0 +1,63 @@
+FROM node:24.14.0-bookworm-slim AS frontend-base
+
+ENV PNPM_HOME="/pnpm"
+ENV PATH="$PNPM_HOME:$PATH"
+
+WORKDIR /app
+
+RUN corepack enable && corepack prepare pnpm@11.9.0 --activate
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
+COPY apps/learner-web/package.json ./apps/learner-web/package.json
+COPY apps/control-cockpit/package.json ./apps/control-cockpit/package.json
+COPY packages/frontend-domain/package.json ./packages/frontend-domain/package.json
+COPY packages/ui-foundation/package.json ./packages/ui-foundation/package.json
+
+RUN --mount=type=cache,id=binnagentx-pnpm,target=/pnpm/store \
+    pnpm config set store-dir /pnpm/store && \
+    pnpm config set fetch-timeout 600000 && \
+    pnpm config set fetch-retries 5 && \
+    pnpm install --frozen-lockfile \
+      --filter @binnagent/learner-web... \
+      --filter @binnagent/control-cockpit...
+
+COPY apps ./apps
+COPY packages ./packages
+COPY tsconfig.base.json ./tsconfig.base.json
+
+FROM frontend-base AS learner-build
+RUN pnpm --filter @binnagent/learner-web build
+
+FROM frontend-base AS control-build
+RUN pnpm --filter @binnagent/control-cockpit build
+
+FROM node:24.14.0-bookworm-slim AS learner-runtime
+
+ENV NODE_ENV=production \
+    HOSTNAME=0.0.0.0 \
+    PORT=3000
+
+WORKDIR /app/apps/learner-web
+
+COPY --from=learner-build --chown=node:node /app/apps/learner-web/.next/standalone /app
+COPY --from=learner-build --chown=node:node /app/apps/learner-web/.next/static ./.next/static
+COPY --from=learner-build --chown=node:node /app/apps/learner-web/public ./public
+
+USER node
+EXPOSE 3000
+CMD ["node", "server.js"]
+
+FROM node:24.14.0-bookworm-slim AS control-runtime
+
+ENV NODE_ENV=production \
+    HOSTNAME=0.0.0.0 \
+    PORT=3001
+
+WORKDIR /app/apps/control-cockpit
+
+COPY --from=control-build --chown=node:node /app/apps/control-cockpit/.next/standalone /app
+COPY --from=control-build --chown=node:node /app/apps/control-cockpit/.next/static ./.next/static
+
+USER node
+EXPOSE 3001
+CMD ["node", "server.js"]

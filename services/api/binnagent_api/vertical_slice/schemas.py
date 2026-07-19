@@ -316,6 +316,18 @@ class LearnerQuestionOptionView(BaseModel):
 
 class LearnerReadingQuestionView(BaseModel):
     question_id: str
+    question_type: Literal[
+        "vocabulary_in_context",
+        "grammar_cloze",
+        "detail_comprehension",
+        "main_idea",
+        "inference",
+        "rhetorical_purpose",
+        "sentence_insertion",
+        "paragraph_logic",
+        "evidence_reasoning",
+    ]
+    difficulty_tier: Literal["foundation", "standard", "advanced"]
     prompt: str
     options: list[LearnerQuestionOptionView]
 
@@ -337,6 +349,7 @@ class LearnerReadingMaterialView(BaseModel):
     paragraphs: list[LearnerParagraphView]
     allowed_annotations: list[str]
     question: LearnerReadingQuestionView
+    question_count: int
     grammar_challenge: GrammarChallengeView
 
 

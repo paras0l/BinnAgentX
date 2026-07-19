@@ -23,6 +23,17 @@ class MaterialCandidate:
 
 
 @dataclass(frozen=True, slots=True)
+class ExpressionMaterialCandidate:
+    content_id: str
+    content_version_id: str
+    source_reading_content_ids: tuple[str, ...]
+    exam_tracks: tuple[ExamTrack, ...]
+    vocabulary_load: str
+    syntax_load: str
+    estimated_minutes: int
+
+
+@dataclass(frozen=True, slots=True)
 class CalibrationObservation:
     task_id: str
     content_version_id: str
@@ -136,3 +147,67 @@ class ConservativeMaterialMatcher:
             complexity_distance,
             candidate.content_version_id,
         )
+
+
+class ExpressionMaterialMatcher:
+    """Choose a transfer task linked to the reading while respecting current support load."""
+
+    policy_version = "expression_transfer_match_v1"
+
+    def select(
+        self,
+        *,
+        decision_id: str,
+        profile: LearnerProfileSnapshot,
+        reading_content_id: str,
+        reading_highest_hint_level: int,
+        candidates: tuple[ExpressionMaterialCandidate, ...],
+        now: datetime,
+    ) -> MatchDecision:
+        eligible = tuple(item for item in candidates if profile.exam_track in item.exam_tracks)
+        if not eligible:
+            raise ValueError("no expression candidate supports the learner exam track")
+        lineage_id = reading_content_id.split("_ai_", maxsplit=1)[0]
+        linked = tuple(item for item in eligible if lineage_id in item.source_reading_content_ids)
+        pool = linked or eligible
+        high_support = reading_highest_hint_level >= 3
+        selected = sorted(
+            pool,
+            key=lambda item: self._rank(
+                item,
+                session_minutes=profile.session_minutes,
+                high_support=high_support,
+            ),
+        )[0]
+        reasons = ["exam_track_compatible", "expression_transfer_selected"]
+        reasons.append("source_reading_linked" if linked else "source_link_unavailable_fallback")
+        reasons.append(
+            "lighter_expression_load_after_high_support"
+            if high_support
+            else "moderate_expression_transfer_preserved"
+        )
+        return MatchDecision(
+            decision_id=decision_id,
+            learner_snapshot_id=profile.learner_snapshot_id,
+            candidate_version_ids=tuple(item.content_version_id for item in eligible),
+            selected_content_version_id=selected.content_version_id,
+            policy_version=self.policy_version,
+            conservative=high_support,
+            reason_codes=tuple(reasons),
+            created_at=now,
+        )
+
+    @staticmethod
+    def _rank(
+        candidate: ExpressionMaterialCandidate,
+        *,
+        session_minutes: int,
+        high_support: bool,
+    ) -> tuple[int, int, str]:
+        time_penalty = max(0, candidate.estimated_minutes - session_minutes)
+        load_rank = {"light": 1, "moderate": 2, "heavy": 3}
+        complexity = load_rank.get(candidate.vocabulary_load, 4) + load_rank.get(
+            candidate.syntax_load, 4
+        )
+        target = 2 if high_support else 4
+        return time_penalty, abs(complexity - target), candidate.content_version_id

@@ -13,6 +13,7 @@ from binnagent_domain.vertical_slice.errors import DomainError
 from binnagent_domain.vertical_slice.matching import (
     CalibrationObservation,
     ConservativeMaterialMatcher,
+    ExpressionMaterialMatcher,
     MatchDecision,
 )
 from binnagent_domain.vertical_slice.models import (
@@ -80,6 +81,7 @@ task_repository = VerticalSliceRepository()
 run_repository = VerticalSliceRunRepository(task_repository)
 content_catalog = LocalContentCatalog()
 matcher = ConservativeMaterialMatcher()
+expression_matcher = ExpressionMaterialMatcher()
 RunIdempotencyKey = Annotated[
     str,
     Header(alias="Idempotency-Key", min_length=8, max_length=128, pattern=r"^[A-Za-z0-9_.:-]+$"),
@@ -524,9 +526,15 @@ async def _next_material(
         decision = await _match(connection, run, current_task, now)
         return content_catalog.material_by_version(decision.selected_content_version_id), decision
     if run.stage is RunStage.MATCHED_READING:
-        return content_catalog.paired_expression_for(
-            current_task.current_material.content_version_id
-        ), None
+        decision = expression_matcher.select(
+            decision_id=_id("match_decision"),
+            profile=run.learner_profile,
+            reading_content_id=current_task.current_material.content_id,
+            reading_highest_hint_level=current_task.highest_hint_level,
+            candidates=content_catalog.expression_candidates(),
+            now=now,
+        )
+        return content_catalog.material_by_version(decision.selected_content_version_id), decision
     if run.stage is RunStage.MICRO_EXPRESSION:
         return None, None
     raise DomainError(
@@ -623,7 +631,11 @@ async def _material_view(
     item = content_catalog.learner_item(task.current_material.content_version_id)
     if task.task_type in {TaskType.CALIBRATION_READING, TaskType.MATCHED_READING}:
         paragraphs = item.get("paragraphs")
-        question = item.get("main_question")
+        question = content_catalog.reading_question_for(
+            task.current_material.content_version_id,
+            task.task_id,
+            task.learner_profile,
+        )
         options = question.get("options") if isinstance(question, dict) else None
         annotations = item.get("allowed_annotations")
         if (
@@ -665,6 +677,8 @@ async def _material_view(
             allowed_annotations=[str(value) for value in annotations],
             question=LearnerReadingQuestionView(
                 question_id=str(question.get("question_id", "")),
+                question_type=str(question.get("question_type", "main_idea")),
+                difficulty_tier=str(question.get("difficulty_tier", "standard")),
                 prompt=str(question.get("prompt", "")),
                 options=[
                     LearnerQuestionOptionView(
@@ -674,6 +688,9 @@ async def _material_view(
                     for option in options
                     if isinstance(option, dict)
                 ],
+            ),
+            question_count=(
+                len(item["question_bank"]) if isinstance(item.get("question_bank"), list) else 1
             ),
             grammar_challenge=grammar_challenge_view(challenge, challenge_state),
         )

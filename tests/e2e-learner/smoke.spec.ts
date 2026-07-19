@@ -752,7 +752,9 @@ test("first experience opens the reading and output workspace", async ({ page })
   await expect(page.getByText("宾语从句：how its study rooms were shared")).toBeVisible();
   await expect(page.getByText("这个卡点更像是主干和修饰层级混在了一起。")).toBeVisible();
   await expect(page.getByText("下一步自查", { exact: true })).toBeVisible();
-  await expect(page.getByText("AI 模型分析")).toBeVisible();
+  await expect(page.getByText("当前选区分析")).toBeVisible();
+  await expect(page.getByText(/本地保守分析|模型暂不可用/)).toHaveCount(0);
+  await expect(page.getByRole("tab", { name: /临时任务.*已完成 2 个，共 3 个/ })).toBeVisible();
   await page.getByRole("button", { name: "保存标注与分析" }).click();
 
   await expect(page.getByText("1 条 · 原文中的痕迹也已保留")).toBeVisible();
@@ -769,7 +771,7 @@ test("first experience opens the reading and output workspace", async ({ page })
   await expect(page.getByText("Look for the result reported after the trial.")).toBeVisible();
   await page.getByText("查看这条反馈为什么出现").click();
   await expect(page.getByText("观察输入")).toBeVisible();
-  await expect(page.getByText(/不展示模型隐藏思维链/)).toBeVisible();
+  await expect(page.getByText(/不展示内部推理过程/)).toBeVisible();
   await page
     .getByLabel(/^我的解释/)
     .fill("The result was broader access without building new rooms.");
@@ -778,6 +780,7 @@ test("first experience opens the reading and output workspace", async ({ page })
   await expect(page.getByText("V1 → H1 → V2 引用已保存；是否改善仍待验证。")).toBeVisible();
 
   await page.reload();
+  await page.getByRole("button", { name: "继续上次任务" }).click();
   await expect(page.getByLabel(/^我的解释 · V2/)).toHaveValue(
     "The result was broader access without building new rooms.",
   );

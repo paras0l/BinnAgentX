@@ -29,7 +29,7 @@ import {
   recordDifficulty,
   revealGrammarChallengeAnswer,
   revealGrammarChallengeHint,
-  requestH1Hint,
+  requestReadingHint,
   requestPriorityFeedback,
   reserveNextTask,
   resumeTask,
@@ -141,6 +141,18 @@ interface TemporaryTaskItem {
   promptIndex: number;
   answer: string;
   completed: boolean;
+  sourceKey?: string;
+  copy?: TemporaryTaskCopy;
+}
+
+interface TemporaryTaskCopy {
+  title: string;
+  prompt: string;
+  selfCheck: string;
+}
+
+interface ExplanationTemporaryTask extends TemporaryTaskCopy {
+  sourceKey: string;
 }
 
 type WorkspaceTab = "task" | "annotations" | "temporary" | "notes";
@@ -443,6 +455,7 @@ function ActiveTaskWorkspace({
   >(null);
   const [temporaryTasks, setTemporaryTasks] = useState<TemporaryTaskItem[]>([]);
   const [expandedTemporaryTaskId, setExpandedTemporaryTaskId] = useState<string | null>(null);
+  const temporaryTaskSourceKeysRef = useRef(new Set<string>());
   const [storedWorkspaceNote] = useState(() =>
     loadWorkspaceNote(task.task_id, task.current_content_version_id),
   );
@@ -600,7 +613,9 @@ function ActiveTaskWorkspace({
     !linkedRevision,
   );
   const wordCount = text.trim() ? text.trim().split(/\s+/u).length : 0;
-  const interventionLabel = isReading ? "H1" : "单项反馈";
+  const interventionLabel = isReading
+    ? `H${latestIntervention?.hint_level ?? Math.max(task.highest_hint_level, 1)}`
+    : "单项反馈";
 
   const selectText = () => {
     if (!isReading) return;
@@ -726,7 +741,17 @@ function ActiveTaskWorkspace({
     });
   };
 
-  const addTemporaryTask = () => {
+  const createTemporaryTask = (explanationTask?: ExplanationTemporaryTask) => {
+    if (
+      explanationTask?.sourceKey &&
+      temporaryTaskSourceKeysRef.current.has(explanationTask.sourceKey)
+    ) {
+      const existing = temporaryTasks.find(
+        (candidate) => candidate.sourceKey === explanationTask.sourceKey,
+      );
+      if (existing) setExpandedTemporaryTaskId(existing.id);
+      return null;
+    }
     temporaryTaskCounterRef.current += 1;
     const taskNumber = temporaryTaskCounterRef.current;
     const item: TemporaryTaskItem = {
@@ -734,11 +759,30 @@ function ActiveTaskWorkspace({
       promptIndex: taskNumber - 1,
       answer: "",
       completed: false,
+      sourceKey: explanationTask?.sourceKey,
+      copy: explanationTask,
     };
+    if (explanationTask?.sourceKey) {
+      temporaryTaskSourceKeysRef.current.add(explanationTask.sourceKey);
+    }
     setTemporaryTasks((current) => [...current, item]);
     setExpandedTemporaryTaskId(item.id);
+    return taskNumber;
+  };
+
+  const addTemporaryTask = () => {
+    const taskNumber = createTemporaryTask();
+    if (taskNumber === null) return;
     setProgressMessage(`已新增临时任务 ${taskNumber}。主任务与当前草稿不受影响。`);
     switchWorkspaceTab("temporary");
+  };
+
+  const addExplanationTemporaryTask = (explanationTask: ExplanationTemporaryTask) => {
+    if (!preferences.temporaryTasksEnabled) return;
+    const taskNumber = createTemporaryTask(explanationTask);
+    if (taskNumber !== null) {
+      setProgressMessage(`讲解已生成，并加入临时任务 ${taskNumber} 供你立即迁移。`);
+    }
   };
 
   const updateTemporaryTaskAnswer = (taskId: string, answer: string) => {
@@ -777,11 +821,12 @@ function ActiveTaskWorkspace({
       const result = await analyzeAnnotation(task, selection, learnerQuestion);
       setAnnotationAnalysis(result);
       if (!annotationExplanation.trim()) setAnnotationExplanation(learnerQuestion);
-      setProgressMessage(
-        result.selection_scope === "word_or_phrase"
-          ? "已优先整理语境义、词性与搭配。请放回原句验证后再保存。"
-          : "已优先整理整句翻译与语法结构。请沿主干和修饰层级核对后再保存。",
-      );
+      addExplanationTemporaryTask({
+        sourceKey: `annotation-analysis:${task.task_id}:${selection.paragraphId}:${selection.start}:${selection.end}:${learnerQuestion}`,
+        title: `${ANALYSIS_FOCUS_LABELS[result.focus]}讲解后的自查`,
+        prompt: result.next_check,
+        selfCheck: "回答是否引用了当前选区，并用刚才的拆解方法完成了独立验证？",
+      });
     } catch (error) {
       setAnnotationAnalysis(null);
       setAnnotationAnalysisError(messageFor(error));
@@ -1026,12 +1071,12 @@ function ActiveTaskWorkspace({
     });
   };
 
-  const requestMinimalHint = () => {
-    if (!latestAttempt || latestIntervention) return;
+  const requestReadingHelp = (hintLevel: 1 | 2 | 3 | 4) => {
+    if (!latestAttempt || (hintLevel === 1 && latestIntervention)) return;
     onError(null);
     startTransition(async () => {
       try {
-        const updated = await requestH1Hint(task);
+        const updated = await requestReadingHint(task, hintLevel);
         const v1 = attemptDraft(latestAttempt, isReading);
         setChoice(v1.choice);
         setText(v1.text);
@@ -1049,18 +1094,44 @@ function ActiveTaskWorkspace({
         if (intervention) {
           onLearningAssetCapture({
             kind: "reading_skill",
-            title: "本次 H1 纠偏",
+            title: `本次 H${hintLevel} 纠偏`,
             content: intervention.delivered_content,
-            note: "回到自己的判断，按这个检查方向形成 V2。",
+            note: "回到自己的判断，按这个帮助层级形成一个新的亲自输出版本。",
             sourceTitle: material.title,
           });
+          if (hintLevel >= 3) {
+            addExplanationTemporaryTask({
+              sourceKey: `reading-hint:${intervention.intervention_id}`,
+              title:
+                hintLevel === 3
+                  ? "把 H3 的线索比较迁移到自己的判断"
+                  : "把 H4 的最小示范迁移到另一处原文",
+              prompt:
+                hintLevel === 3
+                  ? "不复述提示，写出两个可能的局部理解，并各用一处原文说明为什么保留或排除它。"
+                  : "不要复制示范；换到文中另一段，用同样的检查动作写出一句新判断和对应原文依据。",
+              selfCheck:
+                hintLevel === 3
+                  ? "是否真的比较了两个候选理解，并让原文决定取舍？"
+                  : "是否更换了原文位置和具体措辞，只迁移了检查方法？",
+            });
+          }
         }
-        setProgressMessage("H1 只指出一个检查方向。现在请回到自己的判断，亲自形成 V2。");
+        setProgressMessage(
+          `H${hintLevel} 已给出${hintLevel < 3 ? "一个更具体的检查方向" : hintLevel === 3 ? "可比较的局部线索" : "最小示范"}。现在请亲自形成新版本。`,
+        );
         window.requestAnimationFrame(() => responseRef.current?.focus());
       } catch (error) {
         onError(messageFor(error));
       }
     });
+  };
+
+  const requestMinimalHint = () => requestReadingHelp(1);
+
+  const requestMoreReadingHelp = () => {
+    const nextLevel = Math.min(task.highest_hint_level + 1, 4) as 2 | 3 | 4;
+    requestReadingHelp(nextLevel);
   };
 
   const requestExpressionFeedback = () => {
@@ -1180,13 +1251,16 @@ function ActiveTaskWorkspace({
         ...(latestIntervention
           ? [
               {
-                label: "根据 H1 亲自形成 V2",
+                label: `根据 ${interventionLabel} 亲自形成 V2`,
                 complete: Boolean(
                   latestAttempt &&
                   latestAttempt.attempt_version_id !== latestIntervention.input_attempt_version_id,
                 ),
               },
-              { label: "保存 V1 → H1 → V2 引用", complete: Boolean(linkedRevision) },
+              {
+                label: `保存 V1 → ${interventionLabel} → V2 引用`,
+                complete: Boolean(linkedRevision),
+              },
             ]
           : []),
       ]
@@ -1227,7 +1301,7 @@ function ActiveTaskWorkspace({
   const selectedScope = selectedScale ? selectionScope(selectedScale) : null;
   const canAnalyzeAnnotation = ANALYZABLE_ANNOTATION_KINDS.has(annotationKind);
   const annotationAnalysisButtonLabel =
-    selectedScope === "word_or_phrase" ? "AI 查语境义与搭配" : "整句翻译 + 语法结构";
+    selectedScope === "word_or_phrase" ? "查语境义与搭配" : "整句翻译 + 语法结构";
   const savedAnnotations = task.annotations ?? [];
   const selectedOption = isReading
     ? (material as ReadingMaterialView).question.options.find(
@@ -1389,6 +1463,7 @@ function ActiveTaskWorkspace({
                 panelTargets={expressionPanelTargets}
                 onRequestTab={requestExpressionLabTab}
                 onNoteCountChange={setExpressionNoteCount}
+                onExplanationTask={addExplanationTemporaryTask}
               />
             </section>
           ) : (
@@ -1660,11 +1735,7 @@ function ActiveTaskWorkspace({
                               <article className="annotation-analysis-result" aria-live="polite">
                                 <header>
                                   <span>{ANALYSIS_FOCUS_LABELS[annotationAnalysis.focus]}</span>
-                                  <small>
-                                    {annotationAnalysis.source === "model"
-                                      ? "AI 模型分析"
-                                      : "本地保守分析 · 模型暂不可用"}
-                                  </small>
+                                  <small>当前选区分析</small>
                                 </header>
                                 {annotationAnalysis.vocabulary_note ? (
                                   <div className="annotation-primary-help vocabulary-help">
@@ -1676,12 +1747,6 @@ function ActiveTaskWorkspace({
                                   <div className="annotation-primary-help translation-help">
                                     <strong>当前选区完整翻译</strong>
                                     <p>{annotationAnalysis.translation}</p>
-                                  </div>
-                                ) : annotationAnalysis.selection_scope ===
-                                  "sentence_or_paragraph" ? (
-                                  <div className="annotation-primary-help translation-unavailable">
-                                    <strong>完整翻译暂不可用</strong>
-                                    <p>当前为本地保守分析；启用受约束模型后才会生成选区译文。</p>
                                   </div>
                                 ) : null}
                                 {annotationAnalysis.grammar_structure.length > 0 ? (
@@ -1925,6 +1990,14 @@ function ActiveTaskWorkspace({
                     ) : (
                       <>
                         <p className="step-label">本步任务</p>
+                        <p className="question-adaptive-label">
+                          {readingQuestionTypeLabel(material.question.question_type ?? "main_idea")}{" "}
+                          ·{" "}
+                          {readingDifficultyLabel(material.question.difficulty_tier ?? "standard")}
+                          {(material.question_count ?? 1) > 1
+                            ? ` · 本文题库 ${material.question_count} 题，本次按当前水平选取`
+                            : ""}
+                        </p>
                         <h2 id="response-title" className="question-prompt">
                           {conciseQuestionPrompt(material.question.prompt)}
                         </h2>
@@ -2025,6 +2098,30 @@ function ActiveTaskWorkspace({
                       </section>
                     ) : null}
 
+                    {isReading && linkedRevision && task.highest_hint_level < 4 ? (
+                      <section
+                        className="intervention-offer"
+                        aria-labelledby="reading-help-escalation-title"
+                        data-ui-anchor="card"
+                      >
+                        <div>
+                          <p className="step-label">仍然卡住 · 继续加深帮助</p>
+                          <h3 id="reading-help-escalation-title">
+                            下一层 H{task.highest_hint_level + 1} 会更具体，但仍要求你亲自重写
+                          </h3>
+                          <p>H2 聚焦局部关系，H3 提供候选线索比较，H4 给最小示范并转成迁移任务。</p>
+                        </div>
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          onClick={requestMoreReadingHelp}
+                          disabled={isPending}
+                        >
+                          我仍需要 H{task.highest_hint_level + 1}
+                        </button>
+                      </section>
+                    ) : null}
+
                     {!isReading && hasAttempt && !latestIntervention ? (
                       <section
                         className="intervention-offer expression-feedback-offer"
@@ -2032,7 +2129,7 @@ function ActiveTaskWorkspace({
                         data-ui-anchor="card"
                       >
                         <div>
-                          <p className="step-label">反馈与纠偏 · 模型单项检查</p>
+                          <p className="step-label">反馈与纠偏 · 单项检查</p>
                           <h3 id="expression-feedback-title">
                             引用 V1，只指出一项最值得先改的问题
                           </h3>
@@ -2485,12 +2582,13 @@ function AttemptTimeline({
               <dd>系统不能仅凭本次修改确认能力提升，需要新材料或延迟任务再次验证。</dd>
             </div>
           </dl>
-          <p className="trace-boundary">这是可核对的决策摘要，不展示模型隐藏思维链。</p>
+          <p className="trace-boundary">这是可核对的决策摘要，不展示内部推理过程。</p>
         </details>
       ) : null}
       {linkedRevision ? (
         <p className="revision-link-confirmed">
-          V1 → {isPriorityFeedback ? "反馈" : "H1"} → V2 引用已保存；是否改善仍待验证。
+          V1 → {isPriorityFeedback ? "反馈" : `H${latestIntervention?.hint_level ?? 1}`} → V2
+          引用已保存；是否改善仍待验证。
         </p>
       ) : latestIntervention && attempts.length > 1 ? (
         <p className="revision-link-pending">V2 已保存，正在等待引用确认。</p>
@@ -2499,12 +2597,39 @@ function AttemptTimeline({
   );
 }
 
+function readingQuestionTypeLabel(
+  questionType: NonNullable<ReadingMaterialView["question"]["question_type"]>,
+) {
+  return {
+    vocabulary_in_context: "语境词义",
+    grammar_cloze: "语法填空",
+    detail_comprehension: "细节理解",
+    main_idea: "主旨判断",
+    inference: "推断题",
+    rhetorical_purpose: "写作目的",
+    sentence_insertion: "句子插入",
+    paragraph_logic: "篇章逻辑",
+    evidence_reasoning: "证据推理",
+  }[questionType];
+}
+
+function readingDifficultyLabel(
+  tier: NonNullable<ReadingMaterialView["question"]["difficulty_tier"]>,
+) {
+  return {
+    foundation: "基础层",
+    standard: "标准层",
+    advanced: "进阶层",
+  }[tier];
+}
+
 function reasonLabel(reasonCode: string): string {
   if (reasonCode.includes("logic")) return "V1 的逻辑连接是当前最值得先检查的单点。";
   if (reasonCode.includes("claim")) return "V1 的核心主张表达是当前最值得先检查的单点。";
   if (reasonCode.includes("expression")) return "V1 的表达清晰度是当前最值得先检查的单点。";
-  if (reasonCode.includes("requested_h1")) return "你在保存独立版本后主动请求了 H1。";
-  if (reasonCode.includes("fallback")) return "模型输出未满足约束，系统改用已审核的保底反馈。";
+  const requestedHint = /requested_h([1-4])/u.exec(reasonCode)?.[1];
+  if (requestedHint) return `你在保存独立版本后主动请求了 H${requestedHint}。`;
+  if (reasonCode.includes("fallback")) return "本次检查未通过完整校验，系统已使用审核过的反馈。";
   return `系统按规则 ${reasonCode} 生成了这次最小介入。`;
 }
 
@@ -2706,7 +2831,7 @@ function TemporaryTaskList({
       ) : null}
       <ol className="temporary-task-list" aria-label="临时任务列表">
         {tasks.map((task, index) => {
-          const copy = temporaryTaskCopy(isReading, material, task.promptIndex);
+          const copy = task.copy ?? temporaryTaskCopy(isReading, material, task.promptIndex);
           const expanded = expandedTaskId === task.id;
           const answerId = `temporary-answer-${task.id}`;
           return (

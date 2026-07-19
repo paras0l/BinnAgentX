@@ -1,8 +1,22 @@
-name: binnagent
+name: binnagentx
+
+x-python-service: &python-service
+  build:
+    context: .
+    dockerfile: Dockerfile
+    target: python-runtime
+  env_file:
+    - .env
+  environment:
+    BINNAGENT_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-binnagent}:${POSTGRES_PASSWORD:-binnagent_dev_only}@postgres:5432/${POSTGRES_DB:-binnagent}
+    BINNAGENT_OLLAMA_BASE_URL: ${BINNAGENT_DOCKER_OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
 
 services:
   postgres:
     image: postgres:18-alpine
+    restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-binnagent}
       POSTGRES_USER: ${POSTGRES_USER:-binnagent}
@@ -17,5 +31,115 @@ services:
     volumes:
       - binnagent_postgres_data:/var/lib/postgresql
 
+  migrate:
+    <<: *python-service
+    command: ["python", "-m", "alembic", "-c", "services/api/alembic.ini", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  worker:
+    <<: *python-service
+    command: ["binnagent-worker"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: "no"
+
+  app:
+    <<: *python-service
+    command:
+      [
+        "uvicorn",
+        "binnagent_api.main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000",
+        "--no-access-log",
+      ]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=2)",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    volumes:
+      - binnagent_generated_content:/app/fixtures/content/v1/generated
+
+  learner:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      target: learner-runtime
+    environment:
+      HOSTNAME: 0.0.0.0
+      PORT: 3000
+      NEXT_PUBLIC_LEARNER_API_BASE_URL: http://app:8000/learner
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  control:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      target: control-runtime
+    environment:
+      HOSTNAME: 0.0.0.0
+      PORT: 3001
+      BINNAGENT_ENV: ${BINNAGENT_ENV:-development}
+      BINNAGENT_CONTROL_REQUIRED_ROLE: ${BINNAGENT_CONTROL_REQUIRED_ROLE:-developer_reviewer}
+      NEXT_PUBLIC_CONTROL_API_BASE_URL: http://app:8000/control
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3001:3001"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3001').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
 volumes:
   binnagent_postgres_data:
+    name: binnagentx_postgres_data
+  binnagent_generated_content:
+    name: binnagentx_generated_content

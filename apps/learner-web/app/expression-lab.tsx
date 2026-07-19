@@ -62,6 +62,12 @@ interface ExpressionLabProps {
   panelTargets: Partial<Record<LabTab, HTMLElement | null>>;
   onRequestTab: (tab: LabTab) => void;
   onNoteCountChange: (count: number) => void;
+  onExplanationTask: (task: {
+    sourceKey: string;
+    title: string;
+    prompt: string;
+    selfCheck: string;
+  }) => void;
 }
 
 export function ExpressionLab({
@@ -74,6 +80,7 @@ export function ExpressionLab({
   panelTargets,
   onRequestTab,
   onNoteCountChange,
+  onExplanationTask,
 }: ExpressionLabProps) {
   const [lab, setLab] = useState<ExpressionLabState>(() =>
     loadExpressionLab(task.task_id, task.current_content_version_id),
@@ -161,13 +168,18 @@ export function ExpressionLab({
     setReviewError(null);
     setCapturedStyle(null);
     try {
-      setReview(
-        await reviewExpression(
-          task,
-          savedDraft,
-          learningAssets.slice(0, 4).map(({ title, content }) => ({ title, content })),
-        ),
+      const result = await reviewExpression(
+        task,
+        savedDraft,
+        learningAssets.slice(0, 4).map(({ title, content }) => ({ title, content })),
       );
+      setReview(result);
+      onExplanationTask({
+        sourceKey: `expression-review:${task.task_id}:${task.attempts.at(-1)?.attempt_version_id ?? "draft"}`,
+        title: "把风格讲解迁移到自己的句子",
+        prompt: "看完三种版本后，用自己的话写一句：原文要保留什么思路，你准备改变哪一种组织方式？",
+        selfCheck: "回答是否同时指出了要保留的意思和要亲自改变的表达动作？",
+      });
     } catch {
       setReviewError("复盘暂时没有生成。你的原文和白板都已保留，可以稍后重试。");
     } finally {
@@ -415,10 +427,7 @@ export function ExpressionLab({
                 <span>拖向右侧看地道组织</span>
               </label>
               <footer>
-                <small>
-                  {review.source === "model" ? "受约束模型复盘" : "本地保守复盘"} ·{" "}
-                  {review.boundary_note}
-                </small>
+                <small>写后对照复盘 · {review.boundary_note}</small>
                 <button
                   type="button"
                   className="quiet-button"

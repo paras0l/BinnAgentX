@@ -59,7 +59,7 @@ class AnnotationAnalysisOutput(BaseModel):
                 StringConstraints(strip_whitespace=True, min_length=4, max_length=320),
             ]
         ],
-        Field(max_length=5),
+        Field(max_length=6),
     ]
     diagnosis: Annotated[
         str,
@@ -318,8 +318,8 @@ class DeterministicExpressionReviewAdapter:
                 "schema_version": "1.0.0",
                 "original_quote": draft[:500],
                 "thinking_difference": (
-                    "本地保守复盘只标出三种写作目标的差异; 连接受约束模型后, "
-                    "系统才会生成更充分的风格迁移。"
+                    "先对照三种写作目标观察信息顺序、逻辑连接和句子密度, "
+                    "再选择最值得亲自重写的一处。"
                 ),
                 "versions": [version.model_dump() for version in versions],
             },
@@ -874,7 +874,7 @@ class ExpressionReviewGateway:
         draft = request.draft.strip()
         versions = _conservative_expression_versions(draft)
         thinking_difference = (
-            "本地保守复盘只标出三种写作目标的差异; 连接受约束模型后, 系统才会生成更充分的风格迁移。"
+            "先对照三种写作目标观察信息顺序、逻辑连接和句子密度, 再选择最值得亲自重写的一处。"
         )
         conservative_cost = (
             actual_cost_usd

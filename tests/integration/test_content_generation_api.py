@@ -20,6 +20,7 @@ def _build_fake_workflow_result(manifest_path: Path, errors: list[str] | None = 
         pack_id="agent_generated_content_pack_test",
         pack_version="v1",
         item_count=0 if (errors or []) else 2,
+        agent_reviewed_count=0 if (errors or []) else 2,
         errors=errors or [],
     )
 
@@ -54,6 +55,7 @@ async def test_content_generation_api_runs_and_returns_generated_pack(
         assert payload["status"] == "generated"
         assert payload["manifest_path"] == str(manifest_path)
         assert payload["item_count"] == 2
+        assert payload["agent_reviewed_count"] == 2
 
 
 @pytest.mark.asyncio

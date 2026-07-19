@@ -283,13 +283,13 @@ class VerticalSliceRun:
                 or command.next_content_version_id is None
             ):
                 self._invalid("required_next_task_assignment_missing")
-            if next_stage is RunStage.MATCHED_READING:
+            if next_stage in {RunStage.MATCHED_READING, RunStage.MICRO_EXPRESSION}:
                 if (
                     command.match_decision is None
                     or command.match_decision.selected_content_version_id
                     != command.next_content_version_id
                 ):
-                    self._invalid("matched_reading_requires_matching_decision")
+                    self._invalid("next_material_requires_matching_decision")
             elif command.match_decision is not None:
                 self._invalid("matching_decision_only_allowed_for_matched_reading")
 

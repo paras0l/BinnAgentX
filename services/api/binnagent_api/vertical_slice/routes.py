@@ -484,40 +484,68 @@ async def save_attempt(
 async def request_h1_hint(
     task_id: str, body: HintRequest, idempotency_key: IdempotencyKey
 ) -> LearnerTaskView:
+    return await _request_reading_hint(task_id, 1, body, idempotency_key)
+
+
+@learner_router.post("/tasks/{task_id}/hints/{hint_level}", response_model=LearnerTaskView)
+async def request_reading_hint(
+    task_id: str,
+    hint_level: int,
+    body: HintRequest,
+    idempotency_key: IdempotencyKey,
+) -> LearnerTaskView:
+    return await _request_reading_hint(task_id, hint_level, body, idempotency_key)
+
+
+async def _request_reading_hint(
+    task_id: str,
+    hint_level: int,
+    body: HintRequest,
+    idempotency_key: str,
+) -> LearnerTaskView:
+    if hint_level not in {1, 2, 3, 4}:
+        raise DomainError(PublicErrorCode.SAVE_NOT_CONFIRMED, "unsupported_reading_hint_level")
+    command_name = f"learner_requested_h{hint_level}"
     async with get_engine().begin() as connection:
-        replay = await _find_replay(connection, idempotency_key, body, "learner_requested_h1")
+        replay = await _find_replay(connection, idempotency_key, body, command_name)
         if replay is not None:
             return learner_task_view(replay, True)
         previous = await repository.load(connection, task_id)
         if previous.task_type is TaskType.MICRO_EXPRESSION:
-            raise DomainError(PublicErrorCode.SAVE_NOT_CONFIRMED, "reading_h1_only")
+            raise DomainError(PublicErrorCode.SAVE_NOT_CONFIRMED, "reading_hint_only")
         if not previous.current_attempts:
             raise DomainError(
                 PublicErrorCode.SAVE_NOT_CONFIRMED,
                 "learner_attempt_required_before_intervention",
             )
-        current_attempt_ids = {item.attempt_version_id for item in previous.current_attempts}
-        if any(
-            item.input_attempt_version_id in current_attempt_ids and item.hint_level == 1
-            for item in previous.interventions
-        ):
+        expected_level = min(previous.highest_hint_level + 1, 4)
+        if hint_level != expected_level or (hint_level == 4 and previous.highest_hint_level == 4):
             raise DomainError(
                 PublicErrorCode.SAVE_NOT_CONFIRMED,
-                "h1_already_delivered_for_current_material",
+                "reading_hint_must_escalate_one_level_at_a_time",
             )
         delivered_content = content_catalog.approved_reading_hint(
-            previous.current_material.content_version_id, 1
+            previous.current_material.content_version_id,
+            previous.task_id,
+            previous.learner_profile,
+            hint_level,
         )
+        intervention_types = {
+            1: InterventionType.TASK_RESTATEMENT,
+            2: InterventionType.LOCAL_HINT,
+            3: InterventionType.CANDIDATE_COMPARISON,
+            4: InterventionType.MINIMAL_EXAMPLE,
+        }
         transition = previous.record_intervention(
             RecordIntervention(
                 expected_version=body.expected_version,
                 intervention_id=_id("intervention"),
                 input_attempt_version_id=body.input_attempt_version_id,
-                hint_level=1,
-                intervention_type=InterventionType.TASK_RESTATEMENT,
+                hint_level=hint_level,
+                intervention_type=intervention_types[hint_level],
                 model_adapter="approved_content_fixture",
-                prompt_version="prompt_reading_h1_v1",
-                reason_code="learner_requested_h1",
+                prompt_version=f"prompt_reading_h{hint_level}_v1",
+                reason_code=command_name,
                 delivered_content=delivered_content,
                 result_status=InterventionResult.DELIVERED,
                 now=datetime.now(UTC),
@@ -529,7 +557,7 @@ async def request_h1_hint(
             transition,
             idempotency_key=idempotency_key,
             request_hash=_request_hash(body),
-            command_name="learner_requested_h1",
+            command_name=command_name,
             actor=ActorType.SYSTEM,
         )
     return learner_task_view(task, replayed)
@@ -1126,7 +1154,7 @@ def _annotation_analysis_fallback(
             ),
             "你现在能否用一个更具体的中文短语替换它，并让前后句仍然连贯？",
             None,
-            "本地模式不会猜测具体词义；请先依据词性、固定搭配和上下文缩小语境义。",
+            "先依据词性、固定搭配和上下文缩小语境义，再把候选含义放回原句验证。",
             (),
         )
     if selection_scope == "sentence_or_paragraph" or any(

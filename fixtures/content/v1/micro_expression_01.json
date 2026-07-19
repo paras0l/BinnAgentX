@@ -40,6 +40,9 @@
     "limitations": ["No teacher gold review", "No target-learner difficulty calibration"]
   },
   "situation": "A classmate uses an automatic translation tool for every English sentence. The tool helps them check unfamiliar details, but they now accept complete translations before trying to understand the sentence structure. Give practical advice that preserves useful support without letting the tool replace the target skill.",
+  "source_reading_content_ids": [
+    "matched_reading_01"
+  ],
   "audience": "A classmate preparing for a reading-intensive English exam",
   "purpose": "Recommend a better sequence for using assistance",
   "target_argument_move": "Acknowledge a benefit, identify the condition where help becomes replacement, and propose a limited sequence",

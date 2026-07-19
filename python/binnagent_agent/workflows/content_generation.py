@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict, cast
 
 from binnagent_evaluation.content_integrity import validate_content_pack
 from jsonschema import Draft202012Validator
@@ -20,6 +20,11 @@ from binnagent_agent.agents.content_generator import (
     ContentGenerationRequest,
     ContentGeneratorAdapter,
     parse_generation_payload,
+)
+from binnagent_agent.agents.content_reviewer import (
+    ContentReviewerAdapter,
+    ContentReviewRequest,
+    ContentReviewResult,
 )
 
 
@@ -33,6 +38,7 @@ class GenerationOutput:
     pack_id: str
     pack_version: str
     item_count: int
+    agent_reviewed_count: int
     errors: list[str]
 
 
@@ -40,9 +46,14 @@ class ContentGeneratorError(RuntimeError):
     pass
 
 
-class ContentGenerationWorkflow:
-    _item_count_per_type = 2
+class _EvidenceSpan(TypedDict):
+    paragraph_index: int
+    start: int
+    end: int
+    text: str
 
+
+class ContentGenerationWorkflow:
     def __init__(
         self,
         *,
@@ -52,6 +63,9 @@ class ContentGenerationWorkflow:
         pack_version: str = "v1",
         pack_id: str | None = None,
         content_generator: ContentGeneratorAdapter | None = None,
+        content_reviewer: ContentReviewerAdapter | None = None,
+        allow_deterministic_fallback: bool = False,
+        generation_attempts: int = 3,
     ) -> None:
         root = repository_root or _project_root()
         self.source_manifest = (
@@ -69,6 +83,12 @@ class ContentGenerationWorkflow:
             pack_id or f"agent_generated_content_pack_{datetime.now(UTC).strftime('%Y%m%d')}"
         )
         self._content_generator = content_generator
+        self._content_reviewer = content_reviewer
+        self._allow_deterministic_fallback = allow_deterministic_fallback
+        if generation_attempts < 1:
+            raise ValueError("generation_attempts must be positive")
+        self._generation_attempts = generation_attempts
+        self._item_count_per_type = 2
         self._root = root
         self._item_schema = _read_json(root / "contracts/content/v1/content-item.schema.json")
 
@@ -145,7 +165,12 @@ class ContentGenerationWorkflow:
                             target_content_id=target_content_id,
                             random_seed=randomizer.randint(0, 2**31 - 1),
                         )
-                    except Exception:
+                    except Exception as exc:
+                        if not self._allow_deterministic_fallback:
+                            raise ContentGeneratorError(
+                                f"{content_type} generation failed for {source_version}: "
+                                f"{type(exc).__name__}: {exc}"
+                            ) from exc
                         candidate = self._relabel_item(
                             source_item,
                             content_type,
@@ -194,6 +219,7 @@ class ContentGenerationWorkflow:
                     pack_id=self.pack_id,
                     pack_version=self.pack_version,
                     item_count=0,
+                    agent_reviewed_count=0,
                     errors=errors,
                 )
 
@@ -208,6 +234,10 @@ class ContentGenerationWorkflow:
                     pack_id=self.pack_id,
                     pack_version=self.pack_version,
                     item_count=len(generated_item_files),
+                    agent_reviewed_count=sum(
+                        item.get("review", {}).get("status") == "agent_reviewed"
+                        for _, item in generated_item_files
+                    ),
                     errors=[],
                 )
 
@@ -216,6 +246,10 @@ class ContentGenerationWorkflow:
                 pack_id=self.pack_id,
                 pack_version=self.pack_version,
                 item_count=len(generated_item_files),
+                agent_reviewed_count=sum(
+                    item.get("review", {}).get("status") == "agent_reviewed"
+                    for _, item in generated_item_files
+                ),
                 errors=[],
             )
         finally:
@@ -232,30 +266,63 @@ class ContentGenerationWorkflow:
     ) -> dict[str, Any]:
         if not self._content_generator:
             raise ContentGeneratorError("no content generator configured")
-        request = ContentGenerationRequest(
-            content_type=content_type,  # type: ignore[arg-type]
-            source_item=source_item,
-            target_content_version_id=target_content_version_id,
-            random_seed=random_seed,
-        )
-        payload = parse_generation_payload(
-            request.content_type,
-            self._content_generator.generate(request),
-        )
-
-        if request.content_type in {"calibration_reading", "matched_reading"}:
-            return self._build_reading_item(
+        last_error: Exception | None = None
+        review_feedback: tuple[str, ...] = ()
+        for attempt in range(self._generation_attempts):
+            request = ContentGenerationRequest(
+                content_type=content_type,  # type: ignore[arg-type]
                 source_item=source_item,
-                target_content_id=target_content_id,
                 target_content_version_id=target_content_version_id,
-                draft=payload,
+                random_seed=random_seed + attempt,
+                review_feedback=review_feedback,
             )
-        return self._build_micro_item(
-            source_item=source_item,
-            target_content_id=target_content_id,
-            target_content_version_id=target_content_version_id,
-            draft=payload,
-        )
+            try:
+                payload = parse_generation_payload(
+                    request.content_type,
+                    self._content_generator.generate(request),
+                )
+                if request.content_type in {"calibration_reading", "matched_reading"}:
+                    candidate = self._build_reading_item(
+                        source_item=source_item,
+                        target_content_id=target_content_id,
+                        target_content_version_id=target_content_version_id,
+                        draft=payload,
+                    )
+                else:
+                    candidate = self._build_micro_item(
+                        source_item=source_item,
+                        target_content_id=target_content_id,
+                        target_content_version_id=target_content_version_id,
+                        draft=payload,
+                    )
+                self._assert_original_enough(source_item, candidate)
+                if self._content_reviewer is None:
+                    return candidate
+                review = self._content_reviewer.review(
+                    ContentReviewRequest(
+                        content_type=request.content_type,
+                        source_item=source_item,
+                        candidate_item=candidate,
+                    )
+                )
+                if not review.passes_release_gate():
+                    review_feedback = review.revision_feedback()
+                    raise ContentGeneratorError(
+                        "content judge requested revision: " + "; ".join(review_feedback)
+                    )
+                self._mark_agent_reviewed(candidate, review)
+                self._assert_item_valid(candidate)
+                return candidate
+            except Exception as exc:
+                last_error = exc
+                if isinstance(exc, ContentGeneratorError) and not review_feedback:
+                    review_feedback = (str(exc),)
+
+        assert last_error is not None
+        raise ContentGeneratorError(
+            f"agent output invalid after {self._generation_attempts} attempts: "
+            f"{type(last_error).__name__}: {last_error}"
+        ) from last_error
 
     def _build_reading_item(
         self,
@@ -267,10 +334,23 @@ class ContentGenerationWorkflow:
     ) -> dict[str, Any]:
         source_paragraphs = self._extract_paragraphs(source_item)
         new_paragraphs = self._agent_paragraphs_from_draft(draft.paragraphs, source_paragraphs)
-        question = self._agent_main_question(
-            target_content_version_id=target_content_version_id,
-            draft_question=draft.main_question,
-            paragraphs=new_paragraphs,
+        question_bank = [
+            self._agent_main_question(
+                target_content_version_id=target_content_version_id,
+                draft_question=draft_question,
+                paragraphs=new_paragraphs,
+                ordinal=ordinal,
+            )
+            for ordinal, draft_question in enumerate(draft.question_bank, start=1)
+        ]
+        self._validate_question_bank(question_bank)
+        question = next(
+            (
+                candidate
+                for candidate in question_bank
+                if candidate["difficulty_tier"] == "standard"
+            ),
+            question_bank[0],
         )
 
         item = copy.deepcopy(source_item)
@@ -279,13 +359,35 @@ class ContentGenerationWorkflow:
         item["title"] = self._normalize_title(draft.title)
         item["paragraphs"] = new_paragraphs
         item["main_question"] = question
+        item["question_bank"] = question_bank
+        item["grammar_challenges"] = self._agent_grammar_challenges(
+            target_content_version_id, draft.grammar_challenges, new_paragraphs
+        )
+        item["parallel_reconstruction"] = {
+            "task_id": f"{target_content_version_id}_parallel",
+            "prompt": self._normalize_text(
+                draft.parallel_reconstruction_prompt, minimum=20, maximum=800
+            ),
+            "success_criteria": [
+                self._normalize_text(value, minimum=3, maximum=300)
+                for value in draft.parallel_reconstruction_criteria[:4]
+            ],
+        }
+        item["transferable_expressions"] = [
+            {
+                "expression": self._normalize_text(value.expression, minimum=2, maximum=200),
+                "appropriate_when": self._normalize_text(
+                    value.appropriate_when, minimum=4, maximum=300
+                ),
+                "avoid_when": self._normalize_text(value.avoid_when, minimum=4, maximum=300),
+            }
+            for value in draft.transferable_expressions
+        ]
         item["difficulty"]["difficulty_status"] = "uncalibrated"
         item["difficulty"]["paragraph_count"] = len(new_paragraphs)
         item["difficulty"]["word_count"] = self._word_count(self._content_body_from_item(item))
         item["difficulty"]["estimate_source"] = "agent workflow generated content"
-        item["review"]["reviewed_at"] = (
-            datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-        )
+        self._mark_agent_generated_review(item)
         body = self._content_body_from_item(item)
         item["content_hash"] = sha256(body.encode("utf-8")).hexdigest()
         self._assert_item_valid(item)
@@ -304,11 +406,43 @@ class ContentGenerationWorkflow:
         item["content_version_id"] = target_content_version_id
         item["title"] = self._normalize_title(draft.title)
         item["situation"] = self._normalize_text(draft.situation, minimum=20, maximum=1200)
+        item["audience"] = self._normalize_text(draft.audience, minimum=2, maximum=200)
+        item["purpose"] = self._normalize_text(draft.purpose, minimum=2, maximum=300)
+        item["target_argument_move"] = self._normalize_text(
+            draft.target_argument_move, minimum=2, maximum=300
+        )
+        item["optional_active_resource"] = self._normalize_text(
+            draft.optional_active_resource, minimum=1, maximum=200
+        )
+        item["forbidden_mechanical_use"] = [
+            self._normalize_text(value, minimum=1, maximum=200)
+            for value in draft.forbidden_mechanical_use
+        ]
+        item["v1_minimum"] = [
+            self._normalize_text(value, minimum=2, maximum=300) for value in draft.v1_minimum
+        ]
+        item["priority_feedback_checks"] = [
+            {
+                "check_id": value.check_id,
+                "signal_terms": [
+                    self._normalize_text(term, minimum=2, maximum=40) for term in value.signal_terms
+                ],
+                "feedback": self._normalize_text(value.feedback, minimum=20, maximum=500),
+            }
+            for value in draft.priority_feedback_checks
+        ]
+        item["priority_feedback_fallback"] = self._normalize_text(
+            draft.priority_feedback_fallback, minimum=20, maximum=500
+        )
+        item["v2_success"] = [
+            self._normalize_text(value, minimum=2, maximum=300) for value in draft.v2_success
+        ]
+        item["parallel_transfer"] = self._normalize_text(
+            draft.parallel_transfer, minimum=20, maximum=800
+        )
         item["difficulty"]["difficulty_status"] = "uncalibrated"
         item["difficulty"]["estimate_source"] = "agent workflow generated content"
-        item["review"]["reviewed_at"] = (
-            datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-        )
+        self._mark_agent_generated_review(item)
         body = self._content_body_from_item(item)
         item["content_hash"] = sha256(body.encode("utf-8")).hexdigest()
         self._assert_item_valid(item)
@@ -324,20 +458,12 @@ class ContentGenerationWorkflow:
                 {"paragraph_id": "generated_p1", "text": ""},
                 {"paragraph_id": "generated_p2", "text": ""},
             ]
-        if len(paragraphs) < 2:
-            raise ContentGeneratorError("agent returned fewer than 2 paragraphs")
+        if len(paragraphs) != len(source_paragraphs):
+            raise ContentGeneratorError("agent returned a different paragraph count")
         normalized_texts = [
             self._normalize_text(text, minimum=20, maximum=4000)
             for text in paragraphs[: len(source_paragraphs)]
         ]
-        if len(normalized_texts) < len(source_paragraphs):
-            # pad with source content to keep schema stable
-            missing = [
-                self._normalize_text(part.get("text", ""), minimum=20, maximum=4000)
-                for part in source_paragraphs[len(normalized_texts) :]
-            ]
-            normalized_texts.extend(missing)
-
         result: list[dict[str, Any]] = []
         for idx, text in enumerate(normalized_texts):
             paragraph_id = (
@@ -357,12 +483,66 @@ class ContentGenerationWorkflow:
             raise ContentGeneratorError("no paragraph produced")
         return result
 
+    def _agent_grammar_challenges(
+        self,
+        target_content_version_id: str,
+        drafts: list[Any],
+        paragraphs: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        challenges: list[dict[str, Any]] = []
+        for index, draft in enumerate(drafts, start=1):
+            if draft.paragraph_index >= len(paragraphs):
+                raise ContentGeneratorError("grammar challenge paragraph index invalid")
+            paragraph_index, correct_text = self._locate_exact_excerpt(
+                draft.correct_text,
+                paragraphs,
+                preferred_index=draft.paragraph_index,
+                maximum=120,
+            )
+            paragraph = paragraphs[paragraph_index]
+            challenges.append(
+                {
+                    "challenge_id": f"{target_content_version_id}_grammar_{index:02d}",
+                    "paragraph_id": paragraph["paragraph_id"],
+                    "correct_text": correct_text,
+                    "incorrect_text": self._normalize_text(
+                        draft.incorrect_text, minimum=2, maximum=120
+                    ),
+                    "error_type": self._normalize_text(draft.error_type, minimum=2, maximum=80),
+                    "hint": self._normalize_text(draft.hint, minimum=4, maximum=200),
+                }
+            )
+        return challenges
+
+    def _locate_exact_excerpt(
+        self,
+        value: str,
+        paragraphs: list[dict[str, Any]],
+        *,
+        preferred_index: int,
+        maximum: int,
+    ) -> tuple[int, str]:
+        normalized = " ".join(str(value).strip().split())
+        candidate = normalized
+        if len(candidate) > maximum:
+            candidate = candidate[:maximum].rsplit(" ", 1)[0].rstrip()
+        if len(candidate) < 2:
+            raise ContentGeneratorError("grammar challenge text cannot be safely shortened")
+
+        search_order = [preferred_index, *range(len(paragraphs))]
+        for paragraph_index in dict.fromkeys(search_order):
+            paragraph = str(paragraphs[paragraph_index].get("text", ""))
+            if candidate in paragraph:
+                return paragraph_index, candidate
+        raise ContentGeneratorError("grammar challenge text is not in generated paragraphs")
+
     def _agent_main_question(
         self,
         *,
         target_content_version_id: str,
         draft_question: Any,
         paragraphs: list[dict[str, Any]],
+        ordinal: int,
     ) -> dict[str, Any]:
         options = self._normalize_options(draft_question.options)
         if not options:
@@ -374,34 +554,24 @@ class ContentGenerationWorkflow:
         paragraph_texts = [part["text"] for part in paragraphs]
         paragraph_ids = [part["paragraph_id"] for part in paragraphs]
 
-        evidence_quote = self._normalize_text(draft_question.evidence_quote, minimum=6, maximum=200)
+        evidence_quote = self._exact_evidence_quote(draft_question.evidence_quote, paragraph_texts)
         evidence_span = self._build_evidence_span(paragraphs=paragraph_texts, quote=evidence_quote)
         if evidence_span is None:
-            fallback_quote = (
-                paragraph_texts[0][:120].strip()
-                if paragraph_texts and paragraph_texts[0]
-                else "The key idea is in the passage."
-            )
-            fallback_span = self._build_evidence_span(
-                paragraphs=paragraph_texts, quote=fallback_quote
-            )
-            if fallback_span is None:
-                raise ContentGeneratorError("cannot build evidence span")
-            evidence_span = fallback_span
+            raise ContentGeneratorError("question evidence quote is not in generated paragraphs")
 
         if hasattr(draft_question, "alternative_evidence_quote"):
             alt_quote = draft_question.alternative_evidence_quote
         else:
             alt_quote = None
 
-        alternative_evidence: list[dict[str, Any]] = []
+        alternative_evidence: list[_EvidenceSpan] = []
         if alt_quote:
-            alt = self._build_evidence_span(
+            located_alt = self._build_evidence_span(
                 paragraphs=paragraph_texts,
-                quote=self._normalize_text(alt_quote, minimum=6, maximum=180),
+                quote=self._exact_evidence_quote(alt_quote, paragraph_texts),
             )
-            if alt is not None:
-                alternative_evidence = [alt]
+            if located_alt is not None:
+                alternative_evidence = [located_alt]
 
         minimum_evidence = {
             "paragraph_id": paragraph_ids[evidence_span["paragraph_index"]],
@@ -412,19 +582,21 @@ class ContentGenerationWorkflow:
         }
 
         acceptable_alternative: list[dict[str, Any]] = []
-        for alt in alternative_evidence:
+        for span in alternative_evidence:
             acceptable_alternative.append(
                 {
-                    "paragraph_id": paragraph_ids[alt["paragraph_index"]],
-                    "start": alt["start"],
-                    "end": alt["end"],
-                    "text_quote": alt["text"],
-                    "text_hash": sha256(alt["text"].encode("utf-8")).hexdigest(),
+                    "paragraph_id": paragraph_ids[span["paragraph_index"]],
+                    "start": span["start"],
+                    "end": span["end"],
+                    "text_quote": span["text"],
+                    "text_hash": sha256(span["text"].encode("utf-8")).hexdigest(),
                 }
             )
 
         return {
-            "question_id": f"{target_content_version_id}_q1",
+            "question_id": f"{target_content_version_id}_q{ordinal}",
+            "question_type": draft_question.question_type,
+            "difficulty_tier": draft_question.difficulty_tier,
             "prompt": self._normalize_text(draft_question.prompt, minimum=20, maximum=800),
             "answer_type": "single_choice_with_explanation",
             "options": options,
@@ -441,6 +613,38 @@ class ContentGenerationWorkflow:
             "reveal_gate": "after_independent_output",
         }
 
+    def _exact_evidence_quote(self, value: str, paragraphs: list[str]) -> str:
+        normalized = " ".join(str(value).strip().split())
+        candidates = [normalized]
+        if len(normalized) > 600:
+            candidates.append(normalized[:600].rsplit(" ", 1)[0].rstrip())
+        for candidate in candidates:
+            if len(candidate) >= 6 and any(candidate in paragraph for paragraph in paragraphs):
+                return candidate
+        raise ContentGeneratorError("question evidence quote is not in generated paragraphs")
+
+    def _validate_question_bank(self, questions: list[dict[str, Any]]) -> None:
+        tiers = {str(item.get("difficulty_tier")) for item in questions}
+        if tiers != {"foundation", "standard", "advanced"}:
+            raise ContentGeneratorError("question bank must cover all difficulty tiers")
+        types = {str(item.get("question_type")) for item in questions}
+        foundation_types = {
+            "vocabulary_in_context",
+            "grammar_cloze",
+            "detail_comprehension",
+        }
+        advanced_types = {
+            "inference",
+            "rhetorical_purpose",
+            "sentence_insertion",
+            "paragraph_logic",
+            "evidence_reasoning",
+        }
+        if not types.intersection(foundation_types) or not types.intersection(advanced_types):
+            raise ContentGeneratorError("question bank lacks foundation or advanced task types")
+        if len(types) < 3:
+            raise ContentGeneratorError("question bank task types are not diverse enough")
+
     def _build_hints(self, raw: list[str]) -> dict[str, str]:
         hints = [self._normalize_text(item, minimum=4, maximum=400) for item in raw]
         while len(hints) < 4:
@@ -452,7 +656,7 @@ class ContentGenerationWorkflow:
             "h4": hints[3],
         }
 
-    def _build_evidence_span(self, *, paragraphs: list[str], quote: str) -> dict[str, int] | None:
+    def _build_evidence_span(self, *, paragraphs: list[str], quote: str) -> _EvidenceSpan | None:
         if not paragraphs:
             return None
         clean_quote = quote.strip()
@@ -518,6 +722,73 @@ class ContentGenerationWorkflow:
         for error in Draft202012Validator(self._item_schema).iter_errors(item):
             raise ContentGeneratorError(f"{error.json_path}: {error.message}")
 
+    def _mark_agent_generated_review(self, item: dict[str, Any]) -> None:
+        existing = item.get("review")
+        limitations = list(existing.get("limitations", [])) if isinstance(existing, dict) else []
+        required_limit = "Agent-generated candidate; human content review required"
+        if required_limit not in limitations:
+            limitations.append(required_limit)
+        item["review"] = {
+            "status": "agent_generated_unreviewed",
+            "reviewer_role": "agent_generator",
+            "reviewed_at": datetime.now(UTC)
+            .replace(microsecond=0)
+            .isoformat()
+            .replace("+00:00", "Z"),
+            "limitations": limitations,
+        }
+
+    def _assert_original_enough(
+        self,
+        source_item: dict[str, Any],
+        candidate_item: dict[str, Any],
+    ) -> None:
+        source_words = self._comparison_words(self._content_body_from_item(source_item))
+        candidate_words = self._comparison_words(self._content_body_from_item(candidate_item))
+        if len(source_words) < 12 or len(candidate_words) < 12:
+            return
+        source_windows = {
+            tuple(source_words[index : index + 12]) for index in range(len(source_words) - 11)
+        }
+        repeated = [
+            tuple(candidate_words[index : index + 12])
+            for index in range(len(candidate_words) - 11)
+            if tuple(candidate_words[index : index + 12]) in source_windows
+        ]
+        if repeated:
+            raise ContentGeneratorError(
+                "candidate repeats a 12-word source span; regenerate with a new example and wording"
+            )
+
+    @staticmethod
+    def _comparison_words(text: str) -> list[str]:
+        return re.findall(r"[a-z]+(?:'[a-z]+)?", text.lower())
+
+    def _mark_agent_reviewed(
+        self,
+        item: dict[str, Any],
+        review: ContentReviewResult,
+    ) -> None:
+        item["review"] = {
+            "status": "agent_reviewed",
+            "reviewer_role": "review_agent",
+            "reviewed_at": datetime.now(UTC)
+            .replace(microsecond=0)
+            .isoformat()
+            .replace("+00:00", "Z"),
+            "limitations": review.limitations,
+            "judge_report": {
+                "verdict": review.verdict,
+                "model_adapter": self._content_reviewer.name
+                if self._content_reviewer is not None
+                else "unknown",
+                "prompt_version": "prompt_content_judge_v1",
+                "scores": review.scores.model_dump(),
+                "issues": [issue.model_dump() for issue in review.issues],
+                "summary": review.summary,
+            },
+        }
+
     def _clear_output_directory(self, directory: Path) -> None:
         for entry in directory.iterdir():
             if entry.is_file():
@@ -546,7 +817,7 @@ class ContentGenerationWorkflow:
 
     @staticmethod
     def _read_json(path: Path) -> dict[str, Any]:
-        return json.loads(path.read_text(encoding="utf-8"))
+        return cast(dict[str, Any], json.loads(path.read_text(encoding="utf-8")))
 
     def _relabel_item(
         self,
@@ -655,6 +926,11 @@ def run_cli(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Run generation and validation without writing output files",
     )
+    parser.add_argument(
+        "--allow-deterministic-fallback",
+        action="store_true",
+        help="Explicitly permit a relabeled source fixture when generation is unavailable",
+    )
     args = parser.parse_args(argv)
 
     workflow = ContentGenerationWorkflow(
@@ -662,6 +938,7 @@ def run_cli(argv: list[str] | None = None) -> int:
         output_directory=args.output_directory,
         pack_version=args.pack_version,
         pack_id=args.pack_id,
+        allow_deterministic_fallback=args.allow_deterministic_fallback,
     )
     result = workflow.run(seed=args.seed, dry_run=args.dry_run)
     if result.errors:
@@ -676,7 +953,7 @@ def run_cli(argv: list[str] | None = None) -> int:
 
 
 def _read_json(path: Path) -> dict[str, Any]:
-    return json.loads(path.read_text(encoding="utf-8"))
+    return cast(dict[str, Any], json.loads(path.read_text(encoding="utf-8")))
 
 
 if __name__ == "__main__":

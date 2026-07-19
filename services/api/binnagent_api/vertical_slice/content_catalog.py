@@ -11,12 +11,17 @@ from binnagent_domain.vertical_slice.grammar_challenge import (
     project_grammar_error,
     select_grammar_challenge,
 )
-from binnagent_domain.vertical_slice.matching import MaterialCandidate
+from binnagent_domain.vertical_slice.matching import (
+    ExpressionMaterialCandidate,
+    MaterialCandidate,
+)
 from binnagent_domain.vertical_slice.models import (
     DifficultyStatus,
     ExamTrack,
+    LearnerProfileSnapshot,
     MaterialRef,
     RightsStatus,
+    SelfReportedLevel,
     TaskType,
     TextSpan,
 )
@@ -70,7 +75,18 @@ class LocalContentCatalog:
         parent = manifest_path.parent
         for entry in raw_entries:
             filename = str(entry.get("file", ""))
-            if not filename or not (parent / filename).is_file():
+            item_path = parent / filename
+            if not filename or not item_path.is_file():
+                return None
+            try:
+                item = self._read_json(item_path)
+            except DomainError:
+                return None
+            review = item.get("review")
+            if not isinstance(review, dict) or review.get("status") not in {
+                "agent_reviewed",
+                "developer_reviewed",
+            }:
                 return None
 
         return raw_entries
@@ -109,12 +125,61 @@ class LocalContentCatalog:
         manifest_dir, _ = self._active_manifest_items()
         return self._read_json(manifest_dir / str(entry.get("file", "")))
 
-    def approved_reading_hint(self, content_version_id: str, hint_level: int) -> str:
+    def reading_question_for(
+        self,
+        content_version_id: str,
+        task_id: str,
+        profile: LearnerProfileSnapshot,
+    ) -> dict[str, Any]:
+        item = self.learner_item(content_version_id)
+        raw_bank = item.get("question_bank")
+        if not isinstance(raw_bank, list) or not raw_bank:
+            main = item.get("main_question")
+            if not isinstance(main, dict):
+                self._not_eligible("approved_reading_question_unavailable")
+            return main
+        bank = [question for question in raw_bank if isinstance(question, dict)]
+        if not bank:
+            self._not_eligible("approved_reading_question_unavailable")
+        target_tier = self._target_question_tier(profile)
+        tier_order = {
+            "foundation": ("foundation", "standard", "advanced"),
+            "standard": ("standard", "foundation", "advanced"),
+            "advanced": ("advanced", "standard", "foundation"),
+        }[target_tier]
+        for tier in tier_order:
+            candidates = [question for question in bank if question.get("difficulty_tier") == tier]
+            if candidates:
+                digest = sha256(f"{task_id}:{content_version_id}:{tier}".encode()).digest()
+                return candidates[int.from_bytes(digest[:4]) % len(candidates)]
+        self._not_eligible("approved_reading_question_unavailable")
+
+    @staticmethod
+    def _target_question_tier(profile: LearnerProfileSnapshot) -> str:
+        if (
+            profile.self_reported_level
+            in {
+                SelfReportedLevel.WEAK,
+                SelfReportedLevel.UNKNOWN,
+            }
+            or profile.evidence_count < 2
+        ):
+            return "foundation"
+        if profile.self_reported_level is SelfReportedLevel.STEADY or profile.target_score >= 80:
+            return "advanced"
+        return "standard"
+
+    def approved_reading_hint(
+        self,
+        content_version_id: str,
+        task_id: str,
+        profile: LearnerProfileSnapshot,
+        hint_level: int,
+    ) -> str:
         """Return one rights-checked, versioned hint without exposing the answer payload."""
         if hint_level not in {1, 2, 3, 4}:
             self._not_eligible("unsupported_hint_level")
-        item = self.learner_item(content_version_id)
-        question = item.get("main_question")
+        question = self.reading_question_for(content_version_id, task_id, profile)
         hints = question.get("hints") if isinstance(question, dict) else None
         hint = hints.get(f"h{hint_level}") if isinstance(hints, dict) else None
         if not isinstance(hint, str) or not hint.strip():
@@ -178,6 +243,41 @@ class LocalContentCatalog:
         if preferred is None:
             preferred = candidates[0]
         return self._material(preferred)
+
+    def expression_candidates(self) -> tuple[ExpressionMaterialCandidate, ...]:
+        candidates: list[ExpressionMaterialCandidate] = []
+        manifest_dir, _manifest_items = self._active_manifest_items()
+        for entry in self._eligible_entries(TaskType.MICRO_EXPRESSION):
+            material = self._material(entry)
+            item = self._read_json(manifest_dir / str(entry.get("file", "")))
+            difficulty = item.get("difficulty")
+            source_ids = item.get("source_reading_content_ids")
+            if not isinstance(difficulty, dict) or not isinstance(source_ids, list):
+                self._not_eligible("expression_selection_metadata_missing")
+            raw_tracks = difficulty.get("exam_tracks")
+            if not isinstance(raw_tracks, list) or not all(
+                isinstance(value, str) for value in source_ids
+            ):
+                self._not_eligible("expression_selection_metadata_invalid")
+            try:
+                exam_tracks = tuple(ExamTrack(str(value)) for value in raw_tracks)
+            except ValueError as exc:
+                raise DomainError(
+                    PublicErrorCode.CONTENT_NOT_ELIGIBLE,
+                    "expression_candidate_exam_track_invalid",
+                ) from exc
+            candidates.append(
+                ExpressionMaterialCandidate(
+                    content_id=material.content_id,
+                    content_version_id=material.content_version_id,
+                    source_reading_content_ids=tuple(str(value) for value in source_ids),
+                    exam_tracks=exam_tracks,
+                    vocabulary_load=str(difficulty.get("vocabulary_load")),
+                    syntax_load=str(difficulty.get("syntax_load")),
+                    estimated_minutes=int(difficulty.get("estimated_minutes", 0)),
+                )
+            )
+        return tuple(candidates)
 
     def candidates_for(self, task_type: TaskType) -> tuple[MaterialCandidate, ...]:
         candidates: list[MaterialCandidate] = []
@@ -335,7 +435,17 @@ class LocalContentCatalog:
             minimum = RightsStatus(get_settings().min_content_rights_status)
         except (KeyError, ValueError):
             return False
-        return _RIGHTS_RANK[status] >= _RIGHTS_RANK[minimum]
+        if _RIGHTS_RANK[status] < _RIGHTS_RANK[minimum]:
+            return False
+        item_path = self._resolve_entry_path(entry)
+        if item_path is None or not item_path.is_file():
+            return False
+        item = self._read_json(item_path)
+        review = item.get("review")
+        return isinstance(review, dict) and review.get("status") in {
+            "agent_reviewed",
+            "developer_reviewed",
+        }
 
     def _material(self, entry: dict[str, Any]) -> MaterialRef:
         item_path = self._resolve_entry_path(entry)

@@ -975,7 +975,7 @@ textarea:disabled {
 .grammar-challenge-success span {
   color: inherit;
   font-size: 11px;
-  opacity: 0.82;
+  opacity: 1;
 }
 
 .task-checklist {

@@ -108,27 +108,39 @@ def validate_content_pack(
             if not isinstance(question, dict):
                 errors.append(f"{filename}: missing main question")
                 continue
-            spans = [question.get("minimum_evidence")]
-            alternatives = question.get("acceptable_alternative_evidence", [])
-            if isinstance(alternatives, list):
-                spans.extend(alternatives)
-            for span in spans:
-                if not isinstance(span, dict):
-                    errors.append(f"{filename}: evidence span must be an object")
-                    continue
-                paragraph = paragraph_map.get(span.get("paragraph_id"))
-                start, end, quote = span.get("start"), span.get("end"), span.get("text_quote")
-                if (
-                    not isinstance(paragraph, str)
-                    or not isinstance(start, int)
-                    or not isinstance(end, int)
-                ):
-                    errors.append(f"{filename}: invalid evidence coordinates")
-                    continue
-                if not isinstance(quote, str) or paragraph[start:end] != quote:
-                    errors.append(f"{filename}: evidence quote mismatch")
-                    continue
-                if span.get("text_hash") != _sha256(quote):
-                    errors.append(f"{filename}: evidence hash mismatch")
+            raw_bank = item.get("question_bank")
+            questions = (
+                [candidate for candidate in raw_bank if isinstance(candidate, dict)]
+                if isinstance(raw_bank, list)
+                else [question]
+            )
+            for candidate in questions:
+                question_id = candidate.get("question_id", "unknown")
+                spans = [candidate.get("minimum_evidence")]
+                alternatives = candidate.get("acceptable_alternative_evidence", [])
+                if isinstance(alternatives, list):
+                    spans.extend(alternatives)
+                for span in spans:
+                    if not isinstance(span, dict):
+                        errors.append(f"{filename}: {question_id} evidence span must be an object")
+                        continue
+                    paragraph = paragraph_map.get(span.get("paragraph_id"))
+                    start, end, quote = (
+                        span.get("start"),
+                        span.get("end"),
+                        span.get("text_quote"),
+                    )
+                    if (
+                        not isinstance(paragraph, str)
+                        or not isinstance(start, int)
+                        or not isinstance(end, int)
+                    ):
+                        errors.append(f"{filename}: {question_id} invalid evidence coordinates")
+                        continue
+                    if not isinstance(quote, str) or paragraph[start:end] != quote:
+                        errors.append(f"{filename}: {question_id} evidence quote mismatch")
+                        continue
+                    if span.get("text_hash") != _sha256(quote):
+                        errors.append(f"{filename}: {question_id} evidence hash mismatch")
 
     return errors

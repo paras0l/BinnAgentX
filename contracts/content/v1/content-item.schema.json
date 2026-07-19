@@ -55,6 +55,12 @@
       "items": { "$ref": "#/$defs/grammar_challenge" }
     },
     "main_question": { "$ref": "#/$defs/main_question" },
+    "question_bank": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 6,
+      "items": { "$ref": "#/$defs/adaptive_question" }
+    },
     "parallel_reconstruction": { "$ref": "#/$defs/parallel_reconstruction" },
     "transferable_expressions": {
       "type": "array",
@@ -63,6 +69,12 @@
       "items": { "$ref": "#/$defs/transferable_expression" }
     },
     "situation": { "type": "string", "minLength": 20, "maxLength": 1200 },
+    "source_reading_content_ids": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/id" }
+    },
     "audience": { "type": "string", "minLength": 2, "maxLength": 200 },
     "purpose": { "type": "string", "minLength": 2, "maxLength": 300 },
     "target_argument_move": { "type": "string", "minLength": 2, "maxLength": 300 },
@@ -129,6 +141,7 @@
       "then": {
         "required": [
           "situation",
+          "source_reading_content_ids",
           "audience",
           "purpose",
           "target_argument_move",
@@ -240,14 +253,76 @@
       "type": "object",
       "required": ["status", "reviewer_role", "reviewed_at", "limitations"],
       "properties": {
-        "status": { "const": "developer_reviewed" },
-        "reviewer_role": { "const": "developer_reviewer" },
+        "status": {
+          "enum": ["agent_generated_unreviewed", "agent_reviewed", "developer_reviewed"]
+        },
+        "reviewer_role": {
+          "enum": ["agent_generator", "review_agent", "developer_reviewer"]
+        },
         "reviewed_at": { "$ref": "#/$defs/timestamp" },
         "limitations": {
           "type": "array",
           "minItems": 1,
           "items": { "type": "string", "minLength": 5, "maxLength": 300 }
+        },
+        "judge_report": { "$ref": "#/$defs/judge_report" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "developer_reviewed" } } },
+          "then": { "properties": { "reviewer_role": { "const": "developer_reviewer" } } }
+        },
+        {
+          "if": { "properties": { "status": { "const": "agent_reviewed" } } },
+          "then": {
+            "required": ["judge_report"],
+            "properties": { "reviewer_role": { "const": "review_agent" } }
+          }
+        },
+        {
+          "if": { "properties": { "status": { "const": "agent_generated_unreviewed" } } },
+          "then": { "properties": { "reviewer_role": { "const": "agent_generator" } } }
         }
+      ],
+      "additionalProperties": false
+    },
+    "judge_report": {
+      "type": "object",
+      "required": ["verdict", "model_adapter", "prompt_version", "scores", "issues", "summary"],
+      "properties": {
+        "verdict": { "const": "approve" },
+        "model_adapter": { "type": "string", "minLength": 2, "maxLength": 64 },
+        "prompt_version": { "$ref": "#/$defs/id" },
+        "scores": {
+          "type": "object",
+          "required": ["factual_coherence", "answerability", "evidence_grounding", "difficulty_alignment", "question_diversity", "hint_progression", "language_quality"],
+          "properties": {
+            "factual_coherence": { "type": "integer", "minimum": 4, "maximum": 5 },
+            "answerability": { "type": "integer", "minimum": 4, "maximum": 5 },
+            "evidence_grounding": { "type": "integer", "minimum": 4, "maximum": 5 },
+            "difficulty_alignment": { "type": "integer", "minimum": 4, "maximum": 5 },
+            "question_diversity": { "type": "integer", "minimum": 4, "maximum": 5 },
+            "hint_progression": { "type": "integer", "minimum": 4, "maximum": 5 },
+            "language_quality": { "type": "integer", "minimum": 4, "maximum": 5 }
+          },
+          "additionalProperties": false
+        },
+        "issues": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "object",
+            "required": ["severity", "field_path", "explanation", "required_fix"],
+            "properties": {
+              "severity": { "enum": ["medium", "low"] },
+              "field_path": { "type": "string", "minLength": 1, "maxLength": 200 },
+              "explanation": { "type": "string", "minLength": 8, "maxLength": 600 },
+              "required_fix": { "type": "string", "minLength": 8, "maxLength": 600 }
+            },
+            "additionalProperties": false
+          }
+        },
+        "summary": { "type": "string", "minLength": 20, "maxLength": 800 }
       },
       "additionalProperties": false
     },
@@ -290,6 +365,10 @@
       "required": ["question_id", "prompt", "answer_type", "options", "correct_answer", "minimum_evidence", "acceptable_alternative_evidence", "common_error_candidates", "hints", "public_explanation", "reveal_gate"],
       "properties": {
         "question_id": { "$ref": "#/$defs/id" },
+        "question_type": {
+          "enum": ["vocabulary_in_context", "grammar_cloze", "detail_comprehension", "main_idea", "inference", "rhetorical_purpose", "sentence_insertion", "paragraph_logic", "evidence_reasoning"]
+        },
+        "difficulty_tier": { "enum": ["foundation", "standard", "advanced"] },
         "prompt": { "type": "string", "minLength": 10, "maxLength": 800 },
         "answer_type": { "const": "single_choice_with_explanation" },
         "options": {
@@ -332,6 +411,12 @@
         "reveal_gate": { "const": "after_independent_output" }
       },
       "additionalProperties": false
+    },
+    "adaptive_question": {
+      "allOf": [
+        { "$ref": "#/$defs/main_question" },
+        { "required": ["question_type", "difficulty_tier"] }
+      ]
     },
     "parallel_reconstruction": {
       "type": "object",

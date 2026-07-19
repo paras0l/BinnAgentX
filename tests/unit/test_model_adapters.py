@@ -87,6 +87,8 @@ async def test_remote_priority_feedback_adapters_use_compatible_provider_protoco
         assert body["format"]["properties"]["evidence_quote"]
     elif provider == "deepseek":
         assert body["response_format"] == {"type": "json_object"}
+    else:
+        assert body["thinking"] == {"type": "disabled"}
 
 
 @pytest.mark.asyncio
@@ -129,7 +131,7 @@ async def test_annotation_adapter_routes_sentence_selection_to_translation_and_g
         return httpx2.Response(200, json={"choices": [{"message": {"content": content}}]})
 
     adapter = RemoteAnnotationAnalysisAdapter(
-        provider="deepseek",
+        provider="longcat",
         base_url="https://models.example",
         model="test-model",
         api_key="test-key",
@@ -161,3 +163,4 @@ async def test_annotation_adapter_routes_sentence_selection_to_translation_and_g
     assert isinstance(messages, list)
     assert "selection_scope: sentence_or_paragraph" in messages[1]["content"]
     assert "translation 必须" in messages[0]["content"]
+    assert body["thinking"] == {"type": "enabled"}

@@ -188,10 +188,14 @@ export function saveAttempt(task: LearnerTaskView, text: string): Promise<Learne
   });
 }
 
-export function requestH1Hint(task: LearnerTaskView): Promise<LearnerTaskView> {
+export function requestReadingHint(
+  task: LearnerTaskView,
+  hintLevel: 1 | 2 | 3 | 4,
+): Promise<LearnerTaskView> {
   const latestAttempt = task.attempts.at(-1);
-  if (!latestAttempt) return Promise.reject(new Error("V1 is required before H1"));
-  return command(`/v1/tasks/${task.task_id}/hints/h1`, "request_h1", {
+  if (!latestAttempt) return Promise.reject(new Error("An attempt is required before a hint"));
+  const path = hintLevel === 1 ? "h1" : String(hintLevel);
+  return command(`/v1/tasks/${task.task_id}/hints/${path}`, `request_h${hintLevel}`, {
     expected_version: task.version,
     input_attempt_version_id: latestAttempt.attempt_version_id,
   });

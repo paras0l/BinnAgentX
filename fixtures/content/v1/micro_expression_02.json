@@ -40,6 +40,9 @@
     "limitations": ["No teacher gold review", "No target-learner difficulty calibration"]
   },
   "situation": "A study group reports progress only by counting how many reading passages each member finishes. You believe completion counts show effort but can hide whether members understand new passages independently. Suggest one additional form of evidence and explain why it is harder to fake.",
+  "source_reading_content_ids": [
+    "matched_reading_02"
+  ],
   "audience": "Members of a peer study group",
   "purpose": "Improve the group's progress measure without rejecting activity records",
   "target_argument_move": "Concede the value of an easy measure, expose its limit, and add evidence closer to the intended ability",

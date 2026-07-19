@@ -6,8 +6,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 cd "$PROJECT_ROOT"
 
-# Keep the default aligned with compose.yml (`name: binnagent`) and `pnpm db:up`.
-COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-binnagent}"
+# Keep the default isolated from the legacy BinnAgent repository.
+COMPOSE_PROJECT_NAME="${COMPOSE_PROJECT_NAME:-binnagentx}"
 LOG_DIR="${LOG_DIR:-$PROJECT_ROOT/logs}"
 DEPLOY_STATE_DIR="${DEPLOY_STATE_DIR:-$PROJECT_ROOT/logs}"
 DB_WAIT_SECONDS="${DB_WAIT_SECONDS:-60}"
@@ -26,6 +26,7 @@ RUN_LEARNER=1
 RUN_CONTROL=1
 MONITOR_WORKER=0
 CLEAN_OLD_INSTANCES=1
+RUN_CONTAINER_STACK=1
 
 declare -a COMPOSE_FILES=()
 declare -a SERVICE_NAMES=()
@@ -42,12 +43,13 @@ show_help() {
 用法:
   bash scripts/deploy.sh [选项]
 
-默认启动 PostgreSQL、执行迁移、运行 API 与 Worker 就绪检查，并启动学习端和控制舱。
-控制台只显示关键状态；完整输出写入 ./logs。
+默认构建并后台启动 PostgreSQL、迁移、Worker 检查、API、学习端和控制舱容器。
+控制台只显示关键状态；完整构建输出写入 ./logs。
 
 选项:
-  --project-name <name>     Compose 项目名（默认: binnagent）
+  --project-name <name>     Compose 项目名（默认: binnagentx）
   --compose <file[:file]>   指定 Compose 文件列表
+  --host-services           API 和前端改在宿主机运行，Compose 只启动数据库
   --skip-compose            使用已有数据库，不操作 Docker Compose
   --skip-migrate            跳过 Alembic 迁移
   --no-api                  不启动 API
@@ -65,7 +67,8 @@ show_help() {
 常用:
   bash scripts/deploy.sh
   bash scripts/deploy.sh --no-control
-  bash scripts/deploy.sh --skip-compose --skip-migrate --no-api --no-worker
+  bash scripts/deploy.sh --host-services
+  bash scripts/deploy.sh --host-services --skip-compose --skip-migrate --no-api --no-worker
 EOF
 }
 
@@ -203,6 +206,11 @@ while [[ $# -gt 0 ]]; do
       ;;
     --skip-compose)
       SKIP_COMPOSE=1
+      RUN_CONTAINER_STACK=0
+      shift
+      ;;
+    --host-services)
+      RUN_CONTAINER_STACK=0
       shift
       ;;
     --skip-migrate)
@@ -284,16 +292,16 @@ if (( RUN_API == 1 || RUN_WORKER == 1 )); then
   NEED_DATABASE=1
 fi
 
-if (( NEED_DATABASE == 1 && SKIP_COMPOSE == 0 )); then
+if (( (NEED_DATABASE == 1 && SKIP_COMPOSE == 0) || RUN_CONTAINER_STACK == 1 )); then
   require_cmd docker "请安装 Docker，或使用 --skip-compose 连接已有数据库。"
   if ! docker compose version >/dev/null 2>&1; then
     die "Docker Compose 不可用"
   fi
 fi
-if (( RUN_API == 1 || RUN_WORKER == 1 )); then
+if (( RUN_CONTAINER_STACK == 0 && (RUN_API == 1 || RUN_WORKER == 1) )); then
   require_cmd uv "请安装 uv 并执行 uv sync。"
 fi
-if (( RUN_LEARNER == 1 || RUN_CONTROL == 1 )); then
+if (( RUN_CONTAINER_STACK == 0 && (RUN_LEARNER == 1 || RUN_CONTROL == 1) )); then
   resolve_pnpm
 fi
 if (( RUN_API == 1 || RUN_LEARNER == 1 || RUN_CONTROL == 1 )); then
@@ -306,7 +314,7 @@ export UV_PROJECT_ENVIRONMENT="$PROJECT_ROOT/.venv"
 export PYTHONUNBUFFERED=1
 export PYTHONPATH="$PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
-if (( NEED_DATABASE == 1 && SKIP_COMPOSE == 0 )); then
+if (( (NEED_DATABASE == 1 && SKIP_COMPOSE == 0) || RUN_CONTAINER_STACK == 1 )); then
   if (( ${#COMPOSE_FILES[@]-0} == 0 )); then
     collect_compose_files_from_value "${COMPOSE_FILE:-}"
     collect_compose_files_from_value "${COMPOSE_FILES_ENV:-}"
@@ -476,6 +484,23 @@ wait_for_http_service() {
     elapsed=$((elapsed + 1))
   done
   show_log_tail "$logfile" 30
+  die "${name} 在 ${SERVICE_WAIT_SECONDS}s 内未就绪"
+}
+
+wait_for_container_url() {
+  local name="$1"
+  local url="$2"
+  local elapsed=0
+  while (( elapsed < SERVICE_WAIT_SECONDS )); do
+    if curl --silent --fail --max-time 2 "$url" >/dev/null 2>&1; then
+      success "${name} 就绪"
+      return
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  "${compose_cmd[@]}" ps >&2 || true
+  "${compose_cmd[@]}" logs --tail 30 app learner control >&2 || true
   die "${name} 在 ${SERVICE_WAIT_SECONDS}s 内未就绪"
 }
 
@@ -730,9 +755,61 @@ cleanup() {
   return "$exit_code"
 }
 
+start_container_stack() {
+  local -a targets=()
+  local needs_app=0
+
+  if (( RUN_API == 1 || RUN_LEARNER == 1 || RUN_CONTROL == 1 )); then
+    needs_app=1
+  fi
+  (( RUN_WORKER == 0 )) || targets+=(worker)
+  (( needs_app == 0 )) || targets+=(app)
+  (( RUN_LEARNER == 0 )) || targets+=(learner)
+  (( RUN_CONTROL == 0 )) || targets+=(control)
+  (( ${#targets[@]} > 0 )) || die "未选择任何容器服务"
+
+  if (( SKIP_MIGRATE == 1 )); then
+    warn "容器模式始终执行幂等数据库迁移；--skip-migrate 仅适用于 --host-services"
+  fi
+  if (( MONITOR_WORKER == 1 )); then
+    warn "--monitor-worker 已无需使用：容器中的 Worker 仍是一次性就绪检查"
+  fi
+
+  info "构建并启动 BinnAgentX 容器"
+  : > "$LOG_DIR/compose.log"
+  if ! run_logged "$LOG_DIR/compose.log" \
+    "${compose_cmd[@]}" up --build --detach --remove-orphans "${targets[@]}"; then
+    show_log_tail "$LOG_DIR/compose.log" 50
+    die "容器构建或启动失败"
+  fi
+
+  (( needs_app == 0 )) || \
+    wait_for_container_url "API" "http://127.0.0.1:8000/health/ready"
+  (( RUN_LEARNER == 0 )) || \
+    wait_for_container_url "Learner" "http://127.0.0.1:3000"
+  (( RUN_CONTROL == 0 )) || \
+    wait_for_container_url "Control" "http://127.0.0.1:3001"
+
+  printf '\n已启动（Compose 项目: %s）：\n' "$COMPOSE_PROJECT_NAME"
+  (( needs_app == 0 )) || printf '  API      http://127.0.0.1:8000\n'
+  (( RUN_LEARNER == 0 )) || printf '  Learner  http://127.0.0.1:3000\n'
+  (( RUN_CONTROL == 0 )) || printf '  Control  http://127.0.0.1:3001\n'
+  printf '  日志     %s/compose.log\n' "$LOG_DIR"
+  printf '停止命令: docker compose -p %s down\n' "$COMPOSE_PROJECT_NAME"
+}
+
 handle_signal() {
   exit "$1"
 }
+
+if (( RUN_CONTAINER_STACK == 1 )); then
+  if (( CLEAN_OLD_INSTANCES == 1 )); then
+    cleanup_recorded_instance
+    cleanup_legacy_instances
+  fi
+  start_container_stack
+  exit 0
+fi
 
 trap 'handle_signal 130' INT
 trap 'handle_signal 143' TERM

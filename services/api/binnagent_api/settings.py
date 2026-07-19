@@ -88,13 +88,15 @@ class Settings(BaseSettings):
     smtp_starttls: bool = compatible_field("SMTP_STARTTLS", "SMTP_STARTTLS", default=True)
     smtp_use_ssl: bool = compatible_field("SMTP_USE_SSL", "SMTP_USE_SSL", default=False)
 
-    model_adapter: Literal["deterministic_fixture", "ollama", "deepseek", "longcat"] = Field(
-        default="deterministic_fixture",
-        validation_alias=AliasChoices(
-            "BINNAGENT_MODEL_ADAPTER",
-            "BINNAGENT_MODEL_PROVIDER",
-            "BINN_MODEL_PROVIDER",
-        ),
+    model_adapter: Literal["auto", "deterministic_fixture", "ollama", "deepseek", "longcat"] = (
+        Field(
+            default="auto",
+            validation_alias=AliasChoices(
+                "BINNAGENT_MODEL_ADAPTER",
+                "BINNAGENT_MODEL_PROVIDER",
+                "BINN_MODEL_PROVIDER",
+            ),
+        )
     )
     enable_remote_model_calls: bool | None = None
     model_timeout_seconds: int = 20
@@ -102,6 +104,10 @@ class Settings(BaseSettings):
     model_max_cost_usd_per_slice: Decimal = Decimal("0.20")
     model_estimated_cost_usd: Decimal = Decimal("0.02")
     model_max_tokens: int = 900
+    content_generation_timeout_seconds: int = 180
+    content_generation_max_tokens: int = 16000
+    content_review_timeout_seconds: int = 180
+    content_review_max_tokens: int = 8000
     ollama_base_url: str = compatible_field(
         "OLLAMA_BASE_URL", "OLLAMA_BASE_URL", default="http://localhost:11434"
     )
@@ -139,6 +145,13 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def resolve_remote_default_and_prevent_unsafe_production(self) -> Self:
+        if self.model_adapter == "auto":
+            if self.deepseek_api_key:
+                self.model_adapter = "deepseek"
+            elif self.longcat_api_key:
+                self.model_adapter = "longcat"
+            else:
+                self.model_adapter = "ollama"
         if self.enable_remote_model_calls is None:
             self.enable_remote_model_calls = self.model_adapter != "deterministic_fixture"
         if self.env != "production":

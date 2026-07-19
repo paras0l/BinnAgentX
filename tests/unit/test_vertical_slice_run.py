@@ -7,6 +7,8 @@ from binnagent_domain.vertical_slice.errors import DomainError
 from binnagent_domain.vertical_slice.matching import (
     CalibrationObservation,
     ConservativeMaterialMatcher,
+    ExpressionMaterialCandidate,
+    ExpressionMaterialMatcher,
     MatchDecision,
     MaterialCandidate,
 )
@@ -133,6 +135,11 @@ def test_full_run_requires_all_tasks_feedback_and_placeholder() -> None:
         next_task_type=TaskType.MICRO_EXPRESSION,
         next_content_version_id="micro_expression_01_v1",
         minute=3,
+        decision=replace(
+            _decision(NOW + timedelta(minutes=3)),
+            selected_content_version_id="micro_expression_01_v1",
+            policy_version="expression_transfer_match_v1",
+        ),
     )
     run = _advance(
         run,
@@ -204,6 +211,11 @@ def test_practice_run_starts_at_new_matched_reading_without_calibration_gap() ->
         next_task_type=TaskType.MICRO_EXPRESSION,
         next_content_version_id="micro_expression_02_v1",
         minute=1,
+        decision=replace(
+            _decision(NOW + timedelta(minutes=1)),
+            selected_content_version_id="micro_expression_02_v1",
+            policy_version="expression_transfer_match_v1",
+        ),
     )
     run = _advance(
         run,
@@ -251,7 +263,7 @@ def test_run_rejects_wrong_task_and_missing_match_decision() -> None:
             next_content_version_id="matched_reading_01_v1",
             minute=2,
         )
-    assert missing_decision.value.reason == "matched_reading_requires_matching_decision"
+    assert missing_decision.value.reason == "next_material_requires_matching_decision"
 
 
 def test_approved_calibration_fallback_is_explicit_and_auditable() -> None:
@@ -361,3 +373,39 @@ def test_matcher_allows_moderate_novelty_after_two_independent_calibrations() ->
     assert decision.selected_content_version_id == "matched_reading_02_v1"
     assert decision.conservative is False
     assert "moderate_topic_novelty_allowed" in decision.reason_codes
+
+
+def test_expression_matcher_prefers_task_linked_to_completed_reading() -> None:
+    candidates = (
+        ExpressionMaterialCandidate(
+            content_id="micro_expression_01",
+            content_version_id="micro_expression_01_v1",
+            source_reading_content_ids=("matched_reading_01",),
+            exam_tracks=(ExamTrack.ENGLISH_1, ExamTrack.ENGLISH_2),
+            vocabulary_load="light",
+            syntax_load="moderate",
+            estimated_minutes=6,
+        ),
+        ExpressionMaterialCandidate(
+            content_id="micro_expression_02",
+            content_version_id="micro_expression_02_v1",
+            source_reading_content_ids=("matched_reading_02",),
+            exam_tracks=(ExamTrack.ENGLISH_1, ExamTrack.ENGLISH_2),
+            vocabulary_load="moderate",
+            syntax_load="moderate",
+            estimated_minutes=6,
+        ),
+    )
+
+    decision = ExpressionMaterialMatcher().select(
+        decision_id="match_decision_expression_0001",
+        profile=_profile(SelfReportedLevel.STEADY),
+        reading_content_id="matched_reading_02_ai_01_777",
+        reading_highest_hint_level=1,
+        candidates=candidates,
+        now=NOW,
+    )
+
+    assert decision.selected_content_version_id == "micro_expression_02_v1"
+    assert decision.policy_version == "expression_transfer_match_v1"
+    assert "source_reading_linked" in decision.reason_codes

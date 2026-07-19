@@ -236,6 +236,10 @@
   background: var(--theme-success-soft);
 }
 
+[data-ui-anchor="app-shell"] .grammar-challenge-success {
+  color: color-mix(in srgb, var(--theme-success) 72%, #10251a);
+}
+
 [data-ui-anchor="app-shell"]
   :is(.no-hint-evidence, .progress-message, .annotation-analysis-boundary) {
   color: var(--theme-info);

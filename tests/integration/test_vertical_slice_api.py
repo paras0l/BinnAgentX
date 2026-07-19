@@ -160,6 +160,74 @@ async def test_task_creation_is_owned_by_run_orchestration() -> None:
 
 
 @pytest.mark.asyncio
+async def test_reading_help_escalates_sequentially_through_h4() -> None:
+    transport = httpx2.ASGITransport(app=create_app())
+    async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
+        task = await _seed_task(
+            TaskType.MATCHED_READING,
+            exam_track=ExamTrack.ENGLISH_1,
+            self_reported_level=SelfReportedLevel.DEVELOPING,
+        )
+        task_id = str(task["task_id"])
+        attempt = await client.post(
+            f"/learner/v1/tasks/{task_id}/attempts",
+            headers={"Idempotency-Key": "reading-help-v1"},
+            json={
+                "expected_version": task["version"],
+                "text": "选择 A。\nMy first independent explanation uses the passage.",
+                "independence": "independent",
+            },
+        )
+        assert attempt.status_code == 200, attempt.text
+        current = attempt.json()
+
+        skipped = await client.post(
+            f"/learner/v1/tasks/{task_id}/hints/3",
+            headers={"Idempotency-Key": "reading-help-skip-h3"},
+            json={
+                "expected_version": current["version"],
+                "input_attempt_version_id": current["attempts"][-1]["attempt_version_id"],
+            },
+        )
+        assert skipped.status_code == 422
+        assert skipped.json()["reason"] == "reading_hint_must_escalate_one_level_at_a_time"
+
+        for level in range(1, 5):
+            path = "h1" if level == 1 else str(level)
+            hint = await client.post(
+                f"/learner/v1/tasks/{task_id}/hints/{path}",
+                headers={"Idempotency-Key": f"reading-help-h{level}"},
+                json={
+                    "expected_version": current["version"],
+                    "input_attempt_version_id": current["attempts"][-1][
+                        "attempt_version_id"
+                    ],
+                },
+            )
+            assert hint.status_code == 200, hint.text
+            current = hint.json()
+            assert current["highest_hint_level"] == level
+            assert current["interventions"][-1]["hint_level"] == level
+            assert current["interventions"][-1]["reason_code"] == (
+                f"learner_requested_h{level}"
+            )
+            if level < 4:
+                revised = await client.post(
+                    f"/learner/v1/tasks/{task_id}/attempts",
+                    headers={"Idempotency-Key": f"reading-help-v{level + 1}"},
+                    json={
+                        "expected_version": current["version"],
+                        "text": (
+                            f"选择 B。\nMy revised explanation after H{level} uses new wording."
+                        ),
+                        "independence": "hinted_low" if level < 3 else "hinted_high",
+                    },
+                )
+                assert revised.status_code == 200, revised.text
+                current = revised.json()
+
+
+@pytest.mark.asyncio
 async def test_expression_priority_feedback_is_idempotent_auditable_and_user_authored() -> None:
     transport = httpx2.ASGITransport(app=create_app())
     async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:

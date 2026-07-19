@@ -6,6 +6,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEPLOY_SCRIPT = PROJECT_ROOT / "scripts" / "deploy.sh"
+COMPOSE_FILE = PROJECT_ROOT / "compose.yaml"
 
 
 def _write_executable(path: Path, content: str) -> None:
@@ -32,8 +33,18 @@ def test_deploy_script_has_valid_syntax_and_concise_help() -> None:
     )
     assert help_result.returncode == 0
     assert "Compose 项目名" in help_result.stdout
-    assert "binnagent" in help_result.stdout
+    assert "binnagentx" in help_result.stdout
+    assert "--host-services" in help_result.stdout
     assert "控制台只显示关键状态" in help_result.stdout
+
+
+def test_compose_project_is_isolated_and_contains_the_full_app_stack() -> None:
+    compose = COMPOSE_FILE.read_text(encoding="utf-8")
+
+    assert compose.startswith("name: binnagentx\n")
+    for service in ("postgres", "migrate", "worker", "app", "learner", "control"):
+        assert f"  {service}:\n" in compose
+    assert "name: binnagentx_postgres_data" in compose
 
 
 def test_worker_only_check_does_not_require_or_invoke_docker(tmp_path: Path) -> None:
