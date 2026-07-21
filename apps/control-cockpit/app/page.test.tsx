@@ -12,19 +12,34 @@ const STATUS = {
     heartbeat_at: "2026-07-19T12:00:00Z",
   },
   langfuse: { configured: true, reachable: true, url: "http://localhost:3100" },
-  prefect: {
-    configured: true,
-    reachable: true,
-    url: "http://localhost:4200",
-    active_workers: 1,
-  },
   model_provider: "longcat",
   model_name: "LongCat-2.0",
   queue_depth: 0,
   running_count: 0,
   failed_count: 0,
+  personalized_queue_depth: 0,
+  personalized_running_count: 0,
+  personalized_failed_count: 1,
   active_pack_job_id: null,
 };
+
+const PERSONALIZED_JOB = {
+  material_id: "training_material_failed_0001",
+  learner_id: "learner_managed_0001",
+  title: "正在生成个性化阅读",
+  status: "generation_failed",
+  requested_goal: "复习让步结构",
+  requested_kinds: ["grammar"],
+  source_context_count: 2,
+  evidence_target_count: 0,
+  generation_attempt_count: 3,
+  generation_error_code: "ValueError:personalized_evidence_targets_missing",
+  next_generation_attempt_at: null,
+  claimed_by: null,
+  lease_expires_at: null,
+  created_at: "2026-07-21T12:00:00Z",
+  updated_at: "2026-07-21T12:03:00Z",
+} as const;
 
 const TOOL = {
   project_key: "binnagentx",
@@ -76,6 +91,24 @@ describe("control cockpit home", () => {
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
         if (url.endsWith("content-generation/status")) return Response.json(STATUS);
+        if (url.endsWith("content-generation/personalized-jobs"))
+          return Response.json([PERSONALIZED_JOB]);
+        if (url.endsWith(`content-generation/personalized-jobs/${PERSONALIZED_JOB.material_id}`)) {
+          return Response.json({
+            job: PERSONALIZED_JOB,
+            events: [
+              {
+                event_id: 1,
+                event_type: "generation_failed",
+                stage: "generation_failed",
+                attempt: 3,
+                message: "个性化材料生成失败, 已达到最大尝试次数",
+                detail: { error_code: PERSONALIZED_JOB.generation_error_code },
+                occurred_at: PERSONALIZED_JOB.updated_at,
+              },
+            ],
+          });
+        }
         if (url.endsWith("content-generation/jobs")) return Response.json([]);
         if (url.endsWith("/tools")) return Response.json([TOOL]);
         if (url.includes("/tools/") && init?.method === "PATCH") {
@@ -135,7 +168,11 @@ describe("control cockpit home", () => {
     await waitFor(() => expect(screen.getByText("在线待命")).toBeVisible());
     expect(screen.getByText("longcat / LongCat-2.0")).toBeVisible();
     expect(screen.getByText("已连接")).toBeVisible();
-    expect(screen.getByText("1 个任务 Worker")).toBeVisible();
+    expect(screen.getByText("在线待命")).toBeVisible();
+    expect(screen.getByRole("heading", { name: "个性化阅读生成" })).toBeVisible();
+    expect((await screen.findAllByText("复习让步结构")).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/旧版要求迁移重点逐字包含笔记标题/).length).toBeGreaterThan(0);
+    expect(screen.getByRole("heading", { name: "个性化生成时间线" })).toBeVisible();
   });
 
   it("creates an experience code and exposes plaintext only in the one-time result", async () => {

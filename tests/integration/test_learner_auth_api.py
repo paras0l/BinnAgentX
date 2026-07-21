@@ -30,6 +30,8 @@ async def session_auth(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[None]:
 async def _clean() -> None:
     ordered = [
         tables.learner_sessions,
+        tables.obsidian_organizer_runs,
+        tables.agent_working_memory,
         tables.experience_code_redemptions,
         tables.email_verification_challenges,
         tables.audit_events,
@@ -217,6 +219,13 @@ async def test_email_registration_session_logout_and_account_lookup() -> None:
         assert identity["nickname"] == "First Learner"
         assert "binnagent_session=" in registered.headers["set-cookie"]
         assert "HttpOnly" in registered.headers["set-cookie"]
+        async with get_engine().connect() as connection:
+            organizer_status = await connection.scalar(
+                sa.select(tables.obsidian_organizer_runs.c.status).where(
+                    tables.obsidian_organizer_runs.c.learner_id == identity["learner_id"]
+                )
+            )
+        assert organizer_status == "queued"
 
         session = await client.get("/learner/v1/auth/session")
         assert session.status_code == 200

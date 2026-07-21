@@ -113,8 +113,6 @@ export interface ContentGenerationJob {
   model_name: string | null;
   can_cancel: boolean;
   can_retry: boolean;
-  prefect_task_run_id: string | null;
-  prefect_task_run_url: string | null;
 }
 
 export interface ContentGenerationEvent {
@@ -134,6 +132,46 @@ export interface ContentGenerationJobDetail {
   events: ContentGenerationEvent[];
 }
 
+export interface PersonalizedMaterialJob {
+  material_id: string;
+  learner_id: string;
+  title: string;
+  status:
+    | "requested"
+    | "generating"
+    | "validating"
+    | "ready"
+    | "in_progress"
+    | "completed"
+    | "generation_failed";
+  requested_goal: string;
+  requested_kinds: string[];
+  source_context_count: number;
+  evidence_target_count: number;
+  generation_attempt_count: number;
+  generation_error_code: string | null;
+  next_generation_attempt_at: string | null;
+  claimed_by: string | null;
+  lease_expires_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PersonalizedMaterialEvent {
+  event_id: number;
+  event_type: string;
+  stage: string;
+  attempt: number | null;
+  message: string;
+  detail: Record<string, unknown>;
+  occurred_at: string;
+}
+
+export interface PersonalizedMaterialJobDetail {
+  job: PersonalizedMaterialJob;
+  events: PersonalizedMaterialEvent[];
+}
+
 export interface ContentControlStatus {
   worker: {
     online: boolean;
@@ -147,17 +185,14 @@ export interface ContentControlStatus {
     reachable: boolean;
     url: string;
   };
-  prefect: {
-    configured: boolean;
-    reachable: boolean;
-    url: string;
-    active_workers: number;
-  };
   model_provider: string;
   model_name: string;
   queue_depth: number;
   running_count: number;
   failed_count: number;
+  personalized_queue_depth: number;
+  personalized_running_count: number;
+  personalized_failed_count: number;
   active_pack_job_id: string | null;
 }
 
@@ -259,6 +294,16 @@ export function getContentControlStatus(): Promise<ContentControlStatus> {
 
 export function getContentGenerationJob(jobId: string): Promise<ContentGenerationJobDetail> {
   return controlRequest(`content-generation/jobs/${jobId}`);
+}
+
+export function listPersonalizedMaterialJobs(): Promise<PersonalizedMaterialJob[]> {
+  return controlRequest("content-generation/personalized-jobs");
+}
+
+export function getPersonalizedMaterialJob(
+  materialId: string,
+): Promise<PersonalizedMaterialJobDetail> {
+  return controlRequest(`content-generation/personalized-jobs/${materialId}`);
 }
 
 export function createContentGenerationJob(seed?: number): Promise<ContentGenerationJob> {

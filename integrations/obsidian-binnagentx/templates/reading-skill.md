@@ -1,13 +1,13 @@
 ---
 binnagent_schema: "learning-context/v1"
 binnagent_kind: "reading_skill"
-title: "{{阅读策略}}"
+created: { { date } }
 tags:
   - binnagent
   - reading-skill
 ---
 
-# {{阅读策略}}
+# {{title}}
 
 ## 适用场景
 

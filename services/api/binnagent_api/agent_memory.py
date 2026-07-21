@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import re
-from collections.abc import Sequence
 from datetime import UTC, datetime
 from hashlib import sha256
 from uuid import uuid4
@@ -16,6 +14,7 @@ from binnagent_agent.memory import (
     MemoryReceipt,
     MemoryRecord,
 )
+from binnagent_domain.learning import EvidenceStatus, ReviewCandidate, select_review_candidates
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -57,7 +56,22 @@ class ObsidianLearnerMemory:
             rows = (
                 (
                     await connection.execute(
-                        sa.select(tables.obsidian_learning_context)
+                        sa.select(
+                            tables.obsidian_learning_context,
+                            tables.learning_asset_index.c.evidence_status,
+                            tables.learning_asset_index.c.created_at.label("asset_created_at"),
+                            tables.learning_asset_index.c.updated_at.label("asset_updated_at"),
+                            tables.learning_asset_index.c.next_review_at,
+                        )
+                        .join(
+                            tables.learning_asset_index,
+                            sa.and_(
+                                tables.learning_asset_index.c.asset_id
+                                == tables.obsidian_learning_context.c.asset_id,
+                                tables.learning_asset_index.c.learner_id
+                                == tables.obsidian_learning_context.c.learner_id,
+                            ),
+                        )
                         .where(*filters)
                         .order_by(tables.obsidian_learning_context.c.received_at.desc())
                         .limit(40)
@@ -66,10 +80,32 @@ class ObsidianLearnerMemory:
                 .mappings()
                 .all()
             )
-        selected = self._rank(rows, query.text)[: query.limit]
+        now = datetime.now(UTC)
+        candidates = tuple(
+            ReviewCandidate(
+                asset_id=str(row["asset_id"]),
+                context_id=str(row["context_id"]),
+                title=str(row["title"]),
+                excerpt=str(row["excerpt"]),
+                kind=str(row["asset_kind"]),
+                tags=tuple(str(item) for item in row["tags"]),
+                status=EvidenceStatus(str(row["evidence_status"])),
+                created_at=row["asset_created_at"],
+                updated_at=row["asset_updated_at"],
+                next_review_at=row["next_review_at"],
+                recently_used=str(row["context_id"]) in query.recently_used_memory_ids,
+            )
+            for row in rows
+        )
+        ranked = select_review_candidates(candidates, now=now, goal=query.text, limit=query.limit)
+        selected_ids = {item.context_id for item in ranked}
+        rank_by_id = {item.context_id: index for index, item in enumerate(ranked)}
+        selected = [row for row in rows if str(row["context_id"]) in selected_ids]
+        selected.sort(key=lambda row: rank_by_id[str(row["context_id"])])
         records = tuple(
             MemoryRecord(
                 memory_id=str(row["context_id"]),
+                asset_id=str(row["asset_id"]),
                 provider=_PROVIDER,
                 kind=str(row["asset_kind"]),
                 title=str(row["title"]),
@@ -215,31 +251,6 @@ class ObsidianLearnerMemory:
             )
         )
         return True if enabled is None else bool(enabled)
-
-    @staticmethod
-    def _rank(rows: Sequence[sa.RowMapping], query: str) -> list[sa.RowMapping]:
-        tokens = {
-            token.lower()
-            for token in re.findall(r"[A-Za-z][A-Za-z'-]{2,}|[\u4e00-\u9fff]{2,}", query)
-        }
-        if not tokens:
-            return list(rows)
-
-        def score(row: sa.RowMapping) -> int:
-            haystack = " ".join(
-                (
-                    str(row["title"]),
-                    str(row["excerpt"]),
-                    " ".join(str(item) for item in row["tags"]),
-                )
-            ).lower()
-            return sum(1 for token in tokens if token in haystack)
-
-        scored = [(score(row), index, row) for index, row in enumerate(rows)]
-        relevant = [item for item in scored if item[0] > 0]
-        pool = relevant if relevant else scored
-        pool.sort(key=lambda item: (-item[0], item[1]))
-        return [item[2] for item in pool]
 
     @staticmethod
     async def _audit(

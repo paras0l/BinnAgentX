@@ -283,7 +283,7 @@ function ObsidianSetupDialog({
               </p>
               <a
                 className="quiet-button"
-                href="/downloads/BinnAgentX-Learning-Sync-v0.1.2.zip"
+                href="/downloads/BinnAgentX-Learning-Sync-v0.1.5.zip"
                 download
               >
                 下载 Obsidian 插件

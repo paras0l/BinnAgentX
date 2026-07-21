@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 from binnagent_agent.agents.content_generator import ContentType, ProviderName
 from binnagent_agent.observability import observe
+from binnagent_agent.prompts import DEFAULT_PROMPT_REGISTRY
 
 
 class ContentQualityScores(BaseModel):
@@ -148,15 +149,10 @@ class RemoteContentReviewerAdapter:
 
     @staticmethod
     def _system_prompt(schema: dict[str, Any]) -> str:
-        return (
-            "你是独立的考研英语内容审核 Agent, 不参与生成。允许在内部充分推理, 但最终只输出"
-            "JSON 审核报告。逐项检查文章或表达任务的事实自洽、语言自然度、题目是否唯一可答、"
-            "答案与逐字证据是否一致、H1-H4 是否逐步加深、难度是否匹配、题型是否真正多样。"
-            "阅读材料必须同时包含基础题与高阶题, 不能用换措辞伪造题型多样性。发现答案不唯一、"
-            "证据不支持答案、明显复制源材料或教学边界失守时必须 revise 或 reject。"
-            "approve 仅用于所有分数至少4且无 high/critical issue。Schema: "
-            + json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
-        )
+        return DEFAULT_PROMPT_REGISTRY.render(
+            "content_reviewer.system",
+            {"output_schema": json.dumps(schema, ensure_ascii=False, separators=(",", ":"))},
+        ).text
 
     @staticmethod
     def _user_prompt(request: ContentReviewRequest) -> str:
@@ -168,13 +164,14 @@ class RemoteContentReviewerAdapter:
         }
         candidate = dict(request.candidate_item)
         candidate.pop("review", None)
-        return (
-            f"内容类型: {request.content_type}\n"
-            "源材料只用于检查是否过度复用和难度对齐, 不代表正确答案。\n"
-            f"源材料摘要: {json.dumps(source_reference, ensure_ascii=False)}\n"
-            f"待审候选: {json.dumps(candidate, ensure_ascii=False)}\n"
-            "请独立审核并只返回最终 JSON。"
-        )
+        return DEFAULT_PROMPT_REGISTRY.render(
+            "content_reviewer.user",
+            {
+                "content_type": request.content_type,
+                "source_reference": json.dumps(source_reference, ensure_ascii=False),
+                "candidate": json.dumps(candidate, ensure_ascii=False),
+            },
+        ).text
 
     def _path(self) -> str:
         if self._provider == "ollama":

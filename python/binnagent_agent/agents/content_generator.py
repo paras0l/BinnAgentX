@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from binnagent_agent.gateways.model import ModelAdapterResponse
 from binnagent_agent.observability import observe
+from binnagent_agent.prompts import DEFAULT_PROMPT_REGISTRY
 
 ProviderName = Literal["ollama", "deepseek", "longcat"]
 ContentType = Literal["calibration_reading", "matched_reading", "micro_expression"]
@@ -220,25 +221,15 @@ class _RemoteContentGenerationAdapterBase:
         return parsed.model_dump()
 
     def _system_prompt(self, content_type: ContentType, schema: dict[str, Any]) -> str:
-        if content_type in {"calibration_reading", "matched_reading"}:
-            role = (
-                "考研英语阅读材料与题目生成器。生成全新的英文文章, 不得复述或拼接参考文本。"
-                "题目必须可由新文章回答; evidence_quote 必须逐字出现在新文章某一段; "
-                "每条 evidence_quote 优先截取12到30个英文词, 不要解释或改写原文; "
-                "一次生成4到6道可复用题目, 覆盖 foundation、standard、advanced 三档, "
-                "并至少包含词义/语法基础题与推断/篇章逻辑高阶题; "
-                "每个 grammar_challenge.correct_text 必须逐字出现在指定 paragraph_index; "
-                "grammar_challenge 的 correct_text 和 incorrect_text 应尽量控制在 120 字符内; "
-                "提示从方向提醒逐步升级到最小明确线索, 不得在 H1/H2 直接泄露答案。"
-                "只输出 JSON。Schema: "
-            )
-        else:
-            role = (
-                "考研英语表达训练材料生成器。生成一个全新的、可由学习者独立完成的英文表达任务。"
-                "任务要有清晰受众、目的、论证动作、最低要求、单项反馈检查和迁移任务; "
-                "不得生成成品答案。只输出 JSON。Schema: "
-            )
-        return role + json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
+        prompt_id = (
+            "content_generator.reading_system"
+            if content_type in {"calibration_reading", "matched_reading"}
+            else "content_generator.expression_system"
+        )
+        return DEFAULT_PROMPT_REGISTRY.render(
+            prompt_id,
+            {"output_schema": json.dumps(schema, ensure_ascii=False, separators=(",", ":"))},
+        ).text
 
     def _user_prompt(self, request: ContentGenerationRequest, schema: dict[str, Any]) -> str:
         content_type = request.content_type
@@ -248,37 +239,32 @@ class _RemoteContentGenerationAdapterBase:
             paragraphs = source.get("paragraphs", [])
             source_preview = [str(p.get("text", "")) for p in paragraphs if isinstance(p, dict)]
             difficulty = source.get("difficulty", {})
-            return (
-                f"任务类型: {content_type}\n"
-                f"随机种子: {request.random_seed}\n"
-                f"仅用于题材标签的原题目标题: {title}\n"
-                f"目标段落数: {len(source_preview)}\n"
-                f"目标词数约: {difficulty.get('word_count', 300)}\n"
-                f"目标词汇负荷: {difficulty.get('vocabulary_load', 'moderate')}\n"
-                f"目标句法负荷: {difficulty.get('syntax_load', 'moderate')}\n"
-                f"目标篇章关系: {difficulty.get('discourse_relations', [])}\n"
-                "请生成完整的新英文材料、4到6道分层题目及各自四级提示、至少两项语法挑战、"
-                "一个平行重构任务和可迁移表达。paragraphs 数量必须等于目标段落数。\n"
-                "foundation 优先 vocabulary_in_context、grammar_cloze、detail_comprehension; "
-                "standard 可用 main_idea、detail_comprehension、evidence_reasoning; "
-                "advanced 优先 inference、rhetorical_purpose、sentence_insertion、"
-                "paragraph_logic、evidence_reasoning。不要把同一道题换措辞重复。\n"
-                "你看不到源正文; 必须独立构思新人物、新案例、新数据和新论证路径。\n"
-                f"上一轮审核意见: {list(request.review_feedback) or '无'}\n"
-                "要求: 只返回严格 JSON, 不解释。\n"
-                "可见 schema: "
-                f"{json.dumps(schema, ensure_ascii=False, separators=(',', ':'))}\n"
-            )
-        return (
-            f"任务类型: {content_type}\n"
-            f"随机种子: {request.random_seed}\n"
-            f"原题目标题: {title}\n"
-            f"参考论证动作: {source.get('target_argument_move', '')}\n"
-            "请生成一个新情境和完整表达训练定义; 保留训练难度, 不得复用原情境或代写答案。\n"
-            f"上一轮审核意见: {list(request.review_feedback) or '无'}\n"
-            "可见 schema: "
-            f"{json.dumps(schema, ensure_ascii=False, separators=(',', ':'))}.\n"
-        )
+            return DEFAULT_PROMPT_REGISTRY.render(
+                "content_generator.reading_user",
+                {
+                    "content_type": content_type,
+                    "random_seed": request.random_seed,
+                    "title": title,
+                    "paragraph_count": len(source_preview),
+                    "word_count": difficulty.get("word_count", 300),
+                    "vocabulary_load": difficulty.get("vocabulary_load", "moderate"),
+                    "syntax_load": difficulty.get("syntax_load", "moderate"),
+                    "discourse_relations": difficulty.get("discourse_relations", []),
+                    "review_feedback": list(request.review_feedback) or "无",
+                    "output_schema": json.dumps(schema, ensure_ascii=False, separators=(",", ":")),
+                },
+            ).text
+        return DEFAULT_PROMPT_REGISTRY.render(
+            "content_generator.expression_user",
+            {
+                "content_type": content_type,
+                "random_seed": request.random_seed,
+                "title": title,
+                "target_argument_move": source.get("target_argument_move", ""),
+                "review_feedback": list(request.review_feedback) or "无",
+                "output_schema": json.dumps(schema, ensure_ascii=False, separators=(",", ":")),
+            },
+        ).text
 
     def _prompt_schema(self, content_type: ContentType) -> dict[str, Any]:
         if content_type in {"calibration_reading", "matched_reading"}:

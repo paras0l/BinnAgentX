@@ -205,10 +205,17 @@ function messageFor(error: unknown): string {
 function attemptDraft(attempt: AttemptView | undefined, isReading: boolean) {
   if (!attempt) return { choice: "", text: "" };
   if (!isReading) return { choice: "", text: attempt.text };
-  const match = /^选择 ([A-Z])。\n([\s\S]*)$/u.exec(attempt.text);
+  const match = /^选择 ([^。\n]+)。\n([\s\S]*)$/u.exec(attempt.text);
   return match
     ? { choice: match[1] ?? "", text: match[2] ?? "" }
     : { choice: "", text: attempt.text };
+}
+
+function readingOptionLabel(optionId: string): string {
+  const normalized = optionId.trim();
+  const internalId = /^(?:option|choice)[_-]?([a-z])$/iu.exec(normalized);
+  if (internalId?.[1]) return internalId[1].toUpperCase();
+  return /^[a-z]$/iu.test(normalized) ? normalized.toUpperCase() : normalized;
 }
 
 function conciseQuestionPrompt(prompt: string): string {
@@ -2050,7 +2057,7 @@ function ActiveTaskWorkspace({
                         {showSubmittedAnswer && selectedOption ? (
                           <section className="submitted-answer" aria-label="已保存的当前答案">
                             <CheckCircle size={19} weight="fill" aria-hidden="true" />
-                            <strong>{selectedOption.option_id}</strong>
+                            <strong>{readingOptionLabel(selectedOption.option_id)}</strong>
                             <p>{selectedOption.text}</p>
                             <button
                               type="button"
@@ -2078,7 +2085,7 @@ function ActiveTaskWorkspace({
                                     setSaveState("pending");
                                   }}
                                 />
-                                <strong>{option.option_id}</strong>
+                                <strong>{readingOptionLabel(option.option_id)}</strong>
                                 <span>{option.text}</span>
                               </label>
                             ))}
@@ -3107,7 +3114,6 @@ function ReadingPane({
         </button>
       </div>
       <div className="material-heading">
-        <p className="step-label">项目自写开发材料 · 难度待校准</p>
         <h2 id="material-title">{material.title}</h2>
         <div className="reading-instruction">
           <p>选中原文后，标记工具会直接出现在选区旁边。</p>

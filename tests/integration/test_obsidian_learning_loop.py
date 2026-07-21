@@ -8,6 +8,12 @@ import pytest_asyncio
 import sqlalchemy as sa
 from binnagent_api.database import dispose_engine, get_engine
 from binnagent_api.main import create_app
+from binnagent_api.model_adapters import PersonalizedReadingOutput
+from binnagent_api.obsidian_organizer import enqueue_login_organization
+from binnagent_api.personalized_material_service import (
+    enqueue_due_personalized_material,
+    process_personalized_material,
+)
 from binnagent_api.settings import get_settings
 from binnagent_api.vertical_slice import tables
 
@@ -47,6 +53,9 @@ async def _clean() -> None:
             tables.learner_profile_snapshots,
             tables.idempotency_records,
             tables.agent_memory_events,
+            tables.learning_evidence,
+            tables.agent_working_memory,
+            tables.obsidian_organizer_runs,
             tables.obsidian_learning_context,
             tables.obsidian_sync_connections,
             tables.outbox_messages,
@@ -56,7 +65,9 @@ async def _clean() -> None:
 
 
 @pytest.mark.asyncio
-async def test_bidirectional_sync_personalized_reading_and_annotation_export() -> None:
+async def test_bidirectional_sync_personalized_reading_and_annotation_export(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     transport = httpx2.ASGITransport(app=create_app())
     async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
         created = await client.post(
@@ -131,12 +142,21 @@ async def test_bidirectional_sync_personalized_reading_and_annotation_export() -
         assert all("content" not in item and "excerpt" not in item for item in assets.json())
 
         reading = await client.post("/learner/v1/training-materials/personalized")
-        assert reading.status_code == 201, reading.text
-        assert len(reading.json()["paragraphs"]) >= 3
-        assert "Contrast and concession" in " ".join(reading.json()["focus_points"])
-        assert reading.json()["status"] == "ready"
+        assert reading.status_code == 202, reading.text
+        assert reading.json()["status"] == "requested"
         assert reading.json()["training_eligible"] is False
-        assert reading.json()["start_block_reason"] == "calibration_required"
+        assert reading.json()["start_block_reason"] == "material_not_ready"
+        await process_personalized_material(reading.json()["material_id"])
+        generated = await client.get("/learner/v1/training-materials")
+        reading_payload = next(
+            item
+            for item in generated.json()
+            if item["material_id"] == reading.json()["material_id"]
+        )
+        assert len(reading_payload["paragraphs"]) >= 3
+        assert "Contrast and concession" in " ".join(reading_payload["focus_points"])
+        assert reading_payload["status"] == "ready"
+        reading = httpx2.Response(200, json=reading_payload)
         async with get_engine().connect() as connection:
             memory_event = (
                 (
@@ -150,8 +170,16 @@ async def test_bidirectional_sync_personalized_reading_and_annotation_export() -
                 .mappings()
                 .one()
             )
+            working_state = await connection.scalar(
+                sa.select(tables.agent_working_memory.c.payload).where(
+                    tables.agent_working_memory.c.learner_id == memory_event["learner_id"],
+                    tables.agent_working_memory.c.agent_name == "personalized_reading.generate",
+                )
+            )
         assert memory_event["operation"] == "recall"
         assert len(memory_event["memory_ids"]) == 1
+        assert isinstance(working_state, dict)
+        assert working_state["last_material_id"] == reading.json()["material_id"]
 
         queued = await client.get("/learner/v1/training-materials")
         assert queued.status_code == 200, queued.text
@@ -205,7 +233,15 @@ async def test_bidirectional_sync_personalized_reading_and_annotation_export() -
         assert '"hints"' not in started.text
 
         blocked_reading = await client.post("/learner/v1/training-materials/personalized")
-        assert blocked_reading.status_code == 201, blocked_reading.text
+        assert blocked_reading.status_code == 202, blocked_reading.text
+        await process_personalized_material(blocked_reading.json()["material_id"])
+        blocked_queue = await client.get("/learner/v1/training-materials")
+        blocked_payload = next(
+            item
+            for item in blocked_queue.json()
+            if item["material_id"] == blocked_reading.json()["material_id"]
+        )
+        blocked_reading = httpx2.Response(200, json=blocked_payload)
         assert blocked_reading.json()["training_eligible"] is False
         assert blocked_reading.json()["start_block_reason"] == "active_training"
 
@@ -326,6 +362,14 @@ async def test_bidirectional_sync_personalized_reading_and_annotation_export() -
         )
         assert completed_run.status_code == 200, completed_run.text
 
+        projected_assets = await client.get("/learner/v1/assets")
+        projected = next(
+            item for item in projected_assets.json() if item["title"] == "Contrast and concession"
+        )
+        assert projected["evidence_count"] == 1
+        assert projected["evidence_status"] == "hinted_usable"
+        assert projected["next_review_at"] is not None
+
         annotation = await client.post(
             "/learner/v1/assets",
             json={
@@ -347,3 +391,157 @@ async def test_bidirectional_sync_personalized_reading_and_annotation_export() -
         assert any(
             item["asset_id"] == annotation.json()["asset_id"] for item in pending_again.json()
         )
+
+        async with get_engine().begin() as connection:
+            await connection.execute(
+                tables.personalized_training_materials.update()
+                .where(
+                    tables.personalized_training_materials.c.material_id
+                    == blocked_reading.json()["material_id"]
+                )
+                .values(status="completed", completed_at=datetime.now(UTC))
+            )
+            await connection.execute(
+                tables.learning_asset_index.update()
+                .where(tables.learning_asset_index.c.asset_id == projected["asset_id"])
+                .values(next_review_at=datetime(2020, 1, 1, tzinfo=UTC))
+            )
+        assert await enqueue_due_personalized_material() is True
+        due_queue = await client.get("/learner/v1/training-materials")
+        due_material = next(item for item in due_queue.json() if item["status"] == "requested")
+        assert due_material["source_context_count"] == 1
+        assert due_material["start_block_reason"] == "material_not_ready"
+
+        async def fail_generation(*_args: object, **_kwargs: object) -> object:
+            raise RuntimeError("provider unavailable")
+
+        monkeypatch.setattr(
+            "binnagent_api.personalized_material_service.generate_personalized_reading",
+            fail_generation,
+        )
+        due_material_id = due_material["material_id"]
+        for attempt in range(1, 4):
+            result = await process_personalized_material(due_material_id)
+            assert result == ("generation_failed" if attempt == 3 else "requested")
+            if attempt < 3:
+                async with get_engine().begin() as connection:
+                    await connection.execute(
+                        tables.personalized_training_materials.update()
+                        .where(
+                            tables.personalized_training_materials.c.material_id == due_material_id
+                        )
+                        .values(next_generation_attempt_at=datetime.now(UTC))
+                    )
+        failed_queue = await client.get("/learner/v1/training-materials")
+        failed = next(
+            item for item in failed_queue.json() if item["material_id"] == due_material_id
+        )
+        assert failed["status"] == "generation_failed"
+        assert await enqueue_due_personalized_material() is False
+
+        retried = await client.post(f"/learner/v1/training-materials/{due_material_id}/retry")
+        assert retried.status_code == 202, retried.text
+        assert retried.json()["status"] == "requested"
+        async with get_engine().connect() as connection:
+            attempt_count = await connection.scalar(
+                sa.select(tables.personalized_training_materials.c.generation_attempt_count).where(
+                    tables.personalized_training_materials.c.material_id == due_material_id
+                )
+            )
+        assert attempt_count == 0
+
+        async def generate_without_source_mapping(
+            *_args: object, **_kwargs: object
+        ) -> PersonalizedReadingOutput:
+            return PersonalizedReadingOutput(
+                title="A Reliable Reading Without Forced Attribution",
+                paragraphs=[
+                    "A careful reader compares a familiar rule with the evidence in a new text. "
+                    "The comparison matters because recognition alone does not prove transfer.",
+                    "Although an earlier explanation may appear convincing, the main claim can "
+                    "change when a hidden condition becomes visible to the reader.",
+                    "A useful review therefore preserves uncertainty, checks the sentence "
+                    "structure, and avoids assigning success to a note without reliable proof.",
+                ],
+                focus_points=["在新语境中复核让步结构与主句判断"],
+                source_titles=[],
+            )
+
+        monkeypatch.setattr(
+            "binnagent_api.personalized_material_service.generate_personalized_reading",
+            generate_without_source_mapping,
+        )
+        assert await process_personalized_material(due_material_id) == "ready"
+        async with get_engine().connect() as connection:
+            ready_row = (
+                (
+                    await connection.execute(
+                        sa.select(tables.personalized_training_materials).where(
+                            tables.personalized_training_materials.c.material_id == due_material_id
+                        )
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            event_types = set(
+                (
+                    await connection.execute(
+                        sa.select(tables.personalized_material_events.c.event_type).where(
+                            tables.personalized_material_events.c.material_id == due_material_id
+                        )
+                    )
+                ).scalars()
+            )
+        assert ready_row["status"] == "ready"
+        assert ready_row["evidence_target_asset_ids"] == []
+        assert "evidence_mapping_skipped" in event_types
+
+
+@pytest.mark.asyncio
+async def test_login_triggered_inbox_organization_is_planned_and_acknowledged() -> None:
+    transport = httpx2.ASGITransport(app=create_app())
+    async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
+        paired = await client.post("/learner/v1/assets/obsidian-plugin-connections")
+        connection_id = paired.json()["connection_id"]
+        headers = {"Authorization": f"Bearer {paired.json()['sync_secret']}"}
+        async with get_engine().begin() as connection:
+            await enqueue_login_organization(
+                connection,
+                learner_id="learner_synthetic_local",
+                session_token="test-session-token",
+            )
+        imported = await client.post(
+            f"/learner/v1/obsidian-sync/{connection_id}/import",
+            headers=headers,
+            json={
+                "schema_version": "learning-context/v1",
+                "vault_name": "bin01",
+                "entries": [
+                    {
+                        "source_key": "BinnAgentX/00-Inbox/although.md",
+                        "title": "Although",
+                        "kind": "grammar",
+                        "tags": ["grammar"],
+                        "excerpt": "Although introduces a concession before the main claim.",
+                        "modified_at": datetime.now(UTC).isoformat(),
+                    }
+                ],
+            },
+        )
+        assert imported.status_code == 200, imported.text
+        plan = imported.json()["organization"]
+        assert plan["actions"][0]["target_folder"] == "BinnAgentX/02-Grammar"
+        acknowledged = await client.post(
+            f"/learner/v1/obsidian-sync/{connection_id}/organizer-runs/{plan['run_id']}/ack",
+            headers=headers,
+            json={"completed_action_ids": [plan["actions"][0]["action_id"]]},
+        )
+        assert acknowledged.status_code == 200, acknowledged.text
+        async with get_engine().connect() as connection:
+            status_value = await connection.scalar(
+                sa.select(tables.obsidian_organizer_runs.c.status).where(
+                    tables.obsidian_organizer_runs.c.run_id == plan["run_id"]
+                )
+            )
+        assert status_value == "completed"

@@ -44,18 +44,16 @@ def test_compose_project_is_isolated_and_contains_the_full_app_stack() -> None:
 
     assert compose.startswith("name: binnagentx\n")
     for service in (
-        "prefect-server",
         "postgres",
         "migrate",
         "worker",
+        "asset-exporter",
         "app",
         "learner",
         "control",
     ):
         assert f"  {service}:\n" in compose
     assert "name: binnagentx_postgres_data" in compose
-    assert "name: binnagentx_prefect_task_storage" in compose
-    assert compose.count("binnagent_prefect_task_storage:/opt/prefect/task-storage") == 2
     deploy = DEPLOY_SCRIPT.read_text(encoding="utf-8")
     assert "--no-build --force-recreate" in deploy
     assert "run_logged_with_heartbeat" in deploy
@@ -76,7 +74,7 @@ def test_container_restart_skips_build_only_when_source_fingerprint_matches(
     )
     _write_executable(
         fake_bin / "curl",
-        "#!/usr/bin/env bash\nprintf '%s\\n' '{\"prefect\":{\"active_workers\":1}}'\n",
+        "#!/usr/bin/env bash\nprintf '%s\\n' '{\"worker\":{\"online\":true}}'\n",
     )
     _write_executable(fake_bin / "lsof", "#!/usr/bin/env bash\nexit 1\n")
     env = {
@@ -180,7 +178,7 @@ def test_frontend_uses_npm_fallback_and_stops_child_on_interrupt(
     )
     _write_executable(
         fake_bin / "curl",
-        "#!/usr/bin/env bash\nprintf '%s\\n' '{\"prefect\":{\"active_workers\":1}}'\n",
+        "#!/usr/bin/env bash\nprintf '%s\\n' '{\"worker\":{\"online\":true}}'\n",
     )
     _write_executable(fake_bin / "lsof", "#!/usr/bin/env bash\nexit 1\n")
     env = {
@@ -237,7 +235,7 @@ def test_new_deploy_cleans_previous_project_instance(tmp_path: Path) -> None:
     )
     _write_executable(
         fake_bin / "curl",
-        "#!/usr/bin/env bash\nprintf '%s\\n' '{\"prefect\":{\"active_workers\":1}}'\n",
+        "#!/usr/bin/env bash\nprintf '%s\\n' '{\"worker\":{\"online\":true}}'\n",
     )
     _write_executable(fake_bin / "lsof", "#!/usr/bin/env bash\nexit 1\n")
     state_dir = tmp_path / "state"
@@ -320,7 +318,7 @@ def test_new_deploy_discovers_legacy_instance_from_listener(tmp_path: Path) -> N
     )
     _write_executable(
         fake_bin / "curl",
-        "#!/usr/bin/env bash\nprintf '%s\\n' '{\"prefect\":{\"active_workers\":1}}'\n",
+        "#!/usr/bin/env bash\nprintf '%s\\n' '{\"worker\":{\"online\":true}}'\n",
     )
     _write_executable(
         fake_bin / "lsof",

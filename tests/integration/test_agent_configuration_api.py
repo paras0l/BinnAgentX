@@ -41,6 +41,7 @@ async def test_tool_catalog_policy_and_versioned_prompt_governance() -> None:
         await connection.execute(sa.delete(tables.obsidian_learning_context))
         await connection.execute(sa.delete(tables.obsidian_sync_connections))
         await connection.execute(sa.delete(tables.outbox_messages))
+        await connection.execute(sa.delete(tables.learning_evidence))
         await connection.execute(sa.delete(tables.learning_asset_index))
         await connection.execute(sa.delete(tables.control_tool_policies))
         await connection.execute(sa.delete(tables.control_prompts))
@@ -86,8 +87,11 @@ async def test_tool_catalog_policy_and_versioned_prompt_governance() -> None:
                 "prompt_version": "v2",
                 "owner": "learning_content",
                 "purpose": "验证项目隔离的新版个性化阅读模板。",
-                "template_text": "根据 {{contexts}} 生成新阅读，并严格返回 {{output_schema}}。",
-                "variables": ["contexts", "output_schema"],
+                "template_text": (
+                    "根据 {{contexts}} 和 {{generation_goal}} 生成新阅读，"
+                    "并严格返回 {{output_schema}}。"
+                ),
+                "variables": ["contexts", "generation_goal", "output_schema"],
                 "model_policy": {"temperature": 0.3, "max_tokens": 1600},
             },
         )
@@ -104,7 +108,13 @@ async def test_tool_catalog_policy_and_versioned_prompt_governance() -> None:
         rendered = await client.post(
             "/control/v1/prompts/personalized_reading.generate/v2/render",
             headers=HEADERS,
-            json={"variables": {"contexts": "note", "output_schema": "json"}},
+            json={
+                "variables": {
+                    "contexts": "note",
+                    "generation_goal": "grammar",
+                    "output_schema": "json",
+                }
+            },
         )
         assert rendered.status_code == 200, rendered.text
         assert "note" in rendered.json()["rendered"]
@@ -118,7 +128,11 @@ async def test_tool_catalog_policy_and_versioned_prompt_governance() -> None:
         assert activated.json()["status"] == "active"
         runtime_prompt = await prompt_runtime.resolve(
             "personalized_reading.generate",
-            {"contexts": "memory", "output_schema": "json"},
+            {
+                "contexts": "memory",
+                "generation_goal": "grammar",
+                "output_schema": "json",
+            },
         )
         assert runtime_prompt.prompt_version == "v2"
         assert runtime_prompt.source == "database"
@@ -165,6 +179,7 @@ async def test_tool_catalog_policy_and_versioned_prompt_governance() -> None:
             await connection.execute(
                 tables.obsidian_learning_context.insert().values(
                     context_id="foreign_memory_context",
+                    asset_id="asset_foreign_memory_context",
                     learner_id="learner_other_account",
                     connection_id="foreign_connection",
                     source_key="BinnAgentX/Private/foreign.md",

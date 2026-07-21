@@ -23,3 +23,17 @@ def test_prompt_registry_rejects_missing_runtime_variables() -> None:
             "expression.priority_feedback",
             {"learner_attempt": "draft"},
         )
+
+
+def test_content_and_obsidian_agents_share_the_governed_prompt_catalog() -> None:
+    prompt_ids = {prompt.prompt_id for prompt in DEFAULT_PROMPT_REGISTRY.list()}
+
+    assert {
+        "content_generator.reading_system",
+        "content_generator.reading_user",
+        "content_generator.expression_system",
+        "content_generator.expression_user",
+        "content_reviewer.system",
+        "content_reviewer.user",
+        "obsidian.inbox_organize",
+    }.issubset(prompt_ids)

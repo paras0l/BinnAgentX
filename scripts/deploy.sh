@@ -46,7 +46,7 @@ show_help() {
 用法:
   bash scripts/deploy.sh [选项]
 
-默认构建并后台启动 PostgreSQL、迁移、常驻 Worker、API、学习端和控制舱容器。
+默认构建并后台启动 PostgreSQL、迁移、常驻 Worker、资产导出器、API、学习端和控制舱容器。
 控制台只显示关键状态；完整构建输出写入 ./logs。
 
 选项:
@@ -56,7 +56,7 @@ show_help() {
   --skip-compose            使用已有数据库，不操作 Docker Compose
   --skip-migrate            跳过 Alembic 迁移
   --no-api                  不启动 API
-  --no-worker               不启动内容生成 Worker
+  --no-worker               不启动内容生成 Worker及资产导出器
   --learner                 启动 Learner 前端（默认开启）
   --control                 启动 Control 前端（默认开启）
   --no-learner              不启动 Learner 前端
@@ -513,12 +513,25 @@ start_worker_service() {
   info "启动内容生成 Worker"
   register_service "Worker" "$logfile" uv run binnagent-worker
   local index=$((${#SERVICE_PIDS[@]} - 1))
+  success "内容生成 Worker 已启动"
   sleep 0.2
   if ! kill -0 "${SERVICE_PIDS[$index]}" >/dev/null 2>&1; then
     show_log_tail "$logfile"
     die "内容生成 Worker 启动失败"
   fi
-  success "内容生成 Worker 已启动"
+}
+
+start_asset_exporter_service() {
+  local logfile="$LOG_DIR/asset-exporter.log"
+  info "启动 Obsidian 资产导出器"
+  register_service "AssetExporter" "$logfile" uv run binnagent-asset-exporter
+  local index=$((${#SERVICE_PIDS[@]} - 1))
+  success "Obsidian 资产导出器已启动"
+  sleep 0.2
+  if ! kill -0 "${SERVICE_PIDS[$index]}" >/dev/null 2>&1; then
+    show_log_tail "$logfile"
+    die "Obsidian 资产导出器启动失败"
+  fi
 }
 
 port_is_listening() {
@@ -600,29 +613,29 @@ wait_for_container_url() {
   die "${name} 在 ${SERVICE_WAIT_SECONDS}s 内未就绪"
 }
 
-wait_for_prefect_worker() {
+wait_for_content_worker() {
   local elapsed=0
   local payload=""
   while (( elapsed < SERVICE_WAIT_SECONDS )); do
     payload="$(curl --silent --fail --max-time 2 \
       "http://127.0.0.1:3001/api/control/v1/content-generation/status" 2>/dev/null || true)"
-    if PREFECT_STATUS_PAYLOAD="$payload" python3 - <<'PY' >/dev/null 2>&1
+    if WORKER_STATUS_PAYLOAD="$payload" python3 - <<'PY' >/dev/null 2>&1
 import json
 import os
 
-payload = json.loads(os.environ.get("PREFECT_STATUS_PAYLOAD", "{}"))
-raise SystemExit(0 if int(payload.get("prefect", {}).get("active_workers", 0)) > 0 else 1)
+payload = json.loads(os.environ.get("WORKER_STATUS_PAYLOAD", "{}"))
+raise SystemExit(0 if bool(payload.get("worker", {}).get("online")) else 1)
 PY
     then
-      success "Prefect 内容 Worker 已注册"
+      success "内容生成 Worker 已就绪"
       return
     fi
     sleep 1
     elapsed=$((elapsed + 1))
   done
   "${compose_cmd[@]}" ps >&2 || true
-  "${compose_cmd[@]}" logs --tail 50 prefect-server worker >&2 || true
-  die "Prefect 内容 Worker 在 ${SERVICE_WAIT_SECONDS}s 内未注册"
+  "${compose_cmd[@]}" logs --tail 50 worker >&2 || true
+  die "内容生成 Worker 在 ${SERVICE_WAIT_SECONDS}s 内未就绪"
 }
 
 start_http_service() {
@@ -729,6 +742,8 @@ recorded_service_is_safe_to_stop() {
     API) [[ "$command_line" == *"binnagent-api"* ]] ;;
     Learner) [[ "$command_line" == *"dev:learner"* || "$command_line" == *"learner-web"* ]] ;;
     Control) [[ "$command_line" == *"dev:control"* || "$command_line" == *"control-cockpit"* ]] ;;
+    Worker) [[ "$command_line" == *"binnagent-worker"* ]] ;;
+    AssetExporter) [[ "$command_line" == *"binnagent-asset-exporter"* ]] ;;
     *) return 1 ;;
   esac
 }
@@ -880,16 +895,11 @@ start_container_stack() {
   local -a targets=()
   local -a up_args=(up --detach --remove-orphans)
   local needs_app=0
-  local needs_prefect=0
 
   if (( RUN_API == 1 || RUN_LEARNER == 1 || RUN_CONTROL == 1 )); then
     needs_app=1
   fi
-  if (( RUN_WORKER == 1 || needs_app == 1 )); then
-    needs_prefect=1
-  fi
-  (( needs_prefect == 0 )) || targets+=(prefect-server)
-  (( RUN_WORKER == 0 )) || targets+=(worker)
+  (( RUN_WORKER == 0 )) || targets+=(worker asset-exporter)
   (( needs_app == 0 )) || targets+=(app)
   (( RUN_LEARNER == 0 )) || targets+=(learner)
   (( RUN_CONTROL == 0 )) || targets+=(control)
@@ -917,22 +927,19 @@ start_container_stack() {
     die "容器构建或启动失败"
   fi
 
-  (( needs_prefect == 0 )) || \
-    wait_for_container_url "Prefect" "http://127.0.0.1:4200/api/health"
   (( needs_app == 0 )) || \
     wait_for_container_url "API" "http://127.0.0.1:8000/health/ready"
   (( RUN_LEARNER == 0 )) || \
     wait_for_container_url "Learner" "http://127.0.0.1:3000"
   (( RUN_CONTROL == 0 )) || \
     wait_for_container_url "Control" "http://127.0.0.1:3001"
-  (( RUN_WORKER == 0 || RUN_CONTROL == 0 )) || wait_for_prefect_worker
+  (( RUN_WORKER == 0 || RUN_CONTROL == 0 )) || wait_for_content_worker
   record_built_source_fingerprint
 
   printf '\n已启动（Compose 项目: %s）：\n' "$COMPOSE_PROJECT_NAME"
   (( needs_app == 0 )) || printf '  API      http://127.0.0.1:8000\n'
   (( RUN_LEARNER == 0 )) || printf '  Learner  http://127.0.0.1:3000\n'
   (( RUN_CONTROL == 0 )) || printf '  Control  http://127.0.0.1:3001\n'
-  (( needs_prefect == 0 )) || printf '  Prefect  http://127.0.0.1:4200\n'
   printf '  日志     %s/compose.log\n' "$LOG_DIR"
   printf '停止命令: docker compose -p %s down\n' "$COMPOSE_PROJECT_NAME"
 }
@@ -987,6 +994,7 @@ if (( MONITOR_WORKER == 1 )); then
 fi
 if (( RUN_WORKER == 1 )); then
   start_worker_service
+  start_asset_exporter_service
 fi
 
 if (( RUN_API == 1 )); then
@@ -1016,6 +1024,7 @@ fi
 
 printf '\n已启动：\n'
 (( RUN_WORKER == 1 )) && printf '  Worker   内容生成队列\n'
+(( RUN_WORKER == 1 )) && printf '  Exporter Obsidian 资产导出队列\n'
 (( RUN_API == 1 )) && printf '  API      http://127.0.0.1:8000\n'
 (( RUN_LEARNER == 1 )) && printf '  Learner  http://127.0.0.1:3000\n'
 (( RUN_CONTROL == 1 )) && printf '  Control  http://127.0.0.1:3001\n'

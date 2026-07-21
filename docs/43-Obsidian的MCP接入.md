@@ -727,10 +727,10 @@ BinnAgentX
 
 1. 学习端资产页通过 PostgreSQL `learning_asset_index` 展示标题、分类、标签、来源、证据和同步状态，不返回 Obsidian 正文或同步摘录。
 2. 学习端新增资产、训练标注和个性化阅读标注都写入 `asset_export_requested` outbox；正文仅作为投递中的一次性载荷，插件回执后即替换为不含正文的交付回执。
-3. Obsidian 插件 v0.1.2 使用独立 Connection ID 和 Sync Secret 拉取待导出资产，在 `BinnAgentX/Assets/` 创建带稳定 `binnagent_asset_id` 的笔记，并向服务端回执文件引用和内容哈希。
-4. 插件只扫描用户明确允许的文件夹或标签，排除 `BinnAgentX/Templates/` 模板源文件；模板复制出的普通笔记没有资产 ID 时，服务端生成稳定资产 ID，并只把标题、标签、路径引用和同步状态写入资产索引。
-5. 有限摘录保存在 `obsidian_learning_context`，只用于个性化内容生成；`POST /v1/training-materials/personalized` 将最近已授权上下文作为不可信学习材料交给受配置约束的模型适配器，生成 3–6 段的新英文阅读及迁移重点，并持久化到 `personalized_training_materials`。
-6. 学习首页通过 `GET /v1/training-materials` 展示统一训练任务队列。系统任务与个性化材料同时可选，个性化材料按 `ready`、`in_progress`、`completed` 保存状态；资产页不提供材料生成入口，也不展示阅读正文。
+3. Obsidian 插件 v0.1.5 使用独立 Connection ID 和 Sync Secret 拉取待导出资产，在 `BinnAgentX/00-Inbox/` 创建带稳定 `binnagent_asset_id` 与 `inbox_status: unprocessed` 的笔记，并向服务端回执文件引用和内容哈希；它仍进入原有导出、回执和同步链路，没有新增旁路状态机。
+4. 插件首次加载初始化 `00-Inbox` 至 `06-Attachments`、使用指南、MOC / Dataview Dashboard、模板与入门示例，并把 Obsidian 模板和附件目录配置为 `05-Templates/`、`06-Attachments/`。总、词汇、语法地图固定为 `00-Dashboard.md`，升级时通过 Obsidian 文件管理器迁移旧 `Dashboard.md` 并自动更新链接。插件只扫描用户明确允许的文件夹或标签，排除模板、Dashboard 及带 `binnagent_sync: false` 的指南/示例；模板复制出的普通笔记没有资产 ID 时，服务端生成稳定资产 ID，并只把标题、标签、路径引用和同步状态写入资产索引。
+5. 有限摘录保存在 `obsidian_learning_context`，只用于个性化内容生成；`POST /v1/training-materials/personalized` 只创建异步请求。常驻 Worker 按学习目标、最新学习、到期复习、证据冲突和近期使用记录选取上下文；兼容的模型提供方可先调用 PydanticAI Prompted JSON 结构化抽取，再生成 3–6 段的新英文阅读及迁移重点。LongCat 当前不完成该抽取协议，因此明确跳过可选抽取并直接生成阅读；其他抽取失败也会记录降级原因并继续使用原始授权上下文，不阻断阅读生成。轨迹预算限制模型调用次数，生成失败最多自动尝试三次并指数退避，终态失败只接受用户显式重新生成；控制舱可查看每个阶段和失败点。
+6. 学习首页通过 `GET /v1/training-materials` 展示统一训练任务队列。系统任务与个性化材料同时可选，个性化材料生成阶段使用 `requested`、`generating`、`validating`、`ready` 或 `generation_failed`，进入既有训练后再使用 `in_progress`、`completed`；资产页不提供材料生成入口，也不展示阅读正文。模型通过 `source_titles` 逐字声明实际使用的输入笔记，服务端只把训练结果归因到可验证且归属当前学习者的来源资产；模型没有返回可靠映射时材料仍可进入训练，但本次不更新来源证据。微型表达结果不会批量污染所有输入笔记。
 7. 用户从队列选择材料后，`POST /v1/runs/personalized/{material_id}` 把它适配为标准 `practice / matched_reading` 运行并进入既有阅读实验室。选项作答、语义标注、语法挑战、V1/V2、H1–H4、表达迁移、难度反馈、暂停恢复和完成记录全部复用原链路；队列本身不渲染正文、不保存标注，也不能手工改成完成。`GET /v1/training-materials` 同时返回可启动性与阻塞原因：没有完成校准时提示先校准，已有其他标准训练运行时提示“先继续当前训练”，只有绑定当前运行的个性化材料仍可继续，避免前端先发起一个必然冲突的请求。阅读实验室保存的标注继续生成带 `source_task_id` 的 `annotation` 资产，再由同一插件队列同步到 Obsidian。
 8. 插件在 Obsidian 启动后和每 60 秒自动双向同步，也保留命令面板手动重试；设置页记录最近同步时间或错误，便于排障。
 9. 连接配置按学习账号保存在 PostgreSQL，Sync Secret 只在创建时返回并由 Vault 插件设置持久化。刷新页面、退出后重新登录及容器重建都会复用原连接；只有连接未完成首次同步、被撤销或状态失效时才引导用户重新配置。
@@ -741,7 +741,7 @@ BinnAgentX
 
 ## 本机真实验收记录
 
-使用学习端 `http://127.0.0.1:3000`、API `http://127.0.0.1:8000`、Obsidian 1.12.7 和 Vault `bin01` 完成：
+以下是 v0.1.2 在旧 `Assets/` 目录上的历史验收记录；v0.1.3 已将新导出入口迁移为 `00-Inbox/`，不移动或覆盖用户已有旧文件。使用学习端 `http://127.0.0.1:3000`、API `http://127.0.0.1:8000`、Obsidian 1.12.7 和 Vault `bin01` 完成：
 
 * 体验账号登录成功；
 * 学习端创建“让步结构中的主句判断”，插件生成 `BinnAgentX/Assets/让步结构中的主句判断-*.md`，资产状态从 `pending_export` 变为 `synced`；
@@ -771,7 +771,7 @@ BinnAgentX
 
 ## 安装与排障
 
-* 发布包：`releases/BinnAgentX-Learning-Sync-v0.1.2.zip`；学习端下载副本位于 `apps/learner-web/public/downloads/`。
+* 发布包：`releases/BinnAgentX-Learning-Sync-v0.1.5.zip`；学习端下载副本位于 `apps/learner-web/public/downloads/`。
 * 插件最终目录必须是 `<Vault>/.obsidian/plugins/binnagentx-learning-sync/`。同一插件 ID 的重复目录会导致 Obsidian 不加载插件；本次验收已将旧的重复目录移到 `<Vault>/.obsidian/plugin-backups/`，可恢复但不再参与插件扫描。
 * 服务端连接显示“已配对”但没有最近同步时间时，先检查插件目录是否唯一，再查看插件设置页的“最近同步”。
 * 本次没有运行或重建 OpenWiki；本文和 README 是权威源文档，OpenWiki 仍由用户按既有流程手动维护。

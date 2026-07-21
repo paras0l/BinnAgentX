@@ -52,6 +52,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from binnagent_api.auth import ControlIdentity, require_control_identity
 from binnagent_api.database import get_engine
 from binnagent_api.learner_auth import LearnerIdentity, ensure_identity_learner
+from binnagent_api.learning_evidence_service import record_personalized_run_evidence
 from binnagent_api.personalized_reading_content import (
     grammar_challenge as personalized_grammar_challenge,
 )
@@ -327,6 +328,11 @@ async def start_personalized_reading_run(
             raise DomainError(
                 PublicErrorCode.CONTENT_NOT_ELIGIBLE,
                 "personalized_training_material_not_found",
+            )
+        if row["status"] not in {"ready", "in_progress", "completed"}:
+            raise DomainError(
+                PublicErrorCode.CONTENT_NOT_ELIGIBLE,
+                "personalized_training_material_not_ready",
             )
         active_run_id = row["active_workflow_run_id"]
         if active_run_id is not None:
@@ -640,6 +646,11 @@ async def complete_run(
         )
         saved, replayed = await _save_run(
             connection, run, transition, idempotency_key, body, "complete_run"
+        )
+        await record_personalized_run_evidence(
+            connection,
+            learner_id=saved.learner_id,
+            run=saved,
         )
         await connection.execute(
             tables.personalized_training_materials.update()

@@ -27,13 +27,13 @@ export default defineConfig({
     {
       command: "pnpm --filter @binnagent/learner-web dev",
       url: "http://127.0.0.1:3000/health",
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: process.env.PLAYWRIGHT_REUSE_SERVER === "1",
       timeout: 120_000,
     },
     {
       command: "pnpm --filter @binnagent/control-cockpit dev",
       url: "http://127.0.0.1:3001/health",
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: process.env.PLAYWRIGHT_REUSE_SERVER === "1",
       timeout: 120_000,
     },
   ],

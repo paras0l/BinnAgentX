@@ -31,6 +31,7 @@ from binnagent_api.learner_auth import (
 from binnagent_api.learner_auth import (
     generate_verification_code as _generate_verification_code,
 )
+from binnagent_api.obsidian_organizer import enqueue_login_organization
 from binnagent_api.settings import get_settings
 from binnagent_api.vertical_slice import tables
 
@@ -283,6 +284,9 @@ async def login(body: LoginRequest, response: Response) -> LearnerIdentity:
         if row is None:
             raise HTTPException(status_code=404, detail="learner_not_found_for_email")
         token = await issue_session(connection, row["learner_id"], now)
+        await enqueue_login_organization(
+            connection, learner_id=str(row["learner_id"]), session_token=token
+        )
     _set_session_cookie(response, token)
     return LearnerIdentity(
         learner_id=row["learner_id"],
@@ -344,6 +348,7 @@ async def register(body: RegisterRequest, response: Response) -> LearnerIdentity
             )
         )
         token = await issue_session(connection, learner_id, now)
+        await enqueue_login_organization(connection, learner_id=learner_id, session_token=token)
     _set_session_cookie(response, token)
     return LearnerIdentity(
         learner_id=learner_id,
@@ -449,6 +454,9 @@ async def experience_login(body: ExperienceLoginRequest, response: Response) -> 
             learner_id,
             now,
             expires_at=session_expires_at,
+        )
+        await enqueue_login_organization(
+            connection, learner_id=str(learner_id), session_token=token
         )
     _set_session_cookie(
         response,

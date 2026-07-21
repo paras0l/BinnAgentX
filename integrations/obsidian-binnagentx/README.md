@@ -29,7 +29,7 @@ Then enable **BinnAgentX Learning Sync** in Obsidian's Community plugins.
 
 ## Install for learners
 
-1. Download `BinnAgentX-Learning-Sync-v0.1.2.zip` from the BinnAgentX release.
+1. Download `BinnAgentX-Learning-Sync-v0.1.5.zip` from the BinnAgentX release.
 2. Unzip it into `<your-vault>/.obsidian/plugins/`; the final path must be
    `<your-vault>/.obsidian/plugins/binnagentx-learning-sync/main.js`.
 3. Open Obsidian **Settings → Community plugins**, turn off Restricted mode if
@@ -41,14 +41,26 @@ Then enable **BinnAgentX Learning Sync** in Obsidian's Community plugins.
 
 ## User workflow
 
-1. In plugin settings, choose `BinnAgentX/` or specific grammar/vocabulary
-   folders and tags.
-2. Use **Preview learning context** from the command palette.
-3. Paste the connection ID and sync secret issued by BinnAgentX.
-4. Use **Sync approved learning context**. The command first creates pending
-   BinnAgentX asset notes under `BinnAgentX/Assets/`, then uploads only the
-   selected note excerpts. New template-based notes become metadata-only assets
-   in BinnAgentX and can influence personalized material generation.
+1. On first load the plugin initializes `BinnAgentX/00-Inbox` through
+   `BinnAgentX/06-Attachments`, creates `BinnAgentX/使用指南.md`, MOC / Dataview
+   dashboards, templates, and non-syncing examples. Existing files are never
+   overwritten. You can rerun **Initialize BinnAgentX learning library** at any time.
+   Managed dashboards use the `00-Dashboard.md` filename so they remain the
+   first note when Obsidian's file explorer is sorted by filename A–Z.
+2. The plugin configures Obsidian's Templates folder as
+   `BinnAgentX/05-Templates` and its attachment folder as
+   `BinnAgentX/06-Attachments`. Enable the Templates core plugin and install the
+   optional Dataview community plugin to render automatic dashboard tables.
+3. In plugin settings, choose `BinnAgentX/` or specific grammar/vocabulary
+   folders and tags, then use **Preview learning context**.
+4. Paste the connection ID and sync secret issued by BinnAgentX.
+5. Use **Sync approved learning context**. Pending BinnAgentX annotations and
+   fragments first arrive under `BinnAgentX/00-Inbox/`; the same established
+   sync flow then uploads only selected note excerpts. After a BinnAgentX login,
+   the organizer can return a one-time move plan; the plugin accepts only the
+   Vocabulary, Grammar, Reading, and Writing managed folders, moves files without
+   rewriting their content, and acknowledges the complete plan. Templates,
+   dashboards, the guide, and bundled examples are excluded from sync.
 
 Automatic bidirectional sync is enabled by default after pairing and runs when
 Obsidian opens and every 60 seconds. It can be disabled in plugin settings.

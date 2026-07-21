@@ -1,7 +1,7 @@
 """Add a metadata-only learner asset index for external knowledge vaults.
 
 Revision ID: 0013_learning_asset_index
-Revises: 0012_prefect_task_runs
+Revises: 0011_content_orchestration
 Create Date: 2026-07-21
 """
 
@@ -12,7 +12,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision: str = "0013_learning_asset_index"
-down_revision: str | None = "0012_prefect_task_runs"
+down_revision: str | None = "0011_content_orchestration"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

@@ -1,15 +1,19 @@
 ---
 binnagent_schema: "learning-context/v1"
 binnagent_kind: "vocabulary"
-title: "{{词汇或短语}}"
+meaning: ""
+status: learning
+created: { { date } }
 tags:
   - binnagent
   - vocabulary
 ---
 
-# {{词汇或短语}}
+# {{title}}
 
 ## 核心含义
+
+## 发音
 
 ## 常用搭配
 
@@ -18,3 +22,7 @@ tags:
 ## 我的例句
 
 ## 易混淆点
+
+## 关联
+
+- [[BinnAgentX/01-Vocabulary/00-Dashboard|词汇 Dashboard]]

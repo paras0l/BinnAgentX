@@ -25,6 +25,7 @@ class MemoryQuery(BaseModel):
 
     text: str = Field(default="", max_length=1000)
     kinds: frozenset[str] = Field(default_factory=frozenset)
+    recently_used_memory_ids: frozenset[str] = Field(default_factory=frozenset)
     limit: int = Field(default=6, ge=1, le=20)
 
 
@@ -32,6 +33,7 @@ class MemoryRecord(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     memory_id: str
+    asset_id: str | None = None
     provider: str
     kind: str
     title: str

@@ -28,6 +28,10 @@ from binnagent_api.knowledge_vault import (
     knowledge_vault_from_settings,
 )
 from binnagent_api.learner_auth import LearnerIdentity
+from binnagent_api.obsidian_organizer import (
+    complete_organization,
+    plan_pending_organization,
+)
 from binnagent_api.settings import get_settings
 from binnagent_api.vertical_slice import tables
 
@@ -171,6 +175,11 @@ class ObsidianContextImportRequest(BaseModel):
     schema_version: str
     vault_name: str = Field(min_length=1, max_length=128)
     entries: list[ObsidianContextEntry] = Field(max_length=80)
+
+
+class ObsidianOrganizationAck(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    completed_action_ids: list[str] = Field(max_length=80)
 
 
 class ObsidianAssetExportView(BaseModel):
@@ -355,7 +364,7 @@ async def import_obsidian_context(
     connection_id: str,
     body: ObsidianContextImportRequest,
     authorization: str | None = Header(default=None),
-) -> dict[str, int]:
+) -> dict[str, Any]:
     if body.schema_version != "learning-context/v1":
         raise HTTPException(status_code=401, detail="obsidian_sync_unauthorized")
     now = datetime.now(UTC)
@@ -367,6 +376,7 @@ async def import_obsidian_context(
             asset_id = entry.asset_id or f"asset_obs_{context_id[:24]}"
             values = {
                 "context_id": context_id,
+                "asset_id": asset_id,
                 "learner_id": row["learner_id"],
                 "connection_id": connection_id,
                 "source_key": entry.source_key,
@@ -455,7 +465,39 @@ async def import_obsidian_context(
             .where(tables.obsidian_sync_connections.c.connection_id == connection_id)
             .values(last_used_at=now)
         )
-    return {"imported": len(body.entries)}
+        organization = await plan_pending_organization(
+            connection,
+            learner_id=str(row["learner_id"]),
+            connection_id=connection_id,
+        )
+    return {"imported": len(body.entries), "organization": organization}
+
+
+@obsidian_sync_router.post("/{connection_id}/organizer-runs/{run_id}/ack")
+async def acknowledge_obsidian_organization(
+    connection_id: str,
+    run_id: str,
+    body: ObsidianOrganizationAck,
+    authorization: str | None = Header(default=None),
+) -> dict[str, str]:
+    async with get_engine().begin() as connection:
+        connection_row = await _require_obsidian_connection(
+            connection, connection_id, authorization
+        )
+        completed = await complete_organization(
+            connection,
+            learner_id=str(connection_row["learner_id"]),
+            run_id=run_id,
+            completed_action_ids=set(body.completed_action_ids),
+        )
+        if not completed:
+            raise HTTPException(status_code=409, detail="obsidian_organization_ack_mismatch")
+        await connection.execute(
+            tables.obsidian_sync_connections.update()
+            .where(tables.obsidian_sync_connections.c.connection_id == connection_id)
+            .values(last_used_at=datetime.now(UTC))
+        )
+    return {"status": "completed"}
 
 
 @obsidian_sync_router.get("/{connection_id}/exports", response_model=list[ObsidianAssetExportView])

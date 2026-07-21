@@ -530,6 +530,10 @@ describe("learner home", () => {
               question: {
                 ...resumableWorkspace.material.question,
                 prompt: "Which statement best captures the central purpose of the passage?",
+                options: resumableWorkspace.material.question.options.map((option, index) => ({
+                  ...option,
+                  option_id: `option_${String.fromCharCode(97 + index)}`,
+                })),
               },
             },
           });
@@ -549,6 +553,8 @@ describe("learner home", () => {
         name: "Which statement best captures the central purpose of the passage?",
       }),
     ).toBeVisible();
+    expect(screen.queryByText("option_a")).not.toBeInTheDocument();
+    expect(screen.getByText("A", { selector: ".option-list strong" })).toBeVisible();
     expect(screen.getByRole("button", { name: "保存 V1（不结束本步）" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "提前结束本步" })).toBeEnabled();
     expect(screen.queryByRole("button", { name: "完成本次阅读" })).not.toBeInTheDocument();

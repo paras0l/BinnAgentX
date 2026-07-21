@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import socket
 from contextlib import suppress
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -15,95 +17,140 @@ from binnagent_agent.workflows.content_generation import (
     ContentGeneratorError,
 )
 from binnagent_api.content_generation_service import build_content_generation_workflow
-from binnagent_api.content_orchestration import content_generation_task
 from binnagent_api.database import dispose_engine, get_engine
+from binnagent_api.personalized_material_service import (
+    enqueue_due_personalized_material,
+    process_next_personalized_material,
+    requeue_interrupted_personalized_materials,
+)
 from binnagent_api.settings import get_settings
 from binnagent_api.vertical_slice import tables
-from prefect.task_worker import serve
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 logger = logging.getLogger("binnagent.worker")
 WORKER_ID = "content-worker-primary"
+WORKER_INSTANCE_ID = f"{socket.gethostname()}:{os.getpid()}"
+CONTENT_JOB_LEASE = timedelta(seconds=30)
 
 
 async def requeue_interrupted_jobs() -> int:
+    now = _utc_now()
     async with get_engine().begin() as connection:
         result = await connection.execute(
             tables.content_generation_jobs.update()
-            .where(tables.content_generation_jobs.c.status == "running")
-            .values(status="queued", started_at=None)
+            .where(
+                tables.content_generation_jobs.c.status == "running",
+                sa.or_(
+                    tables.content_generation_jobs.c.lease_expires_at.is_(None),
+                    tables.content_generation_jobs.c.lease_expires_at <= now,
+                ),
+            )
+            .values(
+                status="queued",
+                started_at=None,
+                claimed_by=None,
+                lease_expires_at=None,
+            )
         )
     return int(result.rowcount or 0)
 
 
 async def process_next_content_job() -> bool:
-    async with get_engine().connect() as connection:
-        job_id = await connection.scalar(
-            sa.select(tables.content_generation_jobs.c.job_id)
-            .where(tables.content_generation_jobs.c.status == "queued")
-            .order_by(tables.content_generation_jobs.c.created_at)
-            .limit(1)
-        )
-    if job_id is None:
+    job = await _claim_content_job()
+    if job is None:
         return False
-    await process_content_job(str(job_id))
+    await _execute_content_job(job)
     return True
 
 
 async def process_content_job(job_id: str) -> str:
+    job = await _claim_content_job(job_id=job_id)
+    if job is None:
+        async with get_engine().connect() as connection:
+            status = await connection.scalar(
+                sa.select(tables.content_generation_jobs.c.status).where(
+                    tables.content_generation_jobs.c.job_id == job_id
+                )
+            )
+        if status is None:
+            raise LookupError(f"content job not found: {job_id}")
+        return str(status)
+    return await _execute_content_job(job)
+
+
+async def _claim_content_job(*, job_id: str | None = None) -> dict[str, Any] | None:
+    now = _utc_now()
+    settings = get_settings()
     async with get_engine().begin() as connection:
+        filters = [tables.content_generation_jobs.c.status == "queued"]
+        if job_id is not None:
+            filters.append(tables.content_generation_jobs.c.job_id == job_id)
         row = (
             (
                 await connection.execute(
                     sa.select(tables.content_generation_jobs)
-                    .where(tables.content_generation_jobs.c.job_id == job_id)
-                    .with_for_update()
+                    .where(*filters)
+                    .order_by(tables.content_generation_jobs.c.created_at)
+                    .limit(1)
+                    .with_for_update(skip_locked=True)
                 )
             )
             .mappings()
             .one_or_none()
         )
         if row is None:
-            raise LookupError(f"content job not found: {job_id}")
+            return None
         job = dict(row)
-        if job["status"] not in {"queued", "running"}:
-            logger.info("content generation job already terminal: %s (%s)", job_id, job["status"])
-            return str(job["status"])
         if job.get("cancel_requested_at") is not None:
             await connection.execute(
                 tables.content_generation_jobs.update()
-                .where(tables.content_generation_jobs.c.job_id == job_id)
+                .where(tables.content_generation_jobs.c.job_id == job["job_id"])
                 .values(
                     status="cancelled",
                     current_stage="cancelled",
                     completed_at=_utc_now(),
                 )
             )
-            return "cancelled"
-        settings = get_settings()
+            return None
         await connection.execute(
             tables.content_generation_jobs.update()
-            .where(tables.content_generation_jobs.c.job_id == job_id)
+            .where(tables.content_generation_jobs.c.job_id == job["job_id"])
             .values(
                 status="running",
-                started_at=_utc_now(),
+                started_at=now,
                 current_stage="starting",
-                heartbeat_at=_utc_now(),
+                heartbeat_at=now,
                 attempt_count=tables.content_generation_jobs.c.attempt_count + 1,
                 model_provider=settings.model_adapter,
                 model_name=_model_name(settings),
+                claimed_by=WORKER_INSTANCE_ID,
+                lease_expires_at=now + CONTENT_JOB_LEASE,
             )
         )
-        await _upsert_worker(connection, state="running", job_id=job_id)
+        await _upsert_worker(connection, state="running", job_id=str(job["job_id"]))
+    job["attempt_count"] = int(job["attempt_count"]) + 1
+    job["claimed_by"] = WORKER_INSTANCE_ID
+    job["lease_expires_at"] = now + CONTENT_JOB_LEASE
+    return job
 
+
+async def _execute_content_job(job: dict[str, Any]) -> str:
+    job_id = str(job["job_id"])
     logger.info("content generation job started: %s", job_id)
     updates = await _run_job(job)
+    updates["claimed_by"] = None
+    updates["lease_expires_at"] = None
     async with get_engine().begin() as connection:
-        await connection.execute(
+        result = await connection.execute(
             tables.content_generation_jobs.update()
-            .where(tables.content_generation_jobs.c.job_id == job_id)
+            .where(
+                tables.content_generation_jobs.c.job_id == job_id,
+                tables.content_generation_jobs.c.claimed_by == WORKER_INSTANCE_ID,
+            )
             .values(**updates)
         )
+        if not result.rowcount:
+            raise RuntimeError(f"content job lease lost: {job_id}")
         await _upsert_worker(connection, state="idle", job_id=None)
     logger.info(
         "content generation job finished: %s (%s)",
@@ -216,12 +263,17 @@ async def run_worker(*, stop_event: asyncio.Event | None = None, once: bool = Fa
     settings = get_settings()
     event = stop_event or asyncio.Event()
     requeued = await requeue_interrupted_jobs()
+    requeued += await requeue_interrupted_personalized_materials()
     async with get_engine().begin() as connection:
         await _upsert_worker(connection, state="idle", job_id=None, reset_started=True)
     logger.info("worker ready; requeued interrupted jobs: %s", requeued)
     try:
         while not event.is_set():
+            await requeue_interrupted_jobs()
+            await requeue_interrupted_personalized_materials()
+            await enqueue_due_personalized_material()
             processed = await process_next_content_job()
+            processed = await process_next_personalized_material() or processed
             if once:
                 return
             if processed:
@@ -237,14 +289,7 @@ async def run_worker(*, stop_event: asyncio.Event | None = None, once: bool = Fa
 
 def run() -> None:
     logging.basicConfig(level=get_settings().log_level, format="%(levelname)s %(message)s")
-
-    async def prepare() -> None:
-        async with get_engine().begin() as connection:
-            await _upsert_worker(connection, state="idle", job_id=None, reset_started=True)
-        await dispose_engine()
-
-    asyncio.run(prepare())
-    serve(content_generation_task, limit=1)
+    asyncio.run(run_worker())
 
 
 def _utc_now() -> datetime:
@@ -263,12 +308,16 @@ async def _record_progress(job_id: str, progress: ContentGenerationProgress) -> 
             "current_stage": progress.stage,
             "current_item_id": progress.item_id,
             "heartbeat_at": now,
+            "lease_expires_at": now + CONTENT_JOB_LEASE,
         }
         if progress.completed is not None:
             values["progress_completed"] = progress.completed
         await connection.execute(
             tables.content_generation_jobs.update()
-            .where(tables.content_generation_jobs.c.job_id == job_id)
+            .where(
+                tables.content_generation_jobs.c.job_id == job_id,
+                tables.content_generation_jobs.c.claimed_by == WORKER_INSTANCE_ID,
+            )
             .values(**values)
         )
         await connection.execute(
@@ -347,8 +396,14 @@ async def _run_with_heartbeat(job_id: str, operation: Any) -> Any:
             now = _utc_now()
             await connection.execute(
                 tables.content_generation_jobs.update()
-                .where(tables.content_generation_jobs.c.job_id == job_id)
-                .values(heartbeat_at=now)
+                .where(
+                    tables.content_generation_jobs.c.job_id == job_id,
+                    tables.content_generation_jobs.c.claimed_by == WORKER_INSTANCE_ID,
+                )
+                .values(
+                    heartbeat_at=now,
+                    lease_expires_at=now + CONTENT_JOB_LEASE,
+                )
             )
             await _upsert_worker(connection, state="running", job_id=job_id)
     return await task

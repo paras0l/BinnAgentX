@@ -493,6 +493,9 @@ button:disabled {
   align-items: start;
   gap: 12px;
 }
+.personalized-workbench {
+  margin-bottom: 14px;
+}
 .job-column,
 .detail-panel {
   border: 1px solid var(--line);
@@ -649,7 +652,11 @@ button:disabled {
   white-space: nowrap;
 }
 .status-pill.running,
-.status-pill.active {
+.status-pill.active,
+.status-pill.generating,
+.status-pill.validating,
+.status-pill.ready,
+.status-pill.in_progress {
   color: #baf6df;
   background: #24503f;
 }
@@ -665,7 +672,8 @@ button:disabled {
 }
 .status-pill.cancelled,
 .status-pill.expired,
-.status-pill.exhausted {
+.status-pill.exhausted,
+.status-pill.completed {
   color: #cad2d8;
   background: #3b4248;
 }
@@ -908,7 +916,8 @@ button:disabled {
 .timeline-event.review_approved > i,
 .timeline-event.item_completed > i,
 .timeline-event.completed > i,
-.timeline-event.published > i {
+.timeline-event.published > i,
+.timeline-event.ready > i {
   border-color: var(--accent);
   background: var(--accent-dark);
 }

@@ -1,13 +1,13 @@
 ---
 binnagent_schema: "learning-context/v1"
 binnagent_kind: "writing_expression"
-title: "{{可迁移表达}}"
+created: { { date } }
 tags:
   - binnagent
   - writing-expression
 ---
 
-# {{可迁移表达}}
+# {{title}}
 
 ## 表达功能
 

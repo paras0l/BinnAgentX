@@ -17,6 +17,7 @@ interface SyncSettings {
   maxNotes: number;
   maxExcerptCharacters: number;
   autoSync: boolean;
+  libraryVersion: number;
   lastSyncedAt: string;
   lastSyncError: string;
 }
@@ -41,6 +42,44 @@ interface PendingAssetExport {
   initial_content: string | null;
 }
 
+interface OrganizationAction {
+  action_id: string;
+  source_key: string;
+  target_folder: string;
+  kind: LearningKind;
+  reason: string;
+}
+
+interface OrganizationPlan {
+  run_id: string;
+  actions: OrganizationAction[];
+}
+
+interface ImportResponse {
+  imported: number;
+  organization: OrganizationPlan | null;
+}
+
+const LIBRARY_ROOT = "BinnAgentX";
+const LIBRARY_FOLDERS = [
+  "00-Inbox",
+  "01-Vocabulary",
+  "02-Grammar",
+  "03-Reading",
+  "04-Writing",
+  "05-Templates",
+  "06-Attachments",
+] as const;
+const INBOX_FOLDER = `${LIBRARY_ROOT}/00-Inbox`;
+const TEMPLATE_FOLDER = `${LIBRARY_ROOT}/05-Templates`;
+const ATTACHMENT_FOLDER = `${LIBRARY_ROOT}/06-Attachments`;
+const CURRENT_LIBRARY_VERSION = 2;
+const DASHBOARD_MIGRATIONS = [
+  [`${LIBRARY_ROOT}/Dashboard.md`, `${LIBRARY_ROOT}/00-Dashboard.md`],
+  [`${LIBRARY_ROOT}/01-Vocabulary/Dashboard.md`, `${LIBRARY_ROOT}/01-Vocabulary/00-Dashboard.md`],
+  [`${LIBRARY_ROOT}/02-Grammar/Dashboard.md`, `${LIBRARY_ROOT}/02-Grammar/00-Dashboard.md`],
+] as const;
+
 const DEFAULT_SETTINGS: SyncSettings = {
   apiBaseUrl: "http://127.0.0.1:8000/learner",
   connectionId: "",
@@ -50,19 +89,302 @@ const DEFAULT_SETTINGS: SyncSettings = {
   maxNotes: 80,
   maxExcerptCharacters: 900,
   autoSync: true,
+  libraryVersion: 0,
   lastSyncedAt: "",
   lastSyncError: "",
 };
 
 const LEARNING_TEMPLATES: Record<string, string> = {
   "词汇.md":
-    '---\nbinnagent_schema: "learning-context/v1"\nbinnagent_kind: "vocabulary"\ntags:\n  - binnagent\n  - vocabulary\n---\n\n# 词汇或短语\n\n## 核心含义\n\n## 常用搭配\n\n## 原句与语境\n\n## 我的例句\n\n## 易混淆点\n',
+    '---\nbinnagent_schema: "learning-context/v1"\nbinnagent_kind: "vocabulary"\nmeaning: ""\nstatus: learning\ncreated: {{date}}\ntags:\n  - binnagent\n  - vocabulary\n---\n\n# {{title}}\n\n## 核心含义\n\n## 发音\n\n## 常用搭配\n\n## 原句与语境\n\n## 我的例句\n\n## 易混淆点\n\n## 关联\n- [[BinnAgentX/01-Vocabulary/00-Dashboard|词汇 Dashboard]]\n',
   "语法.md":
-    '---\nbinnagent_schema: "learning-context/v1"\nbinnagent_kind: "grammar"\ntags:\n  - binnagent\n  - grammar\n---\n\n# 语法结构\n\n## 结构公式\n\n## 判断线索\n\n## 原句拆解\n\n## 常见误区\n\n## 新语境验证\n',
+    '---\nbinnagent_schema: "learning-context/v1"\nbinnagent_kind: "grammar"\nstatus: learning\ncreated: {{date}}\ntags:\n  - binnagent\n  - grammar\n---\n\n# {{title}}\n\n## 一句话规则\n\n## 结构公式\n\n## 判断线索\n\n## 原句拆解\n\n## 常见误区\n\n## 新语境验证\n\n## 关联\n- [[BinnAgentX/02-Grammar/00-Dashboard|语法 Dashboard]]\n',
   "写作表达.md":
-    '---\nbinnagent_schema: "learning-context/v1"\nbinnagent_kind: "writing_expression"\ntags:\n  - binnagent\n  - writing-expression\n---\n\n# 可迁移表达\n\n## 表达功能\n\n## 句式骨架\n\n## 原始范例\n\n## 我的改写\n\n## 可替换词槽\n',
+    '---\nbinnagent_schema: "learning-context/v1"\nbinnagent_kind: "writing_expression"\ncreated: {{date}}\ntags:\n  - binnagent\n  - writing-expression\n---\n\n# {{title}}\n\n## 表达功能\n\n## 句式骨架\n\n## 原始范例\n\n## 我的改写\n\n## 可替换词槽\n',
   "阅读策略.md":
-    '---\nbinnagent_schema: "learning-context/v1"\nbinnagent_kind: "reading_skill"\ntags:\n  - binnagent\n  - reading-skill\n---\n\n# 阅读策略\n\n## 适用场景\n\n## 操作步骤\n\n## 证据定位\n\n## 失败信号\n\n## 新文章验证\n',
+    '---\nbinnagent_schema: "learning-context/v1"\nbinnagent_kind: "reading_skill"\ncreated: {{date}}\ntags:\n  - binnagent\n  - reading-skill\n---\n\n# {{title}}\n\n## 适用场景\n\n## 操作步骤\n\n## 证据定位\n\n## 失败信号\n\n## 新文章验证\n',
+};
+
+const LIBRARY_NOTES: Record<string, string> = {
+  [`${LIBRARY_ROOT}/00-Dashboard.md`]: `# BinnAgentX 学习地图
+
+第一次使用请先读 [[使用指南]]。之后从 [[00-Inbox/收集箱使用说明|收集箱]] 开始，把碎片定期整理到下面的领域目录。
+
+## 内容地图（MOC）
+
+- [[01-Vocabulary/00-Dashboard|词汇 Dashboard]]
+- [[02-Grammar/00-Dashboard|语法 Dashboard]]
+- [[03-Reading/阅读笔记示例|阅读]]
+- [[04-Writing/写作练习示例|写作]]
+- [[05-Templates/词汇|笔记模板]]
+
+## 最近更新（Dataview）
+
+\`\`\`dataview
+TABLE WITHOUT ID file.link AS "笔记", binnagent_kind AS "类型", file.mtime AS "更新时间"
+FROM "BinnAgentX"
+WHERE file.name != "00-Dashboard" AND file.name != "Dashboard" AND !contains(file.path, "/05-Templates/")
+SORT file.mtime DESC
+LIMIT 12
+\`\`\`
+
+> 未安装 Dataview 时，上面的查询会显示为代码块；MOC 链接仍可正常使用。
+`,
+  [`${LIBRARY_ROOT}/使用指南.md`]: `---
+binnagent_sync: false
+tags:
+  - binnagent
+  - guide
+---
+
+# BinnAgentX 学习库使用指南
+
+这套目录把“快速记录”和“长期整理”分开。最简单的用法只有三步：**先收集、再整理、常回顾**。
+
+## 目录说明
+
+| 文件夹 | 用途 | 什么时候放进去 |
+| --- | --- | --- |
+| \`00-Inbox/\` | 收集箱 | BinnAgentX 同步来的标注、随手记下的句子、还不知道如何分类的碎片 |
+| \`01-Vocabulary/\` | 词汇 | 已经补充了含义、搭配、语境或例句的单词和短语 |
+| \`02-Grammar/\` | 语法 | 能说清规则、结构、误区和验证例句的语法点 |
+| \`03-Reading/\` | 阅读 | 文章原文、书籍摘记、摘要、证据和阅读策略 |
+| \`04-Writing/\` | 写作 | 英文写作练习、V1/V2 修改过程和可迁移表达 |
+| \`05-Templates/\` | 模板 | Obsidian Templates 核心插件使用的笔记模板 |
+| \`06-Attachments/\` | 附件 | 图片、PDF、音频等非 Markdown 文件 |
+
+## 推荐工作流
+
+1. **随时收集**：先把内容放进 \`00-Inbox/\`，不要因为分类而打断学习。
+2. **每周整理**：为有价值的碎片补上自己的解释和例句，再移动到词汇、语法、阅读或写作目录。
+3. **建立连接**：用 \`[[笔记名]]\` 把相关词汇、语法和阅读笔记互相链接。
+4. **回到地图**：从 [[00-Dashboard|总 Dashboard]]、[[01-Vocabulary/00-Dashboard|词汇 Dashboard]] 或 [[02-Grammar/00-Dashboard|语法 Dashboard]] 浏览和复习。
+
+## 模板怎么用
+
+插件会把 Obsidian 的模板文件夹设为 \`BinnAgentX/05-Templates\`。启用 Obsidian 的 **Templates（模板）核心插件** 后，新建笔记并执行“插入模板”，再选择词汇、语法、阅读策略或写作表达模板。
+
+## Dashboard 和 Dataview
+
+Dashboard 本身是内容地图（MOC），里面的普通链接不依赖任何插件。安装并启用社区插件 **Dataview** 后，词汇、语法和最近更新列表会自动生成；未安装时只会看到查询代码块，不影响其他笔记。
+
+## 附件
+
+插件会把 Obsidian 的默认附件位置设为 \`BinnAgentX/06-Attachments\`。之后粘贴图片或加入 PDF 时，附件会集中存放，正文仍可用 Obsidian 链接引用。
+
+## 不会发生什么
+
+- 初始化可以重复执行，但不会覆盖同名文件或你已经修改的模板。
+- 插件不会自动替你移动、删除或“整理完成”收集箱里的内容。
+- 指南、Dashboard 和初始化示例带有 \`binnagent_sync: false\`，不会作为你的个人学习上下文上传。
+`,
+  [`${INBOX_FOLDER}/收集箱使用说明.md`]: `---
+binnagent_sync: false
+inbox_status: reference
+tags:
+  - binnagent
+  - inbox
+---
+
+# 收集箱使用说明
+
+标注、灵感、不会归类的表达先放在这里，不需要一开始就写得完整。
+
+## 每周整理
+
+1. 能复用的单词或短语，整理到 [[../01-Vocabulary/00-Dashboard|词汇]]。
+2. 句子背后的规则，整理到 [[../02-Grammar/00-Dashboard|语法]]。
+3. 原文与阅读记录，整理到 [[../03-Reading/阅读笔记示例|阅读]]。
+4. 自己写的段落，整理到 [[../04-Writing/写作练习示例|写作]]。
+5. 已处理的碎片可归档、移动或删除；插件不会替你覆盖这些内容。
+`,
+  [`${LIBRARY_ROOT}/01-Vocabulary/00-Dashboard.md`]: `# 词汇 Dashboard
+
+这是词汇库的内容地图。新建笔记时使用 [[../05-Templates/词汇|词汇模板]]。
+
+## 全部词汇（Dataview）
+
+\`\`\`dataview
+TABLE WITHOUT ID file.link AS "词汇", meaning AS "核心含义", status AS "状态", file.mtime AS "更新"
+FROM "BinnAgentX/01-Vocabulary"
+WHERE file.name != "00-Dashboard" AND file.name != "Dashboard"
+SORT file.mtime DESC
+\`\`\`
+
+## 建议的 MOC
+
+- 按主题：学习、工作、旅行、情绪
+- 按关系：同义词、反义词、易混词、固定搭配
+- 示例：[[resilient]]
+`,
+  [`${LIBRARY_ROOT}/01-Vocabulary/resilient.md`]: `---
+binnagent_sync: false
+binnagent_schema: "learning-context/v1"
+binnagent_kind: "vocabulary"
+meaning: "有韧性的；能迅速恢复的"
+status: learning
+tags:
+  - binnagent
+  - vocabulary
+  - character
+---
+
+# resilient
+
+## 核心含义
+
+Able to recover quickly after difficulty or change.
+
+## 发音
+
+/rɪˈzɪliənt/
+
+## 常用搭配
+
+- resilient people
+- a resilient economy
+- remain resilient
+
+## 原句与语境
+
+The team remained resilient after an early setback.
+
+## 我的例句
+
+I want to become more resilient when a plan changes unexpectedly.
+
+## 易混淆点
+
+**resilient** 强调受挫后的恢复能力；**persistent** 强调持续坚持。
+
+## 关联
+
+- [[00-Dashboard]]
+`,
+  [`${LIBRARY_ROOT}/02-Grammar/00-Dashboard.md`]: `# 语法 Dashboard
+
+这是语法库的内容地图。新建笔记时使用 [[../05-Templates/语法|语法模板]]。
+
+## 全部语法点（Dataview）
+
+\`\`\`dataview
+TABLE WITHOUT ID file.link AS "语法点", status AS "状态", file.mtime AS "更新"
+FROM "BinnAgentX/02-Grammar"
+WHERE file.name != "00-Dashboard" AND file.name != "Dashboard"
+SORT file.mtime DESC
+\`\`\`
+
+## 建议的 MOC
+
+- 时态与语态
+- 从句
+- 非谓语动词
+- 连接与衔接
+- 示例：[[although 与 despite]]
+`,
+  [`${LIBRARY_ROOT}/02-Grammar/although 与 despite.md`]: `---
+binnagent_sync: false
+binnagent_schema: "learning-context/v1"
+binnagent_kind: "grammar"
+status: learning
+tags:
+  - binnagent
+  - grammar
+  - concession
+---
+
+# although 与 despite
+
+## 一句话规则
+
+**although** 后接完整从句；**despite** 后接名词、代词或动名词。
+
+## 结构公式
+
+- Although + 主语 + 谓语, 主句。
+- Despite + 名词 / doing, 主句。
+
+## 原句拆解
+
+Although it was raining, we kept walking.
+
+Despite the rain, we kept walking.
+
+## 常见误区
+
+不要写成 “despite it was raining”。可改为 “despite the rain” 或 “despite the fact that it was raining”。
+
+## 新语境验证
+
+Although the task was difficult, she finished it on time.
+
+## 关联
+
+- [[00-Dashboard]]
+`,
+  [`${LIBRARY_ROOT}/03-Reading/阅读笔记示例.md`]: `---
+binnagent_sync: false
+binnagent_schema: "learning-context/v1"
+binnagent_kind: "reading_skill"
+status: example
+tags:
+  - binnagent
+  - reading
+---
+
+# 阅读笔记示例
+
+## 来源
+
+在这里记录文章标题、作者和链接。
+
+## 一句话摘要
+
+先用自己的话写一句，再补细节。
+
+## 关键段落与证据
+
+摘录少量关键句，并说明它为什么重要。
+
+## 新词与语法
+
+- 词汇可整理到 [[../01-Vocabulary/00-Dashboard|词汇 Dashboard]]。
+- 语法可整理到 [[../02-Grammar/00-Dashboard|语法 Dashboard]]。
+
+## 我的观点
+
+写下赞同、质疑或可以迁移到其他文章的想法。
+`,
+  [`${LIBRARY_ROOT}/04-Writing/写作练习示例.md`]: `---
+binnagent_sync: false
+binnagent_schema: "learning-context/v1"
+binnagent_kind: "writing_skill"
+status: draft
+tags:
+  - binnagent
+  - writing
+---
+
+# 写作练习示例
+
+## 题目
+
+Describe a habit that has improved your learning.
+
+## V1 草稿
+
+先写完，不在第一遍追求完美。
+
+## 修改记录
+
+- 内容：观点是否清楚？
+- 结构：段落是否有主题句和证据？
+- 语言：是否能用更准确的词汇或句式？
+
+## V2 定稿
+
+根据修改记录重写，并保留 V1 方便比较。
+`,
 };
 
 export default class BinnAgentXLearningSyncPlugin extends Plugin {
@@ -83,11 +405,11 @@ export default class BinnAgentXLearningSyncPlugin extends Plugin {
     });
     this.addCommand({
       id: "install-learning-templates",
-      name: "Install BinnAgentX learning templates",
-      callback: () => this.installTemplates(),
+      name: "Initialize BinnAgentX learning library",
+      callback: () => this.initializeLearningLibrary(),
     });
     this.app.workspace.onLayoutReady(() => {
-      if (this.settings.autoSync) void this.sync(false);
+      void this.handleLayoutReady();
     });
     this.registerInterval(
       window.setInterval(() => {
@@ -102,6 +424,18 @@ export default class BinnAgentXLearningSyncPlugin extends Plugin {
 
   async saveSettings(): Promise<void> {
     await this.saveData(this.settings);
+  }
+
+  private async handleLayoutReady(): Promise<void> {
+    if (this.settings.libraryVersion < CURRENT_LIBRARY_VERSION) {
+      try {
+        await this.initializeLearningLibrary(false);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "未知错误";
+        new Notice(`BinnAgentX 学习库初始化失败：${message}`);
+      }
+    }
+    if (this.settings.autoSync) await this.sync(false);
   }
 
   private async collectEntriesAsync(): Promise<LearningContextEntry[]> {
@@ -155,19 +489,103 @@ export default class BinnAgentXLearningSyncPlugin extends Plugin {
     }
   }
 
-  private async installTemplates(): Promise<void> {
-    const folder = "BinnAgentX/Templates";
-    if (!this.app.vault.getAbstractFileByPath("BinnAgentX"))
-      await this.app.vault.createFolder("BinnAgentX");
-    if (!this.app.vault.getAbstractFileByPath(folder)) await this.app.vault.createFolder(folder);
+  async initializeLearningLibrary(showNotice = true): Promise<void> {
     let installed = 0;
-    for (const [name, content] of Object.entries(LEARNING_TEMPLATES)) {
-      if (!this.app.vault.getAbstractFileByPath(`${folder}/${name}`)) {
-        await this.app.vault.create(`${folder}/${name}`, content);
+    if (!this.app.vault.getAbstractFileByPath(LIBRARY_ROOT)) {
+      await this.app.vault.createFolder(LIBRARY_ROOT);
+      installed += 1;
+    }
+    for (const name of LIBRARY_FOLDERS) {
+      const folder = `${LIBRARY_ROOT}/${name}`;
+      if (!this.app.vault.getAbstractFileByPath(folder)) {
+        await this.app.vault.createFolder(folder);
         installed += 1;
       }
     }
-    new Notice(installed ? `已安装 ${installed} 个 BinnAgentX 模板` : "模板已存在，未覆盖你的修改");
+    installed += await this.migrateManagedDashboards();
+    await this.rewriteManagedDashboardLinks();
+    for (const [name, content] of Object.entries(LEARNING_TEMPLATES)) {
+      if (!this.app.vault.getAbstractFileByPath(`${TEMPLATE_FOLDER}/${name}`)) {
+        await this.app.vault.create(`${TEMPLATE_FOLDER}/${name}`, content);
+        installed += 1;
+      }
+    }
+    for (const [path, content] of Object.entries(LIBRARY_NOTES)) {
+      if (!this.app.vault.getAbstractFileByPath(path)) {
+        await this.app.vault.create(path, content);
+        installed += 1;
+      }
+    }
+    await this.configureObsidianFolders();
+    this.settings.libraryVersion = CURRENT_LIBRARY_VERSION;
+    await this.saveSettings();
+    if (showNotice) {
+      new Notice(
+        installed
+          ? `BinnAgentX 学习库已初始化（新增 ${installed} 项）`
+          : "BinnAgentX 学习库已就绪，未覆盖你的修改",
+      );
+    }
+  }
+
+  private async migrateManagedDashboards(): Promise<number> {
+    let migrated = 0;
+    for (const [legacyPath, targetPath] of DASHBOARD_MIGRATIONS) {
+      const legacy = this.app.vault.getAbstractFileByPath(legacyPath);
+      if (!(legacy instanceof TFile) || this.app.vault.getAbstractFileByPath(targetPath)) continue;
+      await this.app.vault.rename(legacy, targetPath);
+      migrated += 1;
+    }
+    return migrated;
+  }
+
+  private async rewriteManagedDashboardLinks(): Promise<void> {
+    const files = this.app.vault
+      .getMarkdownFiles()
+      .filter(
+        (file) => file.path === `${LIBRARY_ROOT}.md` || file.path.startsWith(`${LIBRARY_ROOT}/`),
+      );
+    for (const file of files) {
+      const content = await this.app.vault.read(file);
+      const updated = updateManagedDashboardLinks(content, file.path);
+      if (updated !== content) await this.app.vault.modify(file, updated);
+    }
+  }
+
+  private async configureObsidianFolders(): Promise<void> {
+    const configurableVault = this.app.vault as typeof this.app.vault & {
+      setConfig?: (key: string, value: unknown) => void;
+    };
+    if (typeof configurableVault.setConfig === "function") {
+      configurableVault.setConfig("attachmentFolderPath", ATTACHMENT_FOLDER);
+    } else {
+      await this.mergeConfigFile(`${this.app.vault.configDir}/app.json`, {
+        attachmentFolderPath: ATTACHMENT_FOLDER,
+      });
+    }
+    await this.mergeConfigFile(`${this.app.vault.configDir}/templates.json`, {
+      folder: TEMPLATE_FOLDER,
+    });
+  }
+
+  private async mergeConfigFile(path: string, patch: Record<string, unknown>): Promise<void> {
+    const adapter = this.app.vault.adapter;
+    let current: Record<string, unknown> = {};
+    if (await adapter.exists(path)) {
+      const raw = await adapter.read(path);
+      try {
+        const parsed: unknown = JSON.parse(raw);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+          current = parsed as Record<string, unknown>;
+        }
+      } catch {
+        throw new Error(`无法更新 Obsidian 配置：${path} 不是有效的 JSON`);
+      }
+    }
+    const updated = { ...current, ...patch };
+    if (JSON.stringify(updated) !== JSON.stringify(current)) {
+      await adapter.write(path, `${JSON.stringify(updated, null, 2)}\n`);
+    }
   }
 
   private async sync(showNotice = true): Promise<void> {
@@ -194,17 +612,72 @@ export default class BinnAgentXLearningSyncPlugin extends Plugin {
       });
       if (response.status < 200 || response.status >= 300)
         throw new Error(`BinnAgentX 拒绝同步（${response.status}）`);
+      const result = response.json as ImportResponse;
+      const organized = await this.applyOrganizationPlan(result.organization);
       this.settings.lastSyncedAt = new Date().toISOString();
       this.settings.lastSyncError = "";
       await this.saveSettings();
       if (showNotice)
-        new Notice(`双向同步完成：接收 ${exported} 条资产，上传 ${entries.length} 条学习上下文。`);
+        new Notice(
+          `双向同步完成：接收 ${exported} 条资产，上传 ${entries.length} 条学习上下文，整理 ${organized} 条 Inbox 笔记。`,
+        );
     } catch (error) {
       const message = error instanceof Error ? error.message : "同步失败";
       this.settings.lastSyncError = message;
       await this.saveSettings();
       if (showNotice) new Notice(message);
     }
+  }
+
+  private async applyOrganizationPlan(plan: OrganizationPlan | null): Promise<number> {
+    if (!plan?.actions.length) return 0;
+    const allowedTargets = new Set([
+      `${LIBRARY_ROOT}/01-Vocabulary`,
+      `${LIBRARY_ROOT}/02-Grammar`,
+      `${LIBRARY_ROOT}/03-Reading`,
+      `${LIBRARY_ROOT}/04-Writing`,
+    ]);
+    const completed: string[] = [];
+    for (const action of plan.actions) {
+      if (!action.source_key.startsWith(`${INBOX_FOLDER}/`)) continue;
+      if (!allowedTargets.has(action.target_folder)) continue;
+      const fileName = action.source_key.slice(action.source_key.lastIndexOf("/") + 1);
+      const extensionIndex = fileName.lastIndexOf(".");
+      const baseName = extensionIndex > 0 ? fileName.slice(0, extensionIndex) : fileName;
+      const extension = extensionIndex > 0 ? fileName.slice(extensionIndex + 1) : "md";
+      const basePath = `${action.target_folder}/${fileName}`;
+      const retryPath = `${action.target_folder}/${baseName}-${action.action_id.slice(0, 6)}.${extension}`;
+      const source = this.app.vault.getAbstractFileByPath(action.source_key);
+      if (!(source instanceof TFile)) {
+        if (
+          this.app.vault.getAbstractFileByPath(basePath) instanceof TFile ||
+          this.app.vault.getAbstractFileByPath(retryPath) instanceof TFile
+        ) {
+          completed.push(action.action_id);
+        }
+        continue;
+      }
+      const targetPath = this.app.vault.getAbstractFileByPath(basePath) ? retryPath : basePath;
+      if (this.app.vault.getAbstractFileByPath(targetPath)) continue;
+      await this.app.vault.rename(source, targetPath);
+      completed.push(action.action_id);
+    }
+    if (completed.length !== plan.actions.length) {
+      throw new Error("Inbox 整理未全部完成；未移动的笔记会保留在原处，下次同步重试");
+    }
+    const response = await requestUrl({
+      url: `${this.settings.apiBaseUrl.replace(/\/$/, "")}/v1/obsidian-sync/${encodeURIComponent(this.settings.connectionId)}/organizer-runs/${encodeURIComponent(plan.run_id)}/ack`,
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this.settings.syncSecret}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ completed_action_ids: completed }),
+      throw: false,
+    });
+    if (response.status < 200 || response.status >= 300)
+      throw new Error(`Inbox 整理回执失败（${response.status}）`);
+    return completed.length;
   }
 
   private async pullPendingAssets(): Promise<number> {
@@ -244,10 +717,13 @@ export default class BinnAgentXLearningSyncPlugin extends Plugin {
   }
 
   private async createAssetNote(item: PendingAssetExport): Promise<TFile> {
-    const root = "BinnAgentX";
-    const folder = `${root}/Assets`;
-    if (!this.app.vault.getAbstractFileByPath(root)) await this.app.vault.createFolder(root);
-    if (!this.app.vault.getAbstractFileByPath(folder)) await this.app.vault.createFolder(folder);
+    if (!this.app.vault.getAbstractFileByPath(LIBRARY_ROOT)) {
+      await this.app.vault.createFolder(LIBRARY_ROOT);
+    }
+    if (!this.app.vault.getAbstractFileByPath(INBOX_FOLDER)) {
+      await this.app.vault.createFolder(INBOX_FOLDER);
+    }
+    const folder = INBOX_FOLDER;
     const filename = `${safeFilename(item.title)}-${item.asset_id.slice(-10)}.md`;
     const path = `${folder}/${filename}`;
     const existing = this.app.vault.getAbstractFileByPath(path);
@@ -259,6 +735,7 @@ export default class BinnAgentXLearningSyncPlugin extends Plugin {
       `binnagent_asset_id: "${yamlString(item.asset_id)}"`,
       `binnagent_kind: "${yamlString(item.kind)}"`,
       `binnagent_source_type: "${yamlString(item.source_type)}"`,
+      "inbox_status: unprocessed",
       `title: "${yamlString(item.title)}"`,
       ...(item.source_task_id
         ? [`binnagent_source_task_id: "${yamlString(item.source_task_id)}"`]
@@ -289,8 +766,16 @@ class BinnAgentXSettingTab extends PluginSettingTab {
     containerEl.empty();
     containerEl.createEl("h2", { text: "BinnAgentX 学习资产同步" });
     containerEl.createEl("p", {
-      text: "仅同步你在下方明确允许的文件夹或标签。笔记不会被删除、改写或移动。",
+      text: "仅同步你明确允许的范围。登录触发的整理只会把 00-Inbox 笔记移动到 BinnAgentX 的词汇、语法、阅读或写作目录；不会删除、改写或移出托管目录。",
     });
+    new Setting(containerEl)
+      .setName("初始化学习库")
+      .setDesc("创建 00–06 目录、MOC / Dataview Dashboard、模板与入门示例；不会覆盖已有文件。")
+      .addButton((button) =>
+        button.setButtonText("检查并补齐").onClick(async () => {
+          await this.plugin.initializeLearningLibrary();
+        }),
+      );
     new Setting(containerEl)
       .setName("自动双向同步")
       .setDesc("Obsidian 启动后及每 60 秒同步一次已授权范围；可随时关闭并改用手动命令。")
@@ -369,13 +854,22 @@ function uniqueStrings(values: string[]): string[] {
   return [...new Set(values.map((value) => value.replace(/^#/, "").trim()).filter(Boolean))];
 }
 function isAllowed(file: TFile, folders: string[], tags: string[], app: App): boolean {
-  if (file.path.startsWith("BinnAgentX/Templates/")) return false;
+  const cache = app.metadataCache.getFileCache(file);
+  if (
+    file.path.startsWith(`${TEMPLATE_FOLDER}/`) ||
+    file.path.startsWith("BinnAgentX/Templates/") ||
+    file.basename === "Dashboard" ||
+    file.basename === "00-Dashboard" ||
+    Object.prototype.hasOwnProperty.call(LIBRARY_NOTES, file.path) ||
+    cache?.frontmatter?.binnagent_sync === false
+  )
+    return false;
   const pathAllowed = folders.some(
     (folder) => file.path === folder || file.path.startsWith(`${folder}/`),
   );
   const fileTags = uniqueStrings([
-    ...(app.metadataCache.getFileCache(file)?.tags ?? []).map((tag) => tag.tag),
-    ...arrayStrings(app.metadataCache.getFileCache(file)?.frontmatter?.tags),
+    ...(cache?.tags ?? []).map((tag) => tag.tag),
+    ...arrayStrings(cache?.frontmatter?.tags),
   ]);
   return pathAllowed || tags.some((tag) => fileTags.includes(tag));
 }
@@ -405,6 +899,33 @@ function inferKind(value: unknown, tags: string[]): LearningKind {
   ).includes(candidate ?? "")
     ? (candidate as LearningKind)
     : "reading_skill";
+}
+function updateManagedDashboardLinks(markdown: string, sourcePath: string): string {
+  let updated = markdown
+    .replaceAll("BinnAgentX/01-Vocabulary/Dashboard", "BinnAgentX/01-Vocabulary/00-Dashboard")
+    .replaceAll("BinnAgentX/02-Grammar/Dashboard", "BinnAgentX/02-Grammar/00-Dashboard")
+    .replaceAll("../01-Vocabulary/Dashboard", "../01-Vocabulary/00-Dashboard")
+    .replaceAll("../02-Grammar/Dashboard", "../02-Grammar/00-Dashboard")
+    .replaceAll("[[01-Vocabulary/Dashboard", "[[01-Vocabulary/00-Dashboard")
+    .replaceAll("[[02-Grammar/Dashboard", "[[02-Grammar/00-Dashboard")
+    .replaceAll("[[Dashboard|总 Dashboard", "[[00-Dashboard|总 Dashboard")
+    .replaceAll(
+      'WHERE file.name != "Dashboard" AND !contains(file.path, "/05-Templates/")',
+      'WHERE file.name != "00-Dashboard" AND file.name != "Dashboard" AND !contains(file.path, "/05-Templates/")',
+    );
+  if (
+    sourcePath.startsWith(`${LIBRARY_ROOT}/01-Vocabulary/`) ||
+    sourcePath.startsWith(`${LIBRARY_ROOT}/02-Grammar/`)
+  ) {
+    updated = updated.replaceAll("[[Dashboard]]", "[[00-Dashboard]]");
+  }
+  if (sourcePath.endsWith("/Dashboard.md") || sourcePath.endsWith("/00-Dashboard.md")) {
+    updated = updated.replaceAll(
+      'WHERE file.name != "Dashboard"',
+      'WHERE file.name != "00-Dashboard" AND file.name != "Dashboard"',
+    );
+  }
+  return updated;
 }
 function summarize(markdown: string, limit: number): string {
   return markdown

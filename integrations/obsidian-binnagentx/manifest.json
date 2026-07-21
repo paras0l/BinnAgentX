@@ -1,7 +1,7 @@
 {
   "id": "binnagentx-learning-sync",
   "name": "BinnAgentX Learning Sync",
-  "version": "0.1.2",
+  "version": "0.1.5",
   "minAppVersion": "1.6.0",
   "description": "Bidirectionally sync BinnAgentX assets and approved learning context.",
   "author": "BinnAgentX",

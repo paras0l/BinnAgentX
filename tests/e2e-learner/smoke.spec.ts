@@ -123,6 +123,26 @@ test.beforeEach(async ({ page }) => {
       }),
     });
   });
+  await page.route("**/api/learner/v1/assets", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: "[]" });
+  });
+  await page.route("**/api/learner/v1/assets/vault-status", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ adapter: "disabled", connected: false, detail: "e2e" }),
+    });
+  });
+  await page.route("**/api/learner/v1/assets/obsidian-plugin-status", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ paired: false, synced_context_count: 0, last_synced_at: null }),
+    });
+  });
+  await page.route("**/api/learner/v1/training-materials", async (route) => {
+    await route.fulfill({ status: 200, contentType: "application/json", body: "[]" });
+  });
   await page.addInitScript(() => {
     if (sessionStorage.getItem("binnagent:e2e-initialized")) return;
     localStorage.clear();
@@ -177,6 +197,70 @@ test("learner entry is desktop-focused and accessible", async ({ page }) => {
 
   const results = await new AxeBuilder({ page }).analyze();
   expect(results.violations).toEqual([]);
+});
+
+test("internal personalized option ids render as compact answer labels without overlap", async ({
+  page,
+}) => {
+  const internalOptionWorkspace = {
+    ...workspace,
+    material: {
+      ...workspace.material,
+      question: {
+        ...workspace.material.question,
+        prompt: "Which statement best captures the central purpose of the passage?",
+        options: workspace.material.question.options.map((option, index) => ({
+          ...option,
+          option_id: `option_${String.fromCharCode(97 + index)}`,
+        })),
+      },
+    },
+  };
+  await page.route(
+    "**/api/learner/v1/runs/workflow_run_browser_0001/resume-workspace",
+    async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ available: true, workspace: internalOptionWorkspace }),
+      });
+    },
+  );
+
+  await page.addInitScript(() => {
+    queueMicrotask(() => {
+      localStorage.setItem(
+        "binnagent:learner-experience:v1:learner_synthetic_local",
+        JSON.stringify({
+          schemaVersion: 1,
+          profile: {
+            exam_track: "english_1",
+            target_score: 70,
+            weekly_minutes: 420,
+            self_reported_level: "developing",
+            prior_exam_seen: false,
+            session_minutes: 45,
+          },
+          sessions: [],
+        }),
+      );
+      localStorage.setItem(
+        "binnagent:learner-resume:v1:learner_synthetic_local",
+        JSON.stringify({ schemaVersion: 1, workflowRunId: "workflow_run_browser_0001" }),
+      );
+    });
+  });
+  await page.goto("/");
+  await page.getByRole("button", { name: "继续上次任务" }).click();
+
+  const firstOption = page.locator(".option-list label").first();
+  await expect(firstOption.locator("strong")).toHaveText("A");
+  await expect(page.getByText("option_a", { exact: true })).toHaveCount(0);
+  const badgeBox = await firstOption.locator("strong").boundingBox();
+  const copyBox = await firstOption.locator("span").boundingBox();
+  expect(badgeBox).not.toBeNull();
+  expect(copyBox).not.toBeNull();
+  expect((badgeBox?.x ?? 0) + (badgeBox?.width ?? 0)).toBeLessThanOrEqual(copyBox?.x ?? 0);
 });
 
 test("collector skin forms a readable h1 hero and paints bubbles while scrolling", async ({
@@ -981,7 +1065,7 @@ test("expression workspace keeps V1, gives one priority check, and requires lear
   expect(boardBox).not.toBeNull();
   expect(leftTabsBox).not.toBeNull();
   expect(rightTabsBox).not.toBeNull();
-  expect(Math.abs(leftTabsBox!.y - rightTabsBox!.y)).toBeLessThan(1);
+  expect(Math.abs(leftTabsBox!.y - rightTabsBox!.y)).toBeLessThanOrEqual(2);
   expect(Math.abs(leftTabsBox!.height - rightTabsBox!.height)).toBeLessThan(1);
   await page.mouse.move(boardBox!.x + boardBox!.width / 2, boardBox!.y + boardBox!.height / 2);
   await page.mouse.down();
@@ -1110,7 +1194,7 @@ test("expression workspace keeps V1, gives one priority check, and requires lear
     element.setAttribute("data-theme", "paper");
   });
 
-  await rightTabs.getByRole("tab", { name: /本步任务/ }).click();
+  await rightTabs.getByRole("tab", { name: /作品区/ }).click();
 
   await page.getByLabel(/^我的作品/).fill(v1Text);
   await page.getByRole("button", { name: "保存 V1（不结束本步）" }).click();

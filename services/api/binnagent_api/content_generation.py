@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
-from urllib.request import Request, urlopen
+from urllib.request import urlopen
 from uuid import uuid4
 
 import sqlalchemy as sa
@@ -17,7 +16,6 @@ from binnagent_api.content_generation_service import (
     ContentPackPublisher,
     ContentPackPublishError,
 )
-from binnagent_api.content_orchestration import submit_content_generation_job
 from binnagent_api.database import get_engine
 from binnagent_api.learner_auth import utc_now
 from binnagent_api.settings import PROJECT_ROOT, get_settings
@@ -67,8 +65,6 @@ class ContentGenerationJobView(BaseModel):
     model_name: str | None
     can_cancel: bool
     can_retry: bool
-    prefect_task_run_id: str | None
-    prefect_task_run_url: str | None
 
 
 class ContentGenerationEventView(BaseModel):
@@ -88,6 +84,39 @@ class ContentGenerationJobDetail(BaseModel):
     events: list[ContentGenerationEventView]
 
 
+class PersonalizedMaterialJobView(BaseModel):
+    material_id: str
+    learner_id: str
+    title: str
+    status: str
+    requested_goal: str
+    requested_kinds: list[str]
+    source_context_count: int
+    evidence_target_count: int
+    generation_attempt_count: int
+    generation_error_code: str | None
+    next_generation_attempt_at: datetime | None
+    claimed_by: str | None
+    lease_expires_at: datetime | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class PersonalizedMaterialEventView(BaseModel):
+    event_id: int
+    event_type: str
+    stage: str
+    attempt: int | None
+    message: str
+    detail: dict[str, Any]
+    occurred_at: datetime
+
+
+class PersonalizedMaterialJobDetail(BaseModel):
+    job: PersonalizedMaterialJobView
+    events: list[PersonalizedMaterialEventView]
+
+
 class WorkerStatusView(BaseModel):
     online: bool
     state: str
@@ -102,19 +131,17 @@ class IntegrationStatusView(BaseModel):
     url: str
 
 
-class PrefectStatusView(IntegrationStatusView):
-    active_workers: int
-
-
 class ContentControlStatusView(BaseModel):
     worker: WorkerStatusView
     langfuse: IntegrationStatusView
-    prefect: PrefectStatusView
     model_provider: str
     model_name: str
     queue_depth: int
     running_count: int
     failed_count: int
+    personalized_queue_depth: int
+    personalized_running_count: int
+    personalized_failed_count: int
     active_pack_job_id: str | None
 
 
@@ -160,6 +187,18 @@ async def get_content_control_status(
         counts: dict[str, int] = {
             str(row._mapping["status"]): int(row._mapping["count"]) for row in count_rows
         }
+        personalized_count_rows = (
+            await connection.execute(
+                sa.select(
+                    tables.personalized_training_materials.c.status,
+                    sa.func.count().label("count"),
+                ).group_by(tables.personalized_training_materials.c.status)
+            )
+        ).all()
+        personalized_counts = {
+            str(row._mapping["status"]): int(row._mapping["count"])
+            for row in personalized_count_rows
+        }
     heartbeat_at = worker["heartbeat_at"] if worker else None
     worker_online = bool(
         heartbeat_at
@@ -175,19 +214,7 @@ async def get_content_control_status(
             _url_reachable,
             settings.langfuse_base_url,
         )
-    prefect_reachable, active_prefect_workers = (
-        await asyncio.to_thread(_prefect_runtime_status, settings.prefect_api_url)
-        if settings.prefect_enabled
-        else (False, 0)
-    )
-    worker_online = worker_online or active_prefect_workers > 0
-    worker_state = (
-        str(worker["state"])
-        if worker and worker_online
-        else "idle"
-        if active_prefect_workers > 0
-        else "offline"
-    )
+    worker_state = str(worker["state"]) if worker and worker_online else "offline"
     return ContentControlStatusView(
         worker=WorkerStatusView(
             online=worker_online,
@@ -203,19 +230,79 @@ async def get_content_control_status(
             reachable=langfuse_reachable,
             url=settings.langfuse_external_url,
         ),
-        prefect=PrefectStatusView(
-            configured=settings.prefect_enabled,
-            reachable=prefect_reachable,
-            url=settings.prefect_external_url,
-            active_workers=active_prefect_workers,
-        ),
         model_provider=settings.model_adapter,
         model_name=_model_name(settings),
         queue_depth=int(counts.get("queued", 0)),
         running_count=int(counts.get("running", 0)),
         failed_count=int(counts.get("generation_failed", 0))
         + int(counts.get("validation_failed", 0)),
+        personalized_queue_depth=int(personalized_counts.get("requested", 0)),
+        personalized_running_count=int(personalized_counts.get("generating", 0))
+        + int(personalized_counts.get("validating", 0)),
+        personalized_failed_count=int(personalized_counts.get("generation_failed", 0)),
         active_pack_job_id=_publisher().active_job_id(),
+    )
+
+
+@content_generation_router.get(
+    "/personalized-jobs",
+    response_model=list[PersonalizedMaterialJobView],
+)
+async def list_personalized_material_jobs(
+    _: Annotated[ControlIdentity, Depends(require_control_identity)],
+) -> list[PersonalizedMaterialJobView]:
+    async with get_engine().connect() as connection:
+        rows = (
+            (
+                await connection.execute(
+                    sa.select(tables.personalized_training_materials)
+                    .order_by(tables.personalized_training_materials.c.created_at.desc())
+                    .limit(30)
+                )
+            )
+            .mappings()
+            .all()
+        )
+    return [_personalized_view(row) for row in rows]
+
+
+@content_generation_router.get(
+    "/personalized-jobs/{material_id}",
+    response_model=PersonalizedMaterialJobDetail,
+)
+async def get_personalized_material_job(
+    material_id: str,
+    _: Annotated[ControlIdentity, Depends(require_control_identity)],
+) -> PersonalizedMaterialJobDetail:
+    async with get_engine().connect() as connection:
+        row = (
+            (
+                await connection.execute(
+                    sa.select(tables.personalized_training_materials).where(
+                        tables.personalized_training_materials.c.material_id == material_id
+                    )
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if row is None:
+            raise HTTPException(status_code=404, detail="personalized_material_job_not_found")
+        events = (
+            (
+                await connection.execute(
+                    sa.select(tables.personalized_material_events)
+                    .where(tables.personalized_material_events.c.material_id == material_id)
+                    .order_by(tables.personalized_material_events.c.occurred_at.desc())
+                    .limit(200)
+                )
+            )
+            .mappings()
+            .all()
+        )
+    return PersonalizedMaterialJobDetail(
+        job=_personalized_view(row),
+        events=[PersonalizedMaterialEventView.model_validate(dict(event)) for event in events],
     )
 
 
@@ -269,11 +356,6 @@ async def create_content_generation_job(
     identity: Annotated[ControlIdentity, Depends(require_control_identity)],
 ) -> ContentGenerationJobView:
     settings = get_settings()
-    if not settings.prefect_enabled:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="prefect_dispatch_disabled",
-        )
     now = utc_now()
     job_id = f"content_job_{uuid4().hex}"
     pack_id = f"agent_content_{settings.env}_{job_id}"
@@ -305,7 +387,8 @@ async def create_content_generation_job(
         "langfuse_trace_id": None,
         "model_provider": settings.model_adapter,
         "model_name": _model_name(settings),
-        "prefect_task_run_id": None,
+        "claimed_by": None,
+        "lease_expires_at": None,
     }
     async with get_engine().begin() as connection:
         await connection.execute(sa.text("SELECT pg_advisory_xact_lock(124908417)"))
@@ -335,59 +418,6 @@ async def create_content_generation_job(
                 occurred_at=now,
             )
         )
-    try:
-        prefect_task_run_id = await asyncio.to_thread(submit_content_generation_job, job_id)
-    except Exception as exc:
-        failed_at = utc_now()
-        error = f"prefect_dispatch_failed: {type(exc).__name__}: {str(exc)[:400]}"
-        async with get_engine().begin() as connection:
-            await connection.execute(
-                tables.content_generation_jobs.update()
-                .where(tables.content_generation_jobs.c.job_id == job_id)
-                .values(
-                    status="generation_failed",
-                    current_stage="dispatch_failed",
-                    validation_errors=[error],
-                    completed_at=failed_at,
-                )
-            )
-            await connection.execute(
-                tables.content_generation_events.insert().values(
-                    job_id=job_id,
-                    event_type="prefect_dispatch_failed",
-                    stage="dispatch_failed",
-                    agent_role=None,
-                    item_id=None,
-                    attempt=None,
-                    message="Prefect 未能接收任务, 可在控制舱重试",
-                    detail={"error_type": type(exc).__name__},
-                    occurred_at=failed_at,
-                )
-            )
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="prefect_dispatch_failed",
-        ) from exc
-    async with get_engine().begin() as connection:
-        await connection.execute(
-            tables.content_generation_jobs.update()
-            .where(tables.content_generation_jobs.c.job_id == job_id)
-            .values(prefect_task_run_id=prefect_task_run_id)
-        )
-        await connection.execute(
-            tables.content_generation_events.insert().values(
-                job_id=job_id,
-                event_type="prefect_task_submitted",
-                stage="queued",
-                agent_role=None,
-                item_id=None,
-                attempt=None,
-                message="Prefect 已接收任务, 等待内容 Worker",
-                detail={"prefect_task_run_id": prefect_task_run_id},
-                occurred_at=utc_now(),
-            )
-        )
-    values["prefect_task_run_id"] = prefect_task_run_id
     return _view(values, _publisher().active_job_id())
 
 
@@ -581,10 +611,35 @@ def _view(row: Any, active_job_id: str | None) -> ContentGenerationJobView:
         model_name=str(row["model_name"]) if row.get("model_name") else None,
         can_cancel=job_status in {"queued", "running"} and row.get("cancel_requested_at") is None,
         can_retry=job_status in {"generation_failed", "validation_failed", "cancelled"},
-        prefect_task_run_id=(
-            str(row["prefect_task_run_id"]) if row.get("prefect_task_run_id") else None
+    )
+
+
+def _personalized_view(row: Any) -> PersonalizedMaterialJobView:
+    source_context_ids = row.get("source_context_ids")
+    evidence_target_ids = row.get("evidence_target_asset_ids")
+    requested_kinds = row.get("requested_kinds")
+    return PersonalizedMaterialJobView(
+        material_id=str(row["material_id"]),
+        learner_id=str(row["learner_id"]),
+        title=str(row["title"]),
+        status=str(row["status"]),
+        requested_goal=str(row["requested_goal"]),
+        requested_kinds=(
+            [str(value) for value in requested_kinds] if isinstance(requested_kinds, list) else []
         ),
-        prefect_task_run_url=_prefect_task_run_url(row.get("prefect_task_run_id")),
+        source_context_count=len(source_context_ids) if isinstance(source_context_ids, list) else 0,
+        evidence_target_count=(
+            len(evidence_target_ids) if isinstance(evidence_target_ids, list) else 0
+        ),
+        generation_attempt_count=int(row.get("generation_attempt_count") or 0),
+        generation_error_code=(
+            str(row["generation_error_code"]) if row.get("generation_error_code") else None
+        ),
+        next_generation_attempt_at=row.get("next_generation_attempt_at"),
+        claimed_by=str(row["claimed_by"]) if row.get("claimed_by") else None,
+        lease_expires_at=row.get("lease_expires_at"),
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
     )
 
 
@@ -611,25 +666,3 @@ def _url_reachable(url: str) -> bool:
             return int(response.status) < 500
     except Exception:
         return False
-
-
-def _prefect_task_run_url(task_run_id: Any) -> str | None:
-    if not task_run_id:
-        return None
-    base = get_settings().prefect_external_url.rstrip("/")
-    return f"{base}/runs/task-run/{task_run_id}"
-
-
-def _prefect_runtime_status(api_url: str) -> tuple[bool, int]:
-    try:
-        request = Request(
-            f"{api_url.rstrip('/')}/task_workers/filter",
-            data=b"{}",
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urlopen(request, timeout=1.5) as response:
-            payload = json.load(response)
-        return True, len(payload) if isinstance(payload, list) else 0
-    except Exception:
-        return False, 0

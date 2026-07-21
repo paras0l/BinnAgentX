@@ -32,10 +32,12 @@ import {
   getKnowledgeVaultStatus,
   getObsidianPluginSyncStatus,
   generatePersonalizedTrainingMaterial,
+  type PersonalizedMaterialGenerationInput,
   LearnerApiError,
   listLearningAssets,
   listTrainingMaterials,
   openLearningAsset,
+  retryPersonalizedTrainingMaterial,
   startPersonalizedReading,
   starLearningAsset,
   type KnowledgeVaultStatus,
@@ -187,6 +189,19 @@ export function LearningExperience({
       active = false;
     };
   }, [identity.learner_id]);
+
+  useEffect(() => {
+    const pending = trainingMaterials.some((material) =>
+      ["requested", "generating", "validating"].includes(material.status),
+    );
+    if (!pending) return;
+    const timer = window.setInterval(() => {
+      void listTrainingMaterials()
+        .then(setTrainingMaterials)
+        .catch(() => undefined);
+    }, 2000);
+    return () => window.clearInterval(timer);
+  }, [trainingMaterials]);
 
   const refreshVaultStatus = useCallback(() => {
     void getKnowledgeVaultStatus()
@@ -362,10 +377,10 @@ export function LearningExperience({
       .catch((reason: unknown) => setError(errorMessage(reason)));
   }, []);
 
-  const generateTrainingMaterial = useCallback(() => {
+  const generateTrainingMaterial = useCallback((input: PersonalizedMaterialGenerationInput) => {
     setIsGeneratingMaterial(true);
     setError(null);
-    void generatePersonalizedTrainingMaterial()
+    void generatePersonalizedTrainingMaterial(input)
       .then((material) => {
         setTrainingMaterials((current) => [
           material,
@@ -374,6 +389,17 @@ export function LearningExperience({
       })
       .catch((reason: unknown) => setError(errorMessage(reason)))
       .finally(() => setIsGeneratingMaterial(false));
+  }, []);
+
+  const retryTrainingMaterial = useCallback((material: PersonalizedTrainingMaterial) => {
+    setError(null);
+    void retryPersonalizedTrainingMaterial(material.material_id)
+      .then((updated) => {
+        setTrainingMaterials((current) =>
+          current.map((item) => (item.material_id === updated.material_id ? updated : item)),
+        );
+      })
+      .catch((reason: unknown) => setError(errorMessage(reason)));
   }, []);
 
   const startPersonalizedMaterial = useCallback(
@@ -519,6 +545,7 @@ export function LearningExperience({
         obsidianConfigured={Boolean(pluginSyncStatus?.paired && pluginSyncStatus.last_synced_at)}
         isGeneratingMaterial={isGeneratingMaterial}
         onGenerateMaterial={generateTrainingMaterial}
+        onRetryMaterial={retryTrainingMaterial}
         onConfigureObsidian={() => {
           setConfigureObsidianRequested(true);
           setSurface("assets");
@@ -804,7 +831,8 @@ interface LearningHomeProps {
   onResume: () => void;
   onContinueSession: (session: CompletedSessionRecord) => void;
   onStartFirst: () => void;
-  onGenerateMaterial: () => void;
+  onGenerateMaterial: (input: PersonalizedMaterialGenerationInput) => void;
+  onRetryMaterial: (material: PersonalizedTrainingMaterial) => void;
   onConfigureObsidian: () => void;
   onOpenTrainingMaterial: (material: PersonalizedTrainingMaterial) => void;
   onOpenProfile: () => void;
@@ -825,6 +853,7 @@ function LearningHome({
   onContinueSession,
   onStartFirst,
   onGenerateMaterial,
+  onRetryMaterial,
   onConfigureObsidian,
   onOpenTrainingMaterial,
   onOpenProfile,
@@ -953,6 +982,7 @@ function LearningHome({
         onConfigureObsidian={onConfigureObsidian}
         onOpenSystemTask={openSystemTask}
         onOpenMaterial={onOpenTrainingMaterial}
+        onRetryMaterial={onRetryMaterial}
       />
 
       <section className="home-grid" data-ui-anchor="primary-actions">

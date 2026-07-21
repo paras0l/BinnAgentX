@@ -11,7 +11,9 @@ import {
   createExperienceCode,
   getContentControlStatus,
   getContentGenerationJob,
+  getPersonalizedMaterialJob,
   listContentGenerationJobs,
+  listPersonalizedMaterialJobs,
   listExperienceCodes,
   listManagedLearners,
   listManagedPrompts,
@@ -34,6 +36,9 @@ import {
   type ManagedPrompt,
   type ManagedTool,
   type PromptDraftInput,
+  type PersonalizedMaterialEvent,
+  type PersonalizedMaterialJob,
+  type PersonalizedMaterialJobDetail,
 } from "../lib/control-api";
 import { PromptsConsole, ToolsConsole } from "./agent-configuration-console";
 
@@ -94,6 +99,10 @@ export default function ControlHomePage() {
   const [jobs, setJobs] = useState<ContentGenerationJob[]>([]);
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [jobDetail, setJobDetail] = useState<ContentGenerationJobDetail | null>(null);
+  const [personalizedJobs, setPersonalizedJobs] = useState<PersonalizedMaterialJob[]>([]);
+  const [selectedPersonalizedId, setSelectedPersonalizedId] = useState<string | null>(null);
+  const [personalizedDetail, setPersonalizedDetail] =
+    useState<PersonalizedMaterialJobDetail | null>(null);
   const [codes, setCodes] = useState<ExperienceCode[]>([]);
   const [users, setUsers] = useState<ManagedLearner[]>([]);
   const [tools, setTools] = useState<ManagedTool[]>([]);
@@ -110,12 +119,14 @@ export default function ControlHomePage() {
 
   const loadContent = useCallback(
     async (preferredJobId?: string | null) => {
-      const [nextStatus, nextJobs] = await Promise.all([
+      const [nextStatus, nextJobs, nextPersonalizedJobs] = await Promise.all([
         getContentControlStatus(),
         listContentGenerationJobs(),
+        listPersonalizedMaterialJobs(),
       ]);
       setStatus(nextStatus);
       setJobs(nextJobs);
+      setPersonalizedJobs(nextPersonalizedJobs);
       const detailId = preferredJobId ?? selectedJobId ?? nextJobs[0]?.job_id ?? null;
       if (detailId) {
         const detail = await getContentGenerationJob(detailId);
@@ -124,8 +135,15 @@ export default function ControlHomePage() {
       } else {
         setJobDetail(null);
       }
+      const personalizedId = selectedPersonalizedId ?? nextPersonalizedJobs[0]?.material_id ?? null;
+      if (personalizedId) {
+        setSelectedPersonalizedId(personalizedId);
+        setPersonalizedDetail(await getPersonalizedMaterialJob(personalizedId));
+      } else {
+        setPersonalizedDetail(null);
+      }
     },
-    [selectedJobId],
+    [selectedJobId, selectedPersonalizedId],
   );
 
   useEffect(() => {
@@ -133,37 +151,56 @@ export default function ControlHomePage() {
     void Promise.all([
       getContentControlStatus(),
       listContentGenerationJobs(),
+      listPersonalizedMaterialJobs(),
       listExperienceCodes(),
       listManagedLearners(),
       listManagedTools(),
       listManagedPrompts(),
     ])
-      .then(async ([nextStatus, nextJobs, nextCodes, nextUsers, nextTools, nextPrompts]) => {
-        if (!active) return;
-        setStatus(nextStatus);
-        setJobs((current) => [
-          ...nextJobs,
-          ...current.filter(
-            (item) => !nextJobs.some((candidate) => candidate.job_id === item.job_id),
-          ),
-        ]);
-        setCodes((current) => [
-          ...nextCodes,
-          ...current.filter(
-            (item) => !nextCodes.some((candidate) => candidate.code_id === item.code_id),
-          ),
-        ]);
-        setUsers(nextUsers);
-        setTools(nextTools);
-        setPrompts(nextPrompts);
-        const firstId = nextJobs[0]?.job_id;
-        if (firstId) {
-          const detail = await getContentGenerationJob(firstId);
+      .then(
+        async ([
+          nextStatus,
+          nextJobs,
+          nextPersonalizedJobs,
+          nextCodes,
+          nextUsers,
+          nextTools,
+          nextPrompts,
+        ]) => {
           if (!active) return;
-          setSelectedJobId(firstId);
-          setJobDetail(detail);
-        }
-      })
+          setStatus(nextStatus);
+          setJobs((current) => [
+            ...nextJobs,
+            ...current.filter(
+              (item) => !nextJobs.some((candidate) => candidate.job_id === item.job_id),
+            ),
+          ]);
+          setPersonalizedJobs(nextPersonalizedJobs);
+          setCodes((current) => [
+            ...nextCodes,
+            ...current.filter(
+              (item) => !nextCodes.some((candidate) => candidate.code_id === item.code_id),
+            ),
+          ]);
+          setUsers(nextUsers);
+          setTools(nextTools);
+          setPrompts(nextPrompts);
+          const firstId = nextJobs[0]?.job_id;
+          if (firstId) {
+            const detail = await getContentGenerationJob(firstId);
+            if (!active) return;
+            setSelectedJobId(firstId);
+            setJobDetail(detail);
+          }
+          const firstPersonalizedId = nextPersonalizedJobs[0]?.material_id;
+          if (firstPersonalizedId) {
+            const detail = await getPersonalizedMaterialJob(firstPersonalizedId);
+            if (!active) return;
+            setSelectedPersonalizedId(firstPersonalizedId);
+            setPersonalizedDetail(detail);
+          }
+        },
+      )
       .catch((reason: unknown) => active && setError(controlErrorMessage(reason)))
       .finally(() => active && setLoading(false));
     return () => {
@@ -171,7 +208,9 @@ export default function ControlHomePage() {
     };
   }, []);
 
-  const hasLiveJob = jobs.some((job) => job.status === "queued" || job.status === "running");
+  const hasLiveJob =
+    jobs.some((job) => job.status === "queued" || job.status === "running") ||
+    personalizedJobs.some((job) => ["requested", "generating", "validating"].includes(job.status));
 
   useEffect(() => {
     if (!hasLiveJob) return;
@@ -183,10 +222,15 @@ export default function ControlHomePage() {
   }, [hasLiveJob, loadContent]);
 
   const selectedJob = jobDetail?.job ?? jobs.find((job) => job.job_id === selectedJobId) ?? null;
-  const activePack = jobs.find((job) => job.is_active);
+  const selectedPersonalizedJob =
+    personalizedDetail?.job ??
+    personalizedJobs.find((job) => job.material_id === selectedPersonalizedId) ??
+    null;
   const failedJobs = useMemo(
-    () => jobs.filter((job) => job.status.includes("failed")).length,
-    [jobs],
+    () =>
+      jobs.filter((job) => job.status.includes("failed")).length +
+      personalizedJobs.filter((job) => job.status === "generation_failed").length,
+    [jobs, personalizedJobs],
   );
 
   const runAction = (operation: () => Promise<ContentGenerationJob>) => {
@@ -207,6 +251,18 @@ export default function ControlHomePage() {
     startTransition(async () => {
       try {
         setJobDetail(await getContentGenerationJob(jobId));
+      } catch (reason) {
+        setError(controlErrorMessage(reason));
+      }
+    });
+  };
+
+  const selectPersonalizedJob = (materialId: string) => {
+    setSelectedPersonalizedId(materialId);
+    setError(null);
+    startTransition(async () => {
+      try {
+        setPersonalizedDetail(await getPersonalizedMaterialJob(materialId));
       } catch (reason) {
         setError(controlErrorMessage(reason));
       }
@@ -293,9 +349,7 @@ export default function ControlHomePage() {
               detail={
                 status?.worker.state === "running" && status.worker.heartbeat_at
                   ? `心跳 ${relativeTime(status.worker.heartbeat_at)}`
-                  : status && status.prefect.active_workers > 0
-                    ? "Prefect Worker 已注册"
-                    : "尚未收到业务心跳"
+                  : "尚未收到业务心跳"
               }
             />
             <StatusCard
@@ -317,23 +371,82 @@ export default function ControlHomePage() {
               detail="记录 Prompt、输出、耗时与模型调用"
             />
             <StatusCard
-              label="Prefect"
-              value={
-                status?.prefect.reachable
-                  ? `${status.prefect.active_workers} 个任务 Worker`
-                  : status?.prefect.configured
-                    ? "服务不可达"
-                    : "未启用"
-              }
-              tone={status?.prefect.reachable ? "healthy" : "danger"}
-              detail="负责任务投递与运行状态，不决定内容发布"
-            />
-            <StatusCard
               label="任务队列"
-              value={`${status?.running_count ?? 0} 运行 · ${status?.queue_depth ?? 0} 等待`}
+              value={`${(status?.running_count ?? 0) + (status?.personalized_running_count ?? 0)} 运行 · ${(status?.queue_depth ?? 0) + (status?.personalized_queue_depth ?? 0)} 等待`}
               tone={failedJobs > 0 ? "warning" : "neutral"}
-              detail={`${status?.failed_count ?? 0} 次失败 · ${activePack ? "已有发布版本" : "尚无发布版本"}`}
+              detail={`${(status?.failed_count ?? 0) + (status?.personalized_failed_count ?? 0)} 次失败 · 含材料包与个性化阅读`}
             />
+          </section>
+
+          <section className="workbench personalized-workbench">
+            <div className="job-column">
+              <div className="section-heading">
+                <div>
+                  <p className="eyebrow">LEARNER MATERIAL RUNS</p>
+                  <h2>个性化阅读生成</h2>
+                </div>
+                <span>{loading ? "读取中" : `${personalizedJobs.length} 次运行`}</span>
+              </div>
+              <div className="job-table personalized-job-table" aria-busy={loading}>
+                <div className="job-table-head">
+                  <span>材料</span>
+                  <span>生成阶段</span>
+                  <span>来源 / 尝试</span>
+                  <span>结果</span>
+                </div>
+                {personalizedJobs.length === 0 && !loading ? (
+                  <p className="empty-state">还没有学习者发起个性化材料生成。</p>
+                ) : null}
+                {personalizedJobs.map((job) => (
+                  <button
+                    type="button"
+                    className={`job-row ${selectedPersonalizedId === job.material_id ? "selected" : ""}`}
+                    key={job.material_id}
+                    onClick={() => selectPersonalizedJob(job.material_id)}
+                  >
+                    <span className="job-identity">
+                      <span className={`status-pill ${job.status}`}>
+                        {personalizedStatusLabel(job.status)}
+                      </span>
+                      <strong>{job.title}</strong>
+                      <small>
+                        {formatDate(job.created_at)} · {shortLearnerId(job.learner_id)}
+                      </small>
+                    </span>
+                    <span className="job-progress-cell">
+                      <strong>{personalizedStageLabel(job)}</strong>
+                      <span className="progress-track">
+                        <i style={{ width: `${personalizedProgress(job.status)}%` }} />
+                      </span>
+                      <small>{job.requested_goal}</small>
+                    </span>
+                    <span className="job-model">
+                      <strong>{job.source_context_count} 条笔记</strong>
+                      <small>第 {job.generation_attempt_count} / 3 次尝试</small>
+                      <small>更新 {relativeTime(job.updated_at)}</small>
+                    </span>
+                    <span className="job-result">
+                      <strong>{job.evidence_target_count} 条可靠来源映射</strong>
+                      <small>
+                        {job.generation_error_code
+                          ? friendlyFailure(job.generation_error_code)
+                          : "无阻断错误"}
+                      </small>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+            <aside className="detail-panel" aria-label="个性化材料运行详情">
+              {selectedPersonalizedJob ? (
+                <PersonalizedJobDetail detail={personalizedDetail} job={selectedPersonalizedJob} />
+              ) : (
+                <div className="detail-empty">
+                  <strong>选择一次个性化生成</strong>
+                  <span>查看知识抽取、阅读生成、校验、重试和失败点。</span>
+                </div>
+              )}
+            </aside>
           </section>
 
           <section className="workbench">
@@ -782,6 +895,92 @@ function StatusCard({
   );
 }
 
+function PersonalizedJobDetail({
+  detail,
+  job,
+}: {
+  detail: PersonalizedMaterialJobDetail | null;
+  job: PersonalizedMaterialJob;
+}) {
+  const latestEvent = detail?.events[0];
+  return (
+    <>
+      <div className="detail-header">
+        <div>
+          <p className="eyebrow">PERSONALIZED RUN DETAIL</p>
+          <h2>{shortId(job.material_id)}</h2>
+        </div>
+        <span className={`status-pill ${job.status}`}>{personalizedStatusLabel(job.status)}</span>
+      </div>
+      <div className="current-activity">
+        <span>当前阶段</span>
+        <strong>{latestEvent?.message ?? personalizedStageLabel(job)}</strong>
+        <small>{job.requested_goal}</small>
+        {["requested", "generating", "validating"].includes(job.status) ? (
+          <span className="activity-pulse">最后活动 {relativeTime(job.updated_at)}</span>
+        ) : null}
+      </div>
+      <dl className="run-facts">
+        <div>
+          <dt>生成尝试</dt>
+          <dd>{job.generation_attempt_count} / 3</dd>
+        </div>
+        <div>
+          <dt>授权来源</dt>
+          <dd>{job.source_context_count} 条</dd>
+        </div>
+        <div>
+          <dt>可靠归因</dt>
+          <dd>{job.evidence_target_count} 条</dd>
+        </div>
+        <div>
+          <dt>学习者</dt>
+          <dd>{shortLearnerId(job.learner_id)}</dd>
+        </div>
+      </dl>
+      {job.generation_error_code ? (
+        <section className="failure-box">
+          <strong>失败诊断</strong>
+          <p>{friendlyFailure(job.generation_error_code)}</p>
+          <details>
+            <summary>查看原始错误</summary>
+            <pre>{job.generation_error_code}</pre>
+          </details>
+        </section>
+      ) : null}
+      <section className="timeline-section">
+        <div className="timeline-heading">
+          <h3>个性化生成时间线</h3>
+          <span>{detail?.events.length ?? 0} 条事件</span>
+        </div>
+        <div className="timeline">
+          {detail?.events.map((event) => (
+            <PersonalizedTimelineEvent event={event} key={event.event_id} />
+          ))}
+          {detail && detail.events.length === 0 ? (
+            <p className="empty-state">旧任务没有阶段事件；重新生成后会完整记录。</p>
+          ) : null}
+        </div>
+      </section>
+    </>
+  );
+}
+
+function PersonalizedTimelineEvent({ event }: { event: PersonalizedMaterialEvent }) {
+  const errorCode = typeof event.detail.error_code === "string" ? event.detail.error_code : null;
+  return (
+    <article className={`timeline-event ${event.stage}`}>
+      <i />
+      <div>
+        <span>{event.attempt ? `生成 Agent · 第 ${event.attempt} 次` : "系统"}</span>
+        <strong>{event.message}</strong>
+        <small>{formatDate(event.occurred_at)}</small>
+        {errorCode ? <small>{friendlyFailure(errorCode)}</small> : null}
+      </div>
+    </article>
+  );
+}
+
 function JobDetail({
   detail,
   job,
@@ -859,13 +1058,6 @@ function JobDetail({
           </a>
         ) : (
           <span>Trace 将在模型调用开始后出现</span>
-        )}
-        {job.prefect_task_run_url ? (
-          <a href={job.prefect_task_run_url} target="_blank" rel="noreferrer">
-            查看 Prefect Task Run ↗
-          </a>
-        ) : (
-          <span>Prefect Run 将在任务投递后出现</span>
         )}
         <div>
           {job.can_cancel ? (
@@ -1040,7 +1232,44 @@ function formatDate(value: string): string {
   return DATE_FORMATTER.format(new Date(value));
 }
 function shortId(value: string): string {
-  return value.replace("content_job_", "run_").slice(0, 16);
+  return value
+    .replace("content_job_", "run_")
+    .replace("training_material_", "material_")
+    .slice(0, 18);
+}
+function shortLearnerId(value: string): string {
+  return value.replace("learner_", "learner_").slice(0, 18);
+}
+function personalizedStatusLabel(status: PersonalizedMaterialJob["status"]): string {
+  return (
+    {
+      requested: "等待生成",
+      generating: "生成中",
+      validating: "校验中",
+      ready: "可训练",
+      in_progress: "训练中",
+      completed: "已完成",
+      generation_failed: "生成失败",
+    } as const
+  )[status];
+}
+function personalizedStageLabel(job: PersonalizedMaterialJob): string {
+  if (job.status === "requested" && job.next_generation_attempt_at)
+    return new Date(job.next_generation_attempt_at).getTime() > Date.now()
+      ? "等待自动重试"
+      : "等待 Worker 领取";
+  return personalizedStatusLabel(job.status);
+}
+function personalizedProgress(status: PersonalizedMaterialJob["status"]): number {
+  return {
+    requested: 10,
+    generating: 50,
+    validating: 80,
+    ready: 100,
+    in_progress: 100,
+    completed: 100,
+    generation_failed: 100,
+  }[status];
 }
 function progressPercent(job: ContentGenerationJob): number {
   return Math.min(
@@ -1063,6 +1292,17 @@ function relativeTime(value: string): string {
       : `${Math.floor(seconds / 60)} 分钟前`;
 }
 function friendlyFailure(value: string): string {
+  if (value.includes("provider_output_protocol_unsupported:longcat"))
+    return "LongCat 当前不兼容可选的 PydanticAI 知识抽取协议；系统已跳过该步骤并继续生成阅读。";
+  if (value.includes("personalized_evidence_targets_missing"))
+    return "模型已生成材料，但旧版要求迁移重点逐字包含笔记标题，导致来源映射失败；新版会保留材料并跳过不可靠归因。";
+  if (value.includes("TimeoutError")) return "模型调用超时；任务会按有限重试策略再次尝试。";
+  if (value.includes("personalized_context_missing"))
+    return "没有找到可用于本次生成的授权 Obsidian 上下文。";
+  if (value.includes("personalized_paragraph_duplicate"))
+    return "模型返回了重复段落，确定性质量门已拒绝该材料。";
+  if (value.includes("personalized_trajectory_invalid"))
+    return "Agent 调用顺序或模型调用预算不符合生成轨迹约束。";
   if (value.includes("summary") && value.includes("too_long"))
     return "审核 Agent 的说明文字超出旧版长度限制；该问题已在新版归一化处理。";
   if (value.includes("requested revision"))
@@ -1080,8 +1320,6 @@ function controlErrorMessage(reason: unknown): string {
     content_generation_job_not_publishable: "材料包尚未通过全部 Agent 审核，不能发布。",
     content_generation_job_not_cancellable: "该任务已经结束，不能再停止。",
     content_generation_job_not_retryable: "只有失败或取消的任务可以重试。",
-    prefect_dispatch_failed: "Prefect 未能接收任务，请检查编排服务后重试。",
-    prefect_dispatch_disabled: "Prefect 任务投递已关闭，无法创建材料任务。",
   };
   return messages[reason.message] ?? `操作没有完成：${reason.message}`;
 }

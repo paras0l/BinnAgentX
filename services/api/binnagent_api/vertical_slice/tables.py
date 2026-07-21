@@ -382,6 +382,7 @@ obsidian_learning_context = sa.Table(
     "obsidian_learning_context",
     metadata,
     sa.Column("context_id", sa.String(64), primary_key=True),
+    sa.Column("asset_id", sa.String(128), nullable=False),
     sa.Column("learner_id", sa.String(128), nullable=False),
     sa.Column("connection_id", sa.String(128), nullable=False),
     sa.Column("source_key", sa.Text(), nullable=False),
@@ -392,6 +393,20 @@ obsidian_learning_context = sa.Table(
     sa.Column("content_hash", sa.String(64), nullable=False),
     sa.Column("source_modified_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("received_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+learning_evidence = sa.Table(
+    "learning_evidence",
+    metadata,
+    sa.Column("evidence_id", sa.String(128), primary_key=True),
+    sa.Column("learner_id", sa.String(128), nullable=False),
+    sa.Column("asset_id", sa.String(128), nullable=False),
+    sa.Column("evidence_type", sa.String(48), nullable=False),
+    sa.Column("workflow_run_id", sa.String(128), nullable=True),
+    sa.Column("task_id", sa.String(128), nullable=True),
+    sa.Column("source_version", sa.Integer(), nullable=True),
+    sa.Column("observed_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("detail", postgresql.JSONB(), nullable=False),
 )
 
 agent_memory_events = sa.Table(
@@ -411,6 +426,37 @@ agent_memory_events = sa.Table(
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
 )
 
+agent_working_memory = sa.Table(
+    "agent_working_memory",
+    metadata,
+    sa.Column("learner_id", sa.String(128), primary_key=True),
+    sa.Column("agent_name", sa.String(128), primary_key=True),
+    sa.Column("scope", sa.String(128), primary_key=True),
+    sa.Column("memory_key", sa.String(128), primary_key=True),
+    sa.Column("payload", postgresql.JSONB(), nullable=False),
+    sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("version", sa.Integer(), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+obsidian_organizer_runs = sa.Table(
+    "obsidian_organizer_runs",
+    metadata,
+    sa.Column("run_id", sa.String(128), primary_key=True),
+    sa.Column("learner_id", sa.String(128), nullable=False),
+    sa.Column("trigger_type", sa.String(32), nullable=False),
+    sa.Column("trigger_key", sa.String(128), nullable=False, unique=True),
+    sa.Column("status", sa.String(32), nullable=False),
+    sa.Column("prompt_id", sa.String(160), nullable=False),
+    sa.Column("prompt_version", sa.String(32), nullable=False),
+    sa.Column("plan", postgresql.JSONB(), nullable=False),
+    sa.Column("error_code", sa.String(128), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("planned_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
+)
+
 personalized_training_materials = sa.Table(
     "personalized_training_materials",
     metadata,
@@ -421,11 +467,32 @@ personalized_training_materials = sa.Table(
     sa.Column("focus_points", postgresql.JSONB(), nullable=False),
     sa.Column("source_context_ids", postgresql.JSONB(), nullable=False),
     sa.Column("status", sa.String(32), nullable=False),
+    sa.Column("generation_attempt_count", sa.Integer(), nullable=False),
+    sa.Column("generation_error_code", sa.String(128), nullable=True),
+    sa.Column("next_generation_attempt_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("claimed_by", sa.String(160), nullable=True),
+    sa.Column("lease_expires_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("requested_goal", sa.String(240), nullable=False),
+    sa.Column("requested_kinds", postgresql.JSONB(), nullable=False),
+    sa.Column("evidence_target_asset_ids", postgresql.JSONB(), nullable=False),
     sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
     sa.Column("active_workflow_run_id", sa.String(128), nullable=True),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+personalized_material_events = sa.Table(
+    "personalized_material_events",
+    metadata,
+    sa.Column("event_id", sa.BigInteger(), primary_key=True, autoincrement=True),
+    sa.Column("material_id", sa.String(128), nullable=False),
+    sa.Column("event_type", sa.String(64), nullable=False),
+    sa.Column("stage", sa.String(64), nullable=False),
+    sa.Column("attempt", sa.Integer(), nullable=True),
+    sa.Column("message", sa.Text(), nullable=False),
+    sa.Column("detail", postgresql.JSONB(), nullable=False),
+    sa.Column("occurred_at", sa.DateTime(timezone=True), nullable=False),
 )
 
 control_tool_policies = sa.Table(
@@ -489,7 +556,8 @@ content_generation_jobs = sa.Table(
     sa.Column("langfuse_trace_id", sa.String(64), nullable=True),
     sa.Column("model_provider", sa.String(32), nullable=True),
     sa.Column("model_name", sa.String(128), nullable=True),
-    sa.Column("prefect_task_run_id", sa.String(36), nullable=True),
+    sa.Column("claimed_by", sa.String(160), nullable=True),
+    sa.Column("lease_expires_at", sa.DateTime(timezone=True), nullable=True),
 )
 
 content_generation_events = sa.Table(

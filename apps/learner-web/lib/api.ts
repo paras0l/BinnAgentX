@@ -165,20 +165,50 @@ export interface PersonalizedTrainingMaterial {
   focus_points: string[];
   source_context_count: number;
   training_eligible: boolean;
-  start_block_reason: "calibration_required" | "active_training" | null;
-  status: "ready" | "in_progress" | "completed";
+  start_block_reason: "calibration_required" | "active_training" | "material_not_ready" | null;
+  status:
+    | "requested"
+    | "generating"
+    | "validating"
+    | "ready"
+    | "in_progress"
+    | "completed"
+    | "generation_failed";
   started_at: string | null;
   completed_at: string | null;
   created_at: string;
   updated_at: string;
 }
 
+export interface PersonalizedMaterialGenerationInput {
+  goal: string;
+  kinds: Array<
+    | "vocabulary"
+    | "grammar"
+    | "writing_expression"
+    | "reading_skill"
+    | "exam_skill"
+    | "writing_skill"
+  >;
+}
+
 export function listTrainingMaterials(): Promise<PersonalizedTrainingMaterial[]> {
   return request<PersonalizedTrainingMaterial[]>("/v1/training-materials");
 }
 
-export function generatePersonalizedTrainingMaterial(): Promise<PersonalizedTrainingMaterial> {
+export function generatePersonalizedTrainingMaterial(
+  input: PersonalizedMaterialGenerationInput,
+): Promise<PersonalizedTrainingMaterial> {
   return request<PersonalizedTrainingMaterial>("/v1/training-materials/personalized", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function retryPersonalizedTrainingMaterial(
+  materialId: string,
+): Promise<PersonalizedTrainingMaterial> {
+  return request<PersonalizedTrainingMaterial>(`/v1/training-materials/${materialId}/retry`, {
     method: "POST",
   });
 }
