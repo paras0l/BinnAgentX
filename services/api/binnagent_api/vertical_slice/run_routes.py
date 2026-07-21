@@ -1,11 +1,19 @@
 import json
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from typing import Annotated
 from uuid import uuid4
 
 import sqlalchemy as sa
+from binnagent_agent.tools import (
+    ToolActorType,
+    ToolContext,
+    ToolExecutor,
+    ToolResult,
+    ToolStatus,
+    runtime_registry,
+)
 from binnagent_domain.public_errors import PublicErrorCode
 from binnagent_domain.vertical_slice.aggregate import LearningTask, Transition
 from binnagent_domain.vertical_slice.commands import CreateTask
@@ -82,6 +90,7 @@ run_repository = VerticalSliceRunRepository(task_repository)
 content_catalog = LocalContentCatalog()
 matcher = ConservativeMaterialMatcher()
 expression_matcher = ExpressionMaterialMatcher()
+workflow_tool_executor = ToolExecutor(runtime_registry)
 RunIdempotencyKey = Annotated[
     str,
     Header(alias="Idempotency-Key", min_length=8, max_length=128, pattern=r"^[A-Za-z0-9_.:-]+$"),
@@ -309,8 +318,10 @@ async def get_resume_workspace(workflow_run_id: str) -> LearnerResumeWorkspaceVi
 async def advance_run(
     workflow_run_id: str,
     body: AdvanceRunRequest,
+    request: Request,
     idempotency_key: RunIdempotencyKey,
 ) -> LearnerRunView:
+    identity: LearnerIdentity = request.state.learner_identity
     async with get_engine().begin() as connection:
         replay = await _find_replay(connection, idempotency_key, body, "advance_run")
         if replay is not None:
@@ -325,49 +336,75 @@ async def advance_run(
                 run.version,
             )
         current_task = await task_repository.load(connection, current_ref.task_id)
-        _require_completed_current_task(run, current_task)
-        now = datetime.now(UTC)
-        next_material, decision = await _next_material(connection, run, current_task, now)
-        next_task_transition = None
-        next_task_id = None
-        next_task_type = None
-        if next_material is not None:
-            next_task_type = _next_task_type(run.stage)
-            next_task_id = _id("task")
-            next_task_transition = _new_task(
-                run.workflow_run_id,
-                next_task_id,
-                run.learner_profile,
-                next_material,
-                now,
-                task_type=next_task_type,
+
+        async def advance_workflow(_: ToolContext) -> ToolResult[object]:
+            _require_completed_current_task(run, current_task)
+            now = datetime.now(UTC)
+            next_material, decision = await _next_material(connection, run, current_task, now)
+            next_task_transition = None
+            next_task_id = None
+            next_task_type = None
+            if next_material is not None:
+                next_task_type = _next_task_type(run.stage)
+                next_task_id = _id("task")
+                next_task_transition = _new_task(
+                    run.workflow_run_id,
+                    next_task_id,
+                    run.learner_profile,
+                    next_material,
+                    now,
+                    task_type=next_task_type,
+                )
+            run_transition = run.advance(
+                AdvanceVerticalSliceRun(
+                    expected_version=body.expected_version,
+                    completed_task_id=current_task.task_id,
+                    completed_task_version=current_task.version,
+                    highest_hint_level=current_task.highest_hint_level,
+                    next_task_id=next_task_id,
+                    next_task_type=next_task_type,
+                    next_content_version_id=(
+                        next_material.content_version_id if next_material is not None else None
+                    ),
+                    match_decision=decision,
+                    now=now,
+                    ended_early=current_task.state is TaskState.ENDED_EARLY,
+                )
             )
-        run_transition = run.advance(
-            AdvanceVerticalSliceRun(
-                expected_version=body.expected_version,
-                completed_task_id=current_task.task_id,
-                completed_task_version=current_task.version,
-                highest_hint_level=current_task.highest_hint_level,
-                next_task_id=next_task_id,
-                next_task_type=next_task_type,
-                next_content_version_id=(
-                    next_material.content_version_id if next_material is not None else None
-                ),
-                match_decision=decision,
-                now=now,
-                ended_early=current_task.state is TaskState.ENDED_EARLY,
+            saved_run, replayed = await run_repository.save_with_task(
+                connection,
+                run,
+                run_transition,
+                next_task_transition,
+                idempotency_key=idempotency_key,
+                request_hash=_request_hash(body),
+                command_name="advance_run",
+                actor=ActorType.LEARNER,
             )
+            return ToolResult(status=ToolStatus.SUCCEEDED, data=(saved_run, replayed))
+
+        request_digest = _request_hash(body)
+        tool_result = await workflow_tool_executor.execute(
+            "workflow.advance.v1",
+            ToolContext(
+                trace_id=f"tool_trace_{uuid4().hex}",
+                workflow_run_id=run.workflow_run_id,
+                learner_id=identity.learner_id,
+                actor_type=ToolActorType.SYSTEM,
+                run_stage=run.stage.value,
+                task_type=current_task.task_type.value,
+                expected_run_version=body.expected_version,
+                idempotency_key=idempotency_key,
+                invocation_key=sha256(
+                    f"workflow.advance.v1:{run.workflow_run_id}:{body.expected_version}:{request_digest}".encode()
+                ).hexdigest(),
+                deadline_at=datetime.now(UTC) + timedelta(seconds=20),
+            ),
+            advance_workflow,
         )
-        saved, replayed = await run_repository.save_with_task(
-            connection,
-            run,
-            run_transition,
-            next_task_transition,
-            idempotency_key=idempotency_key,
-            request_hash=_request_hash(body),
-            command_name="advance_run",
-            actor=ActorType.LEARNER,
-        )
+        if tool_result.status is not ToolStatus.SUCCEEDED or tool_result.data is None:
+            raise DomainError(PublicErrorCode.SAVE_NOT_CONFIRMED, tool_result.reason_codes[0])
+        saved, replayed = tool_result.data
     return _run_view(saved, replayed=replayed)
 
 

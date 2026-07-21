@@ -2,7 +2,7 @@
 
 import json
 import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from hashlib import sha256
 from typing import Annotated, Any, Literal
@@ -22,6 +22,14 @@ from binnagent_agent import (
 )
 from binnagent_agent import (
     ExpressionReviewRequest as GatewayExpressionReviewRequest,
+)
+from binnagent_agent.tools import (
+    ToolActorType,
+    ToolContext,
+    ToolExecutor,
+    ToolResult,
+    ToolStatus,
+    runtime_registry,
 )
 from binnagent_domain.public_errors import PublicErrorCode
 from binnagent_domain.vertical_slice.aggregate import LearningTask, Transition
@@ -45,10 +53,12 @@ from binnagent_domain.vertical_slice.models import (
     TaskType,
     TextSpan,
 )
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Depends, Header, Request
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from binnagent_api.auth import ControlIdentity, require_control_identity
 from binnagent_api.database import get_engine
+from binnagent_api.learner_auth import LearnerIdentity
 from binnagent_api.model_adapters import (
     annotation_analysis_adapter,
     expression_review_adapter,
@@ -95,10 +105,115 @@ learner_router = APIRouter(prefix="/v1", tags=["vertical-slice"])
 control_router = APIRouter(prefix="/v1", tags=["vertical-slice-control"])
 repository = VerticalSliceRepository()
 content_catalog = LocalContentCatalog()
+tool_executor = ToolExecutor(runtime_registry)
 IdempotencyKey = Annotated[
     str,
     Header(alias="Idempotency-Key", min_length=8, max_length=128, pattern=r"^[A-Za-z0-9_.:-]+$"),
 ]
+
+
+def _model_tool_context(
+    *,
+    task: LearningTask,
+    learner_id: str,
+    expected_task_version: int,
+    tool_name: str,
+    request_digest: str,
+    timeout_seconds: int,
+    idempotency_key: str | None = None,
+) -> ToolContext:
+    invocation_key = sha256(
+        ":".join(
+            (
+                tool_name,
+                task.workflow_run_id,
+                task.task_id,
+                str(expected_task_version),
+                request_digest,
+            )
+        ).encode("utf-8")
+    ).hexdigest()
+    return ToolContext(
+        trace_id=f"tool_trace_{uuid4().hex}",
+        workflow_run_id=task.workflow_run_id,
+        task_id=task.task_id,
+        learner_id=learner_id,
+        actor_type=ToolActorType.LEARNER,
+        task_type=task.task_type.value,
+        expected_task_version=expected_task_version,
+        idempotency_key=idempotency_key,
+        invocation_key=invocation_key,
+        deadline_at=datetime.now(UTC) + timedelta(seconds=timeout_seconds),
+    )
+
+
+def _require_tool_success(result: ToolResult[object]) -> Any:
+    if result.status is not ToolStatus.SUCCEEDED or result.data is None:
+        raise DomainError(PublicErrorCode.SAVE_NOT_CONFIRMED, result.reason_codes[0])
+    return result.data
+
+
+async def _reserve_model_invocation(
+    connection: sa.AsyncConnection,
+    *,
+    context: ToolContext,
+    tool_name: str,
+    request_hash: str,
+) -> dict[str, Any] | None:
+    if context.task_id is None:
+        raise ValueError("model_tool_requires_task_id")
+    now = datetime.now(UTC)
+    inserted = await connection.execute(
+        pg_insert(tables.model_invocation_ledger)
+        .values(
+            invocation_key=context.invocation_key,
+            tool_name=tool_name,
+            workflow_run_id=context.workflow_run_id,
+            task_id=context.task_id,
+            request_hash=request_hash,
+            status="pending",
+            response_payload=None,
+            output_hash=None,
+            created_at=now,
+            updated_at=now,
+        )
+        .on_conflict_do_nothing(index_elements=["invocation_key"])
+    )
+    if inserted.rowcount:
+        return None
+    row = (
+        (
+            await connection.execute(
+                sa.select(tables.model_invocation_ledger).where(
+                    tables.model_invocation_ledger.c.invocation_key == context.invocation_key
+                )
+            )
+        )
+        .mappings()
+        .one()
+    )
+    if row["status"] == "completed" and row["response_payload"] is not None:
+        return dict(row["response_payload"])
+    raise DomainError(PublicErrorCode.SAVE_NOT_CONFIRMED, "model_invocation_in_progress")
+
+
+async def _complete_model_invocation(
+    connection: sa.AsyncConnection,
+    *,
+    context: ToolContext,
+    response_payload: dict[str, Any],
+    output_hash: str,
+) -> None:
+    await connection.execute(
+        tables.model_invocation_ledger.update()
+        .where(tables.model_invocation_ledger.c.invocation_key == context.invocation_key)
+        .values(
+            status="completed",
+            response_payload=response_payload,
+            output_hash=output_hash,
+            updated_at=datetime.now(UTC),
+        )
+    )
 
 
 @learner_router.get("/tasks/{task_id}", response_model=LearnerTaskView)
@@ -217,7 +332,9 @@ async def add_annotation(
 async def analyze_annotation(
     task_id: str,
     body: AnnotationAnalysisRequest,
+    request: Request,
 ) -> AnnotationAnalysisView:
+    identity: LearnerIdentity = request.state.learner_identity
     async with get_engine().begin() as connection:
         task = await repository.load(connection, task_id)
         if body.expected_version != task.version:
@@ -264,32 +381,61 @@ async def analyze_annotation(
             timeout_seconds=settings.model_timeout_seconds,
             allow_remote=bool(settings.enable_remote_model_calls),
         )
-        result = await gateway.generate(
-            GatewayAnnotationAnalysisRequest(
-                workflow_run_id=task.workflow_run_id,
-                task_id=task.task_id,
-                content_version_id=content_version_id,
-                selected_text=span.text_quote,
-                paragraph_context=paragraph_context,
-                selection_scope=scope,
-                learner_question=body.learner_question,
-                fallback_focus=fallback_focus,
-                fallback_diagnosis=fallback_diagnosis,
-                fallback_breakdown=fallback_breakdown,
-                fallback_next_check=fallback_next_check,
-                fallback_translation=fallback_translation,
-                fallback_vocabulary_note=fallback_vocabulary_note,
-                fallback_grammar_structure=fallback_grammar_structure,
-            ),
-            ModelBudget(
-                call_count=int(budget_row["model_call_count"]),
-                cost_usd=Decimal(str(budget_row["cost_usd"])),
-                max_calls=settings.model_max_calls_per_slice,
-                max_cost_usd=settings.model_max_cost_usd_per_slice,
-            ),
-        )
-        now = datetime.now(UTC)
         request_digest = _request_hash(body)
+
+        async def invoke_annotation_model(_: ToolContext) -> ToolResult[object]:
+            gateway_result = await gateway.generate(
+                GatewayAnnotationAnalysisRequest(
+                    workflow_run_id=task.workflow_run_id,
+                    task_id=task.task_id,
+                    content_version_id=content_version_id,
+                    selected_text=span.text_quote,
+                    paragraph_context=paragraph_context,
+                    selection_scope=scope,
+                    learner_question=body.learner_question,
+                    fallback_focus=fallback_focus,
+                    fallback_diagnosis=fallback_diagnosis,
+                    fallback_breakdown=fallback_breakdown,
+                    fallback_next_check=fallback_next_check,
+                    fallback_translation=fallback_translation,
+                    fallback_vocabulary_note=fallback_vocabulary_note,
+                    fallback_grammar_structure=fallback_grammar_structure,
+                ),
+                ModelBudget(
+                    call_count=int(budget_row["model_call_count"]),
+                    cost_usd=Decimal(str(budget_row["cost_usd"])),
+                    max_calls=settings.model_max_calls_per_slice,
+                    max_cost_usd=settings.model_max_cost_usd_per_slice,
+                ),
+            )
+            return ToolResult(
+                status=ToolStatus.SUCCEEDED,
+                data=gateway_result,
+                used_fallback=gateway_result.used_fallback,
+                estimated_cost_usd=gateway_result.estimated_cost_usd,
+                actual_cost_usd=gateway_result.actual_cost_usd,
+            )
+
+        tool_name = "reading.analyze_selection.v1"
+        tool_context = _model_tool_context(
+            task=task,
+            learner_id=identity.learner_id,
+            expected_task_version=body.expected_version,
+            tool_name=tool_name,
+            request_digest=request_digest,
+            timeout_seconds=settings.model_timeout_seconds,
+        )
+        cached_response = await _reserve_model_invocation(
+            connection,
+            context=tool_context,
+            tool_name=tool_name,
+            request_hash=request_digest,
+        )
+        if cached_response is not None:
+            return AnnotationAnalysisView.model_validate(cached_response)
+        tool_result = await tool_executor.execute(tool_name, tool_context, invoke_annotation_model)
+        result = _require_tool_success(tool_result)
+        now = datetime.now(UTC)
         await connection.execute(
             tables.model_invocations.insert().values(
                 invocation_id=_id("model_invocation"),
@@ -324,20 +470,29 @@ async def analyze_annotation(
                 )
             )
 
-    return AnnotationAnalysisView(
-        analysis_id=_id("annotation_analysis"),
-        focus=result.focus,
-        selection_scope=result.selection_scope,
-        translation=result.translation,
-        vocabulary_note=result.vocabulary_note,
-        grammar_structure=list(result.grammar_structure),
-        diagnosis=result.diagnosis,
-        breakdown=list(result.breakdown),
-        next_check=result.next_check,
-        source=("model" if result.outcome is GatewayOutcome.VALIDATED_MODEL else "local_fallback"),
-        reason_code=result.reason_code,
-        boundary_note="只解释当前选区，不回答题目；整句翻译不会扩展为全文代读。",
-    )
+        response = AnnotationAnalysisView(
+            analysis_id=_id("annotation_analysis"),
+            focus=result.focus,
+            selection_scope=result.selection_scope,
+            translation=result.translation,
+            vocabulary_note=result.vocabulary_note,
+            grammar_structure=list(result.grammar_structure),
+            diagnosis=result.diagnosis,
+            breakdown=list(result.breakdown),
+            next_check=result.next_check,
+            source=(
+                "model" if result.outcome is GatewayOutcome.VALIDATED_MODEL else "local_fallback"
+            ),
+            reason_code=result.reason_code,
+            boundary_note="只解释当前选区，不回答题目；整句翻译不会扩展为全文代读。",
+        )
+        await _complete_model_invocation(
+            connection,
+            context=tool_context,
+            response_payload=response.model_dump(mode="json"),
+            output_hash=result.output_hash,
+        )
+    return response
 
 
 @learner_router.post(
@@ -347,7 +502,9 @@ async def analyze_annotation(
 async def review_expression(
     task_id: str,
     body: ExpressionReviewRequest,
+    request: Request,
 ) -> ExpressionReviewView:
+    identity: LearnerIdentity = request.state.learner_identity
     async with get_engine().begin() as connection:
         task = await repository.load(connection, task_id)
         if body.expected_version != task.version:
@@ -384,25 +541,58 @@ async def review_expression(
             .one()
         )
         settings = get_settings()
-        result = await ExpressionReviewGateway(
+        gateway = ExpressionReviewGateway(
             expression_review_adapter(settings),
             timeout_seconds=settings.model_timeout_seconds,
             allow_remote=bool(settings.enable_remote_model_calls),
-        ).generate(
-            GatewayExpressionReviewRequest(
-                workflow_run_id=task.workflow_run_id,
-                task_id=task.task_id,
-                content_version_id=task.current_material.content_version_id,
-                draft=body.draft.strip(),
-                recent_assets=tuple((asset.title, asset.content) for asset in body.recent_assets),
-            ),
-            ModelBudget(
-                call_count=int(budget_row["model_call_count"]),
-                cost_usd=Decimal(str(budget_row["cost_usd"])),
-                max_calls=settings.model_max_calls_per_slice,
-                max_cost_usd=settings.model_max_cost_usd_per_slice,
-            ),
         )
+
+        async def invoke_expression_review(_: ToolContext) -> ToolResult[object]:
+            gateway_result = await gateway.generate(
+                GatewayExpressionReviewRequest(
+                    workflow_run_id=task.workflow_run_id,
+                    task_id=task.task_id,
+                    content_version_id=task.current_material.content_version_id,
+                    draft=body.draft.strip(),
+                    recent_assets=tuple(
+                        (asset.title, asset.content) for asset in body.recent_assets
+                    ),
+                ),
+                ModelBudget(
+                    call_count=int(budget_row["model_call_count"]),
+                    cost_usd=Decimal(str(budget_row["cost_usd"])),
+                    max_calls=settings.model_max_calls_per_slice,
+                    max_cost_usd=settings.model_max_cost_usd_per_slice,
+                ),
+            )
+            return ToolResult(
+                status=ToolStatus.SUCCEEDED,
+                data=gateway_result,
+                used_fallback=gateway_result.used_fallback,
+                estimated_cost_usd=gateway_result.estimated_cost_usd,
+                actual_cost_usd=gateway_result.actual_cost_usd,
+            )
+
+        request_digest = _request_hash(body)
+        tool_name = "expression.review_draft.v1"
+        tool_context = _model_tool_context(
+            task=task,
+            learner_id=identity.learner_id,
+            expected_task_version=body.expected_version,
+            tool_name=tool_name,
+            request_digest=request_digest,
+            timeout_seconds=settings.model_timeout_seconds,
+        )
+        cached_response = await _reserve_model_invocation(
+            connection,
+            context=tool_context,
+            tool_name=tool_name,
+            request_hash=request_digest,
+        )
+        if cached_response is not None:
+            return ExpressionReviewView.model_validate(cached_response)
+        tool_result = await tool_executor.execute(tool_name, tool_context, invoke_expression_review)
+        result = _require_tool_success(tool_result)
         now = datetime.now(UTC)
         await connection.execute(
             tables.model_invocations.insert().values(
@@ -438,22 +628,31 @@ async def review_expression(
                 )
             )
 
-    return ExpressionReviewView(
-        review_id=_id("expression_review"),
-        source=("model" if result.outcome is GatewayOutcome.VALIDATED_MODEL else "local_fallback"),
-        reason_code=result.reason_code,
-        thinking_difference=result.thinking_difference,
-        versions=[
-            ExpressionStyleVersionView(
-                style=version.style,
-                label=version.label,
-                text=version.text,
-                explanation=version.explanation,
-            )
-            for version in result.versions
-        ],
-        boundary_note="风格版本用于比较思维与表达差异，不覆盖学习者原文，也不计为独立输出。",
-    )
+        response = ExpressionReviewView(
+            review_id=_id("expression_review"),
+            source=(
+                "model" if result.outcome is GatewayOutcome.VALIDATED_MODEL else "local_fallback"
+            ),
+            reason_code=result.reason_code,
+            thinking_difference=result.thinking_difference,
+            versions=[
+                ExpressionStyleVersionView(
+                    style=version.style,
+                    label=version.label,
+                    text=version.text,
+                    explanation=version.explanation,
+                )
+                for version in result.versions
+            ],
+            boundary_note="风格版本用于比较思维与表达差异，不覆盖学习者原文，也不计为独立输出。",
+        )
+        await _complete_model_invocation(
+            connection,
+            context=tool_context,
+            response_payload=response.model_dump(mode="json"),
+            output_hash=result.output_hash,
+        )
+    return response
 
 
 @learner_router.post("/tasks/{task_id}/attempts", response_model=LearnerTaskView)
@@ -565,8 +764,12 @@ async def _request_reading_hint(
 
 @learner_router.post("/tasks/{task_id}/feedback/priority", response_model=LearnerTaskView)
 async def request_priority_feedback(
-    task_id: str, body: HintRequest, idempotency_key: IdempotencyKey
+    task_id: str,
+    body: HintRequest,
+    request: Request,
+    idempotency_key: IdempotencyKey,
 ) -> LearnerTaskView:
+    identity: LearnerIdentity = request.state.learner_identity
     async with get_engine().begin() as connection:
         replay = await _find_replay(
             connection,
@@ -625,23 +828,54 @@ async def request_priority_feedback(
             timeout_seconds=settings.model_timeout_seconds,
             allow_remote=bool(settings.enable_remote_model_calls),
         )
-        gateway_result = await gateway.generate(
-            PriorityFeedbackRequest(
-                workflow_run_id=previous.workflow_run_id,
-                task_id=previous.task_id,
-                input_attempt_version_id=body.input_attempt_version_id,
-                content_version_id=previous.current_material.content_version_id,
-                attempt_text=current_attempts[-1].text,
-                fallback_reason_code=fallback_reason_code,
-                fallback_feedback=fallback_feedback,
-            ),
-            ModelBudget(
-                call_count=int(budget_row["model_call_count"]),
-                cost_usd=Decimal(str(budget_row["cost_usd"])),
-                max_calls=settings.model_max_calls_per_slice,
-                max_cost_usd=settings.model_max_cost_usd_per_slice,
-            ),
+
+        async def invoke_priority_feedback(_: ToolContext) -> ToolResult[object]:
+            result = await gateway.generate(
+                PriorityFeedbackRequest(
+                    workflow_run_id=previous.workflow_run_id,
+                    task_id=previous.task_id,
+                    input_attempt_version_id=body.input_attempt_version_id,
+                    content_version_id=previous.current_material.content_version_id,
+                    attempt_text=current_attempts[-1].text,
+                    fallback_reason_code=fallback_reason_code,
+                    fallback_feedback=fallback_feedback,
+                ),
+                ModelBudget(
+                    call_count=int(budget_row["model_call_count"]),
+                    cost_usd=Decimal(str(budget_row["cost_usd"])),
+                    max_calls=settings.model_max_calls_per_slice,
+                    max_cost_usd=settings.model_max_cost_usd_per_slice,
+                ),
+            )
+            return ToolResult(
+                status=ToolStatus.SUCCEEDED,
+                data=result,
+                used_fallback=result.used_fallback,
+                estimated_cost_usd=result.estimated_cost_usd,
+                actual_cost_usd=result.actual_cost_usd,
+            )
+
+        request_digest = _request_hash(body)
+        tool_name = "expression.deliver_priority_feedback.v1"
+        tool_context = _model_tool_context(
+            task=previous,
+            learner_id=identity.learner_id,
+            expected_task_version=body.expected_version,
+            tool_name=tool_name,
+            request_digest=request_digest,
+            timeout_seconds=settings.model_timeout_seconds,
+            idempotency_key=idempotency_key,
         )
+        cached_response = await _reserve_model_invocation(
+            connection,
+            context=tool_context,
+            tool_name=tool_name,
+            request_hash=request_digest,
+        )
+        if cached_response is not None:
+            return LearnerTaskView.model_validate(cached_response)
+        tool_result = await tool_executor.execute(tool_name, tool_context, invoke_priority_feedback)
+        gateway_result = _require_tool_success(tool_result)
         now = datetime.now(UTC)
         await connection.execute(
             tables.model_invocations.insert().values(
@@ -700,11 +934,18 @@ async def request_priority_feedback(
             previous,
             transition,
             idempotency_key=idempotency_key,
-            request_hash=_request_hash(body),
+            request_hash=request_digest,
             command_name="learner_requested_priority_feedback",
             actor=ActorType.SYSTEM,
         )
-    return learner_task_view(task, replayed)
+        response = learner_task_view(task, replayed)
+        await _complete_model_invocation(
+            connection,
+            context=tool_context,
+            response_payload=response.model_dump(mode="json"),
+            output_hash=gateway_result.output_hash,
+        )
+    return response
 
 
 @learner_router.post("/tasks/{task_id}/revisions", response_model=LearnerTaskView)

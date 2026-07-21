@@ -15,6 +15,11 @@ import type {
   LearnerWorkspaceView,
   TextSelection,
 } from "./contracts";
+import type {
+  LearningAsset,
+  LearningAssetInput,
+  LearningAssetsState,
+} from "./learning-assets-storage";
 
 interface ApiErrorBody {
   code?: string;
@@ -63,6 +68,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     }
     throw new LearnerApiError(body, response.status);
   }
+  if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
 }
 
@@ -72,6 +78,95 @@ function command<T>(path: string, name: string, body: object): Promise<T> {
     headers: { "Idempotency-Key": idempotencyKey(name) },
     body: JSON.stringify(body),
   });
+}
+
+interface LearningAssetApiView {
+  asset_id: string;
+  kind: LearningAsset["kind"];
+  title: string;
+  tags: string[];
+  source_type: string;
+  source_title: string | null;
+  source_task_id: string | null;
+  evidence_status: LearningAsset["evidenceStatus"];
+  evidence_count: number;
+  last_verified_at: string | null;
+  next_review_at: string | null;
+  starred: boolean;
+  sync_status: LearningAsset["syncStatus"];
+  sync_error_code: string | null;
+  document_uri: string | null;
+  document_updated_at: string | null;
+  created_at: string;
+  updated_at: string;
+  version: number;
+}
+
+function learningAssetFromApi(asset: LearningAssetApiView): LearningAsset {
+  return {
+    assetId: asset.asset_id,
+    kind: asset.kind,
+    title: asset.title,
+    tags: asset.tags,
+    sourceType: asset.source_type,
+    sourceTitle: asset.source_title,
+    sourceTaskId: asset.source_task_id,
+    evidenceStatus: asset.evidence_status,
+    evidenceCount: asset.evidence_count,
+    lastVerifiedAt: asset.last_verified_at,
+    nextReviewAt: asset.next_review_at,
+    starred: asset.starred,
+    syncStatus: asset.sync_status,
+    syncErrorCode: asset.sync_error_code,
+    documentUri: asset.document_uri,
+    documentUpdatedAt: asset.document_updated_at,
+    createdAt: asset.created_at,
+    updatedAt: asset.updated_at,
+    version: asset.version,
+  };
+}
+
+export async function listLearningAssets(): Promise<LearningAssetsState> {
+  const assets = await request<LearningAssetApiView[]>("/v1/assets");
+  return { schemaVersion: 2, items: assets.map(learningAssetFromApi) };
+}
+
+export async function createLearningAsset(input: LearningAssetInput): Promise<LearningAsset> {
+  const asset = await request<LearningAssetApiView>("/v1/assets", {
+    method: "POST",
+    body: JSON.stringify({
+      kind: input.kind,
+      title: input.title,
+      tags: input.tags ?? [],
+      source_type: input.sourceType ?? "manual",
+      source_title: input.sourceTitle ?? null,
+      source_task_id: input.sourceTaskId ?? null,
+    }),
+  });
+  return learningAssetFromApi(asset);
+}
+
+export async function syncLearningAsset(assetId: string): Promise<LearningAsset> {
+  return learningAssetFromApi(
+    await request<LearningAssetApiView>(`/v1/assets/${assetId}/sync`, { method: "POST" }),
+  );
+}
+
+export function openLearningAsset(assetId: string): Promise<void> {
+  return request<void>(`/v1/assets/${assetId}/open`, { method: "POST" });
+}
+
+export async function starLearningAsset(
+  assetId: string,
+  starred: boolean,
+  expectedVersion: number,
+): Promise<LearningAsset> {
+  return learningAssetFromApi(
+    await request<LearningAssetApiView>(`/v1/assets/${assetId}/star`, {
+      method: "POST",
+      body: JSON.stringify({ starred, expected_version: expectedVersion }),
+    }),
+  );
 }
 
 export function createRun(learnerProfile: LearnerProfileInput): Promise<LearnerRunView> {

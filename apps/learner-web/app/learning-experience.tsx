@@ -25,10 +25,15 @@ import {
 
 import {
   continueRun,
+  createLearningAsset,
   createRun,
   getResumeWorkspace,
   getWorkspace,
   LearnerApiError,
+  listLearningAssets,
+  openLearningAsset,
+  starLearningAsset,
+  syncLearningAsset,
 } from "../lib/api";
 import type { LearnerProfileInput, LearnerTaskView, LearnerWorkspaceView } from "../lib/contracts";
 import { clearResumeRunId, loadResumeRunId, saveResumeRunId } from "../lib/draft-storage";
@@ -46,11 +51,7 @@ import {
 } from "../lib/experience-storage";
 import type { LearnerIdentity } from "../lib/auth-api";
 import {
-  addLearningAsset,
-  loadLearningAssets,
-  reviewLearningAsset,
-  setLearningAssetMastery,
-  toggleLearningAssetStar,
+  EMPTY_LEARNING_ASSETS,
   type LearningAssetInput,
 } from "../lib/learning-assets-storage";
 import { LearningAssetsPanel } from "./learning-assets-panel";
@@ -121,9 +122,7 @@ export function LearningExperience({
     loadLearnerPreferences(identity.learner_id),
   );
   const [calibrationDeferred, setCalibrationDeferred] = useState(false);
-  const [learningAssets, setLearningAssets] = useState(() =>
-    loadLearningAssets(identity.learner_id),
-  );
+  const [learningAssets, setLearningAssets] = useState(() => EMPTY_LEARNING_ASSETS);
   const [surface, setSurface] = useState<
     "home" | "training" | "profile" | "profile-edit" | "preferences" | "assets"
   >("home");
@@ -173,6 +172,20 @@ export function LearningExperience({
       })
       .finally(() => {
         if (active) setResumeChecked(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, [identity.learner_id]);
+
+  useEffect(() => {
+    let active = true;
+    void listLearningAssets()
+      .then((assets) => {
+        if (active) setLearningAssets(assets);
+      })
+      .catch(() => {
+        // The index is supplementary metadata and cannot block a learning session.
       });
     return () => {
       active = false;
@@ -301,9 +314,16 @@ export function LearningExperience({
 
   const captureLearningAsset = useCallback(
     (input: LearningAssetInput) => {
-      setLearningAssets((current) => addLearningAsset(identity.learner_id, current, input));
+      void createLearningAsset(input)
+        .then((asset) => {
+          setLearningAssets((current) => ({
+            ...current,
+            items: [asset, ...current.items.filter((item) => item.assetId !== asset.assetId)],
+          }));
+        })
+        .catch((reason: unknown) => setError(errorMessage(reason)));
     },
-    [identity.learner_id],
+    [],
   );
 
   const toggleNavigation = useCallback(() => {
@@ -334,19 +354,28 @@ export function LearningExperience({
       <LearningAssetsPanel
         state={learningAssets}
         onAdd={captureLearningAsset}
-        onReview={(assetId) =>
-          setLearningAssets((current) => reviewLearningAsset(identity.learner_id, current, assetId))
-        }
-        onToggleStar={(assetId) =>
-          setLearningAssets((current) =>
-            toggleLearningAssetStar(identity.learner_id, current, assetId),
-          )
-        }
-        onMaster={(assetId, mastery) =>
-          setLearningAssets((current) =>
-            setLearningAssetMastery(identity.learner_id, current, assetId, mastery),
-          )
-        }
+        onToggleStar={(assetId) => {
+          const current = learningAssets.items.find((item) => item.assetId === assetId);
+          if (!current) return;
+          void starLearningAsset(assetId, !current.starred, current.version)
+            .then((asset) => setLearningAssets((state) => ({
+              ...state,
+              items: state.items.map((item) => (item.assetId === assetId ? asset : item)),
+            })))
+            .catch((reason: unknown) => setError(errorMessage(reason)));
+        }}
+        onOpen={(assetId, documentUri) => {
+          if (documentUri) window.open(documentUri, "_blank", "noopener,noreferrer");
+          void openLearningAsset(assetId).catch((reason: unknown) => setError(errorMessage(reason)));
+        }}
+        onSync={(assetId) => {
+          void syncLearningAsset(assetId)
+            .then((asset) => setLearningAssets((state) => ({
+              ...state,
+              items: state.items.map((item) => (item.assetId === assetId ? asset : item)),
+            })))
+            .catch((reason: unknown) => setError(errorMessage(reason)));
+        }}
       />
     );
   } else if (surface === "profile" && experience) {

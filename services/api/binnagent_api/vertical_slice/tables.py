@@ -265,6 +265,20 @@ model_invocations = sa.Table(
     sa.Column("rejection_code", sa.String(64), nullable=True),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
 )
+model_invocation_ledger = sa.Table(
+    "model_invocation_ledger",
+    metadata,
+    sa.Column("invocation_key", sa.String(64), primary_key=True),
+    sa.Column("tool_name", sa.String(128), nullable=False),
+    sa.Column("workflow_run_id", sa.String(128), nullable=False),
+    sa.Column("task_id", sa.String(128), nullable=False),
+    sa.Column("request_hash", sa.String(64), nullable=False),
+    sa.Column("status", sa.String(16), nullable=False),
+    sa.Column("response_payload", postgresql.JSONB(), nullable=True),
+    sa.Column("output_hash", sa.String(64), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+)
 revision_events = sa.Table(
     "revision_events",
     metadata,
@@ -318,6 +332,39 @@ outbox_messages = sa.Table(
     sa.Column("occurred_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("available_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("processed_at", sa.DateTime(timezone=True), nullable=True),
+)
+
+learning_asset_index = sa.Table(
+    "learning_asset_index",
+    metadata,
+    sa.Column("asset_id", sa.String(128), primary_key=True),
+    sa.Column("learner_id", sa.String(128), nullable=False),
+    sa.Column("asset_kind", sa.String(32), nullable=False),
+    sa.Column("display_title", sa.String(240), nullable=False),
+    sa.Column("tag_index", postgresql.JSONB(), nullable=False),
+    sa.Column("source_type", sa.String(32), nullable=False),
+    sa.Column("source_title", sa.String(240), nullable=True),
+    sa.Column("source_task_id", sa.String(128), nullable=True),
+    sa.Column("source_annotation_id", sa.String(128), nullable=True),
+    sa.Column("source_intervention_id", sa.String(128), nullable=True),
+    sa.Column("vault_provider", sa.String(32), nullable=False),
+    sa.Column("vault_id", sa.String(128), nullable=True),
+    sa.Column("document_id", sa.String(128), nullable=True),
+    sa.Column("relative_path", sa.Text(), nullable=True),
+    sa.Column("document_uri", sa.Text(), nullable=True),
+    sa.Column("content_hash", sa.String(64), nullable=True),
+    sa.Column("document_updated_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("evidence_status", sa.String(32), nullable=False),
+    sa.Column("evidence_count", sa.Integer(), nullable=False),
+    sa.Column("last_verified_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("next_review_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("starred", sa.Boolean(), nullable=False),
+    sa.Column("sync_status", sa.String(32), nullable=False),
+    sa.Column("sync_error_code", sa.String(64), nullable=True),
+    sa.Column("indexed_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("version", sa.Integer(), nullable=False),
 )
 
 content_generation_jobs = sa.Table(

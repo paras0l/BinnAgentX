@@ -13,6 +13,7 @@ from binnagent_api.content_generation import content_generation_router
 from binnagent_api.database import get_engine
 from binnagent_api.experience_routes import experience_control_router
 from binnagent_api.learner_auth import resolve_request_identity
+from binnagent_api.learning_asset_routes import learning_asset_router
 from binnagent_api.settings import get_settings
 from binnagent_api.vertical_slice import tables
 from binnagent_api.vertical_slice.repository import TaskNotFoundError
@@ -60,6 +61,7 @@ def create_learner_app() -> FastAPI:
     learner.include_router(auth_router)
     learner.include_router(learner_router)
     learner.include_router(learner_run_router)
+    learner.include_router(learning_asset_router)
     _register_error_handlers(learner)
     return learner
 

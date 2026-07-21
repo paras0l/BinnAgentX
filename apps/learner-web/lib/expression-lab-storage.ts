@@ -142,15 +142,14 @@ export function buildExpressionAssistSuggestions(
   assets: LearningAsset[],
 ): ExpressionAssistSuggestion[] {
   const recentAssets = assets
-    .filter((asset) => asset.content.trim())
     .slice()
-    .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
     .slice(0, 2);
   const suggestions: ExpressionAssistSuggestion[] = recentAssets.map((asset) => ({
     id: `asset_${asset.assetId}`,
     source: "recent_asset" as const,
     title: asset.title,
-    detail: `${asset.content.slice(0, 96)}${asset.content.length > 96 ? "…" : ""}\n${FOCUS_COPY[focus].recent}`,
+    detail: `${asset.tags.length ? asset.tags.map((tag) => `#${tag}`).join(" · ") : "Obsidian 笔记"}\n${FOCUS_COPY[focus].recent}`,
     assetId: asset.assetId,
   }));
   suggestions.push({

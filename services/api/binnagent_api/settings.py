@@ -165,6 +165,11 @@ class Settings(BaseSettings):
     enable_irt_cat: bool = False
     enable_automatic_total_score: bool = False
     enable_predicted_score_gain: bool = False
+    knowledge_vault_adapter: Literal["disabled", "obsidian_cli"] = "disabled"
+    obsidian_cli_command: str = "obsidian"
+    obsidian_vault_name: str | None = None
+    obsidian_managed_directory: str = "BinnAgentX"
+    obsidian_cli_timeout_seconds: int = 15
 
     @model_validator(mode="after")
     def resolve_remote_default_and_prevent_unsafe_production(self) -> Self:

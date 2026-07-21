@@ -171,7 +171,7 @@ export function ExpressionLab({
       const result = await reviewExpression(
         task,
         savedDraft,
-        learningAssets.slice(0, 4).map(({ title, content }) => ({ title, content })),
+        learningAssets.slice(0, 4).map(({ title, tags }) => ({ title, content: tags.join(", ") })),
       );
       setReview(result);
       onExplanationTask({

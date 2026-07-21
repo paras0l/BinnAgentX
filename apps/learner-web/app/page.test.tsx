@@ -367,12 +367,8 @@ describe("learner home", () => {
     fireEvent.change(screen.getByLabelText("标题"), {
       target: { value: "转折后找作者判断" },
     });
-    fireEvent.change(screen.getByLabelText("内容"), {
-      target: { value: "优先检查 but 与 however 后的判断。" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "保存到资产库" }));
-    expect(screen.getByRole("heading", { name: "转折后找作者判断" })).toBeVisible();
-    expect(screen.getByText("掌握度 10%")).toBeVisible();
+    expect(screen.queryByLabelText("内容")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "创建索引" })).toBeEnabled();
   });
 
   it("starts stage progress at zero before any stage is completed", () => {
