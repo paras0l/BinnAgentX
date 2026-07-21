@@ -23,6 +23,7 @@ from binnagent_agent import (
 from binnagent_agent import (
     ExpressionReviewRequest as GatewayExpressionReviewRequest,
 )
+from binnagent_agent.memory import MemoryAccessContext, MemoryQuery, MemoryRecord
 from binnagent_agent.tools import (
     ToolActorType,
     ToolContext,
@@ -55,7 +56,9 @@ from binnagent_domain.vertical_slice.models import (
 )
 from fastapi import APIRouter, Depends, Header, Request
 from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.ext.asyncio import AsyncConnection
 
+from binnagent_api.agent_memory import obsidian_memory
 from binnagent_api.auth import ControlIdentity, require_control_identity
 from binnagent_api.database import get_engine
 from binnagent_api.learner_auth import LearnerIdentity
@@ -63,6 +66,27 @@ from binnagent_api.model_adapters import (
     annotation_analysis_adapter,
     expression_review_adapter,
     priority_feedback_adapter,
+)
+from binnagent_api.personalized_reading_content import (
+    approved_hint as personalized_approved_hint,
+)
+from binnagent_api.personalized_reading_content import (
+    grammar_challenge as personalized_grammar_challenge,
+)
+from binnagent_api.personalized_reading_content import (
+    learner_item as personalized_learner_item,
+)
+from binnagent_api.personalized_reading_content import (
+    material_ref as personalized_material_ref,
+)
+from binnagent_api.personalized_reading_content import (
+    material_row_for_task,
+)
+from binnagent_api.personalized_reading_content import (
+    paragraph_text as personalized_paragraph_text,
+)
+from binnagent_api.personalized_reading_content import (
+    validate_span as personalized_validate_span,
 )
 from binnagent_api.settings import get_settings
 from binnagent_api.vertical_slice import tables
@@ -153,8 +177,27 @@ def _require_tool_success(result: ToolResult[object]) -> Any:
     return result.data
 
 
+async def _recall_agent_memory(
+    context: ToolContext,
+    *,
+    agent_name: str,
+    query: str,
+    limit: int = 4,
+) -> tuple[MemoryRecord, ...]:
+    return await obsidian_memory.recall(
+        MemoryAccessContext(
+            learner_id=context.learner_id,
+            agent_name=agent_name,
+            invocation_key=context.invocation_key,
+            workflow_run_id=context.workflow_run_id,
+            task_id=context.task_id,
+        ),
+        MemoryQuery(text=query, limit=limit),
+    )
+
+
 async def _reserve_model_invocation(
-    connection: sa.AsyncConnection,
+    connection: AsyncConnection,
     *,
     context: ToolContext,
     tool_name: str,
@@ -198,7 +241,7 @@ async def _reserve_model_invocation(
 
 
 async def _complete_model_invocation(
-    connection: sa.AsyncConnection,
+    connection: AsyncConnection,
     *,
     context: ToolContext,
     response_payload: dict[str, Any],
@@ -230,14 +273,14 @@ async def get_task(task_id: str) -> LearnerTaskView:
 async def reveal_grammar_hint(task_id: str) -> GrammarChallengeUpdateView:
     async with get_engine().begin() as connection:
         task = await repository.load(connection, task_id)
-        challenge = _reading_grammar_challenge(task)
+        challenge = await _reading_grammar_challenge(connection, task)
         state = await reveal_grammar_challenge_hint(
             connection,
             task.task_id,
             task.current_material.content_version_id,
             challenge.challenge_id,
         )
-        return _grammar_challenge_update(task, challenge, state)
+        return await _grammar_challenge_update(connection, task, challenge, state)
 
 
 @learner_router.post(
@@ -247,14 +290,15 @@ async def reveal_grammar_hint(task_id: str) -> GrammarChallengeUpdateView:
 async def reveal_grammar_answer(task_id: str) -> GrammarChallengeUpdateView:
     async with get_engine().begin() as connection:
         task = await repository.load(connection, task_id)
-        challenge = _reading_grammar_challenge(task)
+        challenge = await _reading_grammar_challenge(connection, task)
         state = await reveal_grammar_challenge_answer(
             connection,
             task.task_id,
             task.current_material.content_version_id,
             challenge,
         )
-        return _grammar_challenge_update(
+        return await _grammar_challenge_update(
+            connection,
             task,
             challenge,
             state,
@@ -272,7 +316,7 @@ async def verify_grammar_challenge(
 ) -> GrammarChallengeUpdateView:
     async with get_engine().begin() as connection:
         task = await repository.load(connection, task_id)
-        challenge = _reading_grammar_challenge(task)
+        challenge = await _reading_grammar_challenge(connection, task)
         state, correct = await verify_grammar_correction(
             connection,
             task.task_id,
@@ -280,7 +324,8 @@ async def verify_grammar_challenge(
             challenge,
             body.correction,
         )
-        return _grammar_challenge_update(
+        return await _grammar_challenge_update(
+            connection,
             task,
             challenge,
             state,
@@ -303,7 +348,11 @@ async def add_annotation(
             return learner_task_view(replay, True)
         previous = await repository.load(connection, task_id)
         span = TextSpan(**body.span.model_dump())
-        content_catalog.validate_span(previous.current_material.content_version_id, span)
+        personalized_row = await material_row_for_task(connection, previous)
+        if personalized_row is not None:
+            personalized_validate_span(personalized_row, span)
+        else:
+            content_catalog.validate_span(previous.current_material.content_version_id, span)
         transition = previous.add_annotation(
             AddAnnotation(
                 expected_version=body.expected_version,
@@ -351,8 +400,15 @@ async def analyze_annotation(
 
         span = TextSpan(**body.span.model_dump())
         content_version_id = task.current_material.content_version_id
-        content_catalog.validate_span(content_version_id, span)
-        paragraph_context = content_catalog.paragraph_text(content_version_id, span.paragraph_id)
+        personalized_row = await material_row_for_task(connection, task)
+        if personalized_row is not None:
+            personalized_validate_span(personalized_row, span)
+            paragraph_context = personalized_paragraph_text(personalized_row, span.paragraph_id)
+        else:
+            content_catalog.validate_span(content_version_id, span)
+            paragraph_context = content_catalog.paragraph_text(
+                content_version_id, span.paragraph_id
+            )
         scope = _selection_scope(span.text_quote, paragraph_context)
         (
             fallback_focus,
@@ -383,7 +439,12 @@ async def analyze_annotation(
         )
         request_digest = _request_hash(body)
 
-        async def invoke_annotation_model(_: ToolContext) -> ToolResult[object]:
+        async def invoke_annotation_model(tool_runtime: ToolContext) -> ToolResult[object]:
+            memories = await _recall_agent_memory(
+                tool_runtime,
+                agent_name="reading.analyze_selection.v1",
+                query=f"{span.text_quote}\n{body.learner_question}",
+            )
             gateway_result = await gateway.generate(
                 GatewayAnnotationAnalysisRequest(
                     workflow_run_id=task.workflow_run_id,
@@ -400,6 +461,7 @@ async def analyze_annotation(
                     fallback_translation=fallback_translation,
                     fallback_vocabulary_note=fallback_vocabulary_note,
                     fallback_grammar_structure=fallback_grammar_structure,
+                    learner_memory=tuple((memory.title, memory.content) for memory in memories),
                 ),
                 ModelBudget(
                     call_count=int(budget_row["model_call_count"]),
@@ -547,7 +609,12 @@ async def review_expression(
             allow_remote=bool(settings.enable_remote_model_calls),
         )
 
-        async def invoke_expression_review(_: ToolContext) -> ToolResult[object]:
+        async def invoke_expression_review(tool_runtime: ToolContext) -> ToolResult[object]:
+            memories = await _recall_agent_memory(
+                tool_runtime,
+                agent_name="expression.review_draft.v1",
+                query=body.draft,
+            )
             gateway_result = await gateway.generate(
                 GatewayExpressionReviewRequest(
                     workflow_run_id=task.workflow_run_id,
@@ -556,7 +623,8 @@ async def review_expression(
                     draft=body.draft.strip(),
                     recent_assets=tuple(
                         (asset.title, asset.content) for asset in body.recent_assets
-                    ),
+                    )
+                    + tuple((memory.title, memory.content) for memory in memories),
                 ),
                 ModelBudget(
                     call_count=int(budget_row["model_call_count"]),
@@ -723,11 +791,16 @@ async def _request_reading_hint(
                 PublicErrorCode.SAVE_NOT_CONFIRMED,
                 "reading_hint_must_escalate_one_level_at_a_time",
             )
-        delivered_content = content_catalog.approved_reading_hint(
-            previous.current_material.content_version_id,
-            previous.task_id,
-            previous.learner_profile,
-            hint_level,
+        personalized_row = await material_row_for_task(connection, previous)
+        delivered_content = (
+            personalized_approved_hint(personalized_row, hint_level)
+            if personalized_row is not None
+            else content_catalog.approved_reading_hint(
+                previous.current_material.content_version_id,
+                previous.task_id,
+                previous.learner_profile,
+                hint_level,
+            )
         )
         intervention_types = {
             1: InterventionType.TASK_RESTATEMENT,
@@ -829,7 +902,12 @@ async def request_priority_feedback(
             allow_remote=bool(settings.enable_remote_model_calls),
         )
 
-        async def invoke_priority_feedback(_: ToolContext) -> ToolResult[object]:
+        async def invoke_priority_feedback(tool_runtime: ToolContext) -> ToolResult[object]:
+            memories = await _recall_agent_memory(
+                tool_runtime,
+                agent_name="expression.deliver_priority_feedback.v1",
+                query=current_attempts[-1].text,
+            )
             result = await gateway.generate(
                 PriorityFeedbackRequest(
                     workflow_run_id=previous.workflow_run_id,
@@ -839,6 +917,7 @@ async def request_priority_feedback(
                     attempt_text=current_attempts[-1].text,
                     fallback_reason_code=fallback_reason_code,
                     fallback_feedback=fallback_feedback,
+                    learner_memory=tuple((memory.title, memory.content) for memory in memories),
                 ),
                 ModelBudget(
                     call_count=int(budget_row["model_call_count"]),
@@ -1031,7 +1110,12 @@ async def resume_task(
         if replay is not None:
             return learner_task_view(replay, True)
         previous = await repository.load(connection, task_id)
-        current_material = content_catalog.current(previous.current_material.content_version_id)
+        personalized_row = await material_row_for_task(connection, previous)
+        current_material = (
+            personalized_material_ref(personalized_row)
+            if personalized_row is not None
+            else content_catalog.current(previous.current_material.content_version_id)
+        )
         transition = previous.resume(
             ResumeTask(
                 body.expected_version,
@@ -1055,7 +1139,7 @@ async def complete_task(
             return learner_task_view(replay, True)
         previous = await repository.load(connection, task_id)
         if previous.task_type in {TaskType.CALIBRATION_READING, TaskType.MATCHED_READING}:
-            challenge = _reading_grammar_challenge(previous)
+            challenge = await _reading_grammar_challenge(connection, previous)
             challenge_state = await load_grammar_challenge_state(
                 connection,
                 previous.task_id,
@@ -1142,20 +1226,28 @@ async def get_control_replay(
         return await _control_view(connection, task)
 
 
-def _reading_grammar_challenge(task: LearningTask) -> GrammarChallenge:
+async def _reading_grammar_challenge(
+    connection: AsyncConnection, task: LearningTask
+) -> GrammarChallenge:
     if task.task_type not in {TaskType.CALIBRATION_READING, TaskType.MATCHED_READING}:
         raise DomainError(
             PublicErrorCode.SAVE_NOT_CONFIRMED,
             "grammar_challenge_requires_reading_task",
             task.version,
         )
-    return content_catalog.grammar_challenge_for(
-        task.task_id,
-        task.current_material.content_version_id,
+    personalized_row = await material_row_for_task(connection, task)
+    return (
+        personalized_grammar_challenge(personalized_row)
+        if personalized_row is not None
+        else content_catalog.grammar_challenge_for(
+            task.task_id,
+            task.current_material.content_version_id,
+        )
     )
 
 
-def _grammar_challenge_update(
+async def _grammar_challenge_update(
+    connection: AsyncConnection,
     task: LearningTask,
     challenge: GrammarChallenge,
     state: GrammarChallengeState,
@@ -1163,7 +1255,12 @@ def _grammar_challenge_update(
     verification_correct: bool | None = None,
     feedback: str | None = None,
 ) -> GrammarChallengeUpdateView:
-    item = content_catalog.learner_item(task.current_material.content_version_id)
+    personalized_row = await material_row_for_task(connection, task)
+    item = (
+        personalized_learner_item(personalized_row)
+        if personalized_row is not None
+        else content_catalog.learner_item(task.current_material.content_version_id)
+    )
     paragraphs = item.get("paragraphs")
     if not isinstance(paragraphs, list):
         raise DomainError(

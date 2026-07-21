@@ -367,6 +367,99 @@ learning_asset_index = sa.Table(
     sa.Column("version", sa.Integer(), nullable=False),
 )
 
+obsidian_sync_connections = sa.Table(
+    "obsidian_sync_connections",
+    metadata,
+    sa.Column("connection_id", sa.String(128), primary_key=True),
+    sa.Column("learner_id", sa.String(128), nullable=False),
+    sa.Column("secret_hash", sa.String(64), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("last_used_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
+)
+
+obsidian_learning_context = sa.Table(
+    "obsidian_learning_context",
+    metadata,
+    sa.Column("context_id", sa.String(64), primary_key=True),
+    sa.Column("learner_id", sa.String(128), nullable=False),
+    sa.Column("connection_id", sa.String(128), nullable=False),
+    sa.Column("source_key", sa.Text(), nullable=False),
+    sa.Column("title", sa.String(240), nullable=False),
+    sa.Column("asset_kind", sa.String(32), nullable=False),
+    sa.Column("tags", postgresql.JSONB(), nullable=False),
+    sa.Column("excerpt", sa.Text(), nullable=False),
+    sa.Column("content_hash", sa.String(64), nullable=False),
+    sa.Column("source_modified_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("received_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+agent_memory_events = sa.Table(
+    "agent_memory_events",
+    metadata,
+    sa.Column("event_id", postgresql.UUID(as_uuid=True), primary_key=True),
+    sa.Column("project_key", sa.String(64), nullable=False),
+    sa.Column("learner_id", sa.String(128), nullable=False),
+    sa.Column("agent_name", sa.String(128), nullable=False),
+    sa.Column("operation", sa.String(16), nullable=False),
+    sa.Column("provider", sa.String(32), nullable=False),
+    sa.Column("invocation_key", sa.String(128), nullable=False),
+    sa.Column("workflow_run_id", sa.String(128), nullable=True),
+    sa.Column("task_id", sa.String(128), nullable=True),
+    sa.Column("query_hash", sa.String(64), nullable=True),
+    sa.Column("memory_ids", postgresql.JSONB(), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+personalized_training_materials = sa.Table(
+    "personalized_training_materials",
+    metadata,
+    sa.Column("material_id", sa.String(128), primary_key=True),
+    sa.Column("learner_id", sa.String(128), nullable=False),
+    sa.Column("title", sa.String(240), nullable=False),
+    sa.Column("paragraphs", postgresql.JSONB(), nullable=False),
+    sa.Column("focus_points", postgresql.JSONB(), nullable=False),
+    sa.Column("source_context_ids", postgresql.JSONB(), nullable=False),
+    sa.Column("status", sa.String(32), nullable=False),
+    sa.Column("started_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("active_workflow_run_id", sa.String(128), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+control_tool_policies = sa.Table(
+    "control_tool_policies",
+    metadata,
+    sa.Column("project_key", sa.String(64), primary_key=True),
+    sa.Column("tool_name", sa.String(160), primary_key=True),
+    sa.Column("enabled", sa.Boolean(), nullable=False),
+    sa.Column("version", sa.Integer(), nullable=False),
+    sa.Column("updated_by_role", sa.String(64), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+control_prompts = sa.Table(
+    "control_prompts",
+    metadata,
+    sa.Column("project_key", sa.String(64), primary_key=True),
+    sa.Column("prompt_id", sa.String(160), primary_key=True),
+    sa.Column("prompt_version", sa.String(32), primary_key=True),
+    sa.Column("owner", sa.String(80), nullable=False),
+    sa.Column("purpose", sa.String(500), nullable=False),
+    sa.Column("template_text", sa.Text(), nullable=False),
+    sa.Column("variables", postgresql.JSONB(), nullable=False),
+    sa.Column("model_policy", postgresql.JSONB(), nullable=False),
+    sa.Column("status", sa.String(24), nullable=False),
+    sa.Column("content_hash", sa.String(64), nullable=False),
+    sa.Column("version", sa.Integer(), nullable=False),
+    sa.Column("created_by_role", sa.String(64), nullable=False),
+    sa.Column("activated_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+)
+
 content_generation_jobs = sa.Table(
     "content_generation_jobs",
     metadata,

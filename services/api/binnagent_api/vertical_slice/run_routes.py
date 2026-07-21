@@ -2,7 +2,7 @@ import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
-from typing import Annotated
+from typing import Annotated, cast
 from uuid import uuid4
 
 import sqlalchemy as sa
@@ -52,6 +52,22 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from binnagent_api.auth import ControlIdentity, require_control_identity
 from binnagent_api.database import get_engine
 from binnagent_api.learner_auth import LearnerIdentity, ensure_identity_learner
+from binnagent_api.personalized_reading_content import (
+    grammar_challenge as personalized_grammar_challenge,
+)
+from binnagent_api.personalized_reading_content import (
+    learner_item as personalized_learner_item,
+)
+from binnagent_api.personalized_reading_content import (
+    material_ref as personalized_material_ref,
+)
+from binnagent_api.personalized_reading_content import (
+    material_row_for_task,
+    owned_material_row,
+)
+from binnagent_api.personalized_reading_content import (
+    reading_question as personalized_reading_question,
+)
 from binnagent_api.vertical_slice import tables
 from binnagent_api.vertical_slice.content_catalog import LocalContentCatalog
 from binnagent_api.vertical_slice.grammar_challenges import (
@@ -283,6 +299,145 @@ async def continue_run(
     return _run_view(run, replayed=replayed)
 
 
+@learner_run_router.post(
+    "/personalized/{material_id}",
+    response_model=LearnerWorkspaceView,
+    status_code=201,
+)
+async def start_personalized_reading_run(
+    material_id: str,
+    request: Request,
+    idempotency_key: RunIdempotencyKey,
+) -> LearnerWorkspaceView:
+    """Start generated content inside the standard matched-reading workflow."""
+    identity: LearnerIdentity = request.state.learner_identity
+    scoped_key = _learner_idempotency_key(identity.learner_id, idempotency_key)
+    request_hash = sha256(f"start_personalized_reading:{material_id}".encode()).hexdigest()
+    async with get_engine().begin() as connection:
+        replay = await run_repository.find_replay(
+            connection,
+            idempotency_key=scoped_key,
+            request_hash=request_hash,
+            command_name="start_personalized_reading",
+        )
+        if replay is not None:
+            return await _workspace_view(connection, replay)
+        row = await owned_material_row(connection, identity.learner_id, material_id)
+        if row is None:
+            raise DomainError(
+                PublicErrorCode.CONTENT_NOT_ELIGIBLE,
+                "personalized_training_material_not_found",
+            )
+        active_run_id = row["active_workflow_run_id"]
+        if active_run_id is not None:
+            try:
+                active_run = await run_repository.load(connection, str(active_run_id))
+            except RunNotFoundError:
+                active_run = None
+            if active_run is not None and active_run.lifecycle is not RunLifecycle.COMPLETED:
+                return await _workspace_view(connection, active_run)
+
+        predecessor_id = await connection.scalar(
+            sa.select(tables.workflow_runs.c.workflow_run_id)
+            .where(
+                tables.workflow_runs.c.learner_id == identity.learner_id,
+                tables.workflow_runs.c.state == RunLifecycle.COMPLETED.value,
+            )
+            .order_by(tables.workflow_runs.c.updated_at.desc())
+            .limit(1)
+        )
+        if predecessor_id is None:
+            raise DomainError(
+                PublicErrorCode.SAVE_NOT_CONFIRMED,
+                "calibration_required_before_personalized_training",
+            )
+        predecessor = await run_repository.load(connection, str(predecessor_id))
+        successor = await run_repository.load_successor(connection, predecessor.workflow_run_id)
+        if successor is not None:
+            if successor.lifecycle is not RunLifecycle.COMPLETED:
+                raise DomainError(
+                    PublicErrorCode.SESSION_CONFLICT,
+                    "active_training_must_be_resumed_before_personalized_training",
+                    successor.version,
+                )
+            predecessor = successor
+
+        now = datetime.now(UTC)
+        profile = replace(
+            predecessor.learner_profile,
+            learner_snapshot_id=_id("learner_snapshot"),
+            evidence_count=predecessor.learner_profile.evidence_count + 1,
+            confidence_band=(
+                "medium" if predecessor.learner_profile.evidence_count + 1 >= 2 else "low"
+            ),
+            created_at=now,
+        )
+        material = personalized_material_ref(row)
+        decision = MatchDecision(
+            decision_id=_id("match_decision"),
+            learner_snapshot_id=profile.learner_snapshot_id,
+            candidate_version_ids=(material.content_version_id,),
+            selected_content_version_id=material.content_version_id,
+            policy_version="learner_selected_personalized_reading_v1",
+            conservative=True,
+            reason_codes=(
+                "learner_selected_queue_material",
+                "obsidian_learning_context_transfer",
+                "existing_reading_lab_reused",
+            ),
+            created_at=now,
+        )
+        run_id = _id("workflow_run")
+        task_id = _id("task")
+        task_transition = _new_task(
+            run_id,
+            task_id,
+            profile,
+            material,
+            now,
+            task_type=TaskType.MATCHED_READING,
+        )
+        run_transition = VerticalSliceRun.create(
+            CreateVerticalSliceRun(
+                workflow_run_id=run_id,
+                learner_id=identity.learner_id,
+                learner_profile=profile,
+                initial_task_id=task_id,
+                initial_task_type=TaskType.MATCHED_READING,
+                initial_stage=RunStage.MATCHED_READING,
+                initial_content_version_id=material.content_version_id,
+                run_kind=RunKind.PRACTICE,
+                predecessor_run_id=predecessor.workflow_run_id,
+                initial_match_decision=decision,
+                now=now,
+            )
+        )
+        run, _ = await run_repository.create_with_task(
+            connection,
+            run_transition,
+            task_transition,
+            idempotency_key=scoped_key,
+            request_hash=request_hash,
+            command_name="start_personalized_reading",
+            actor=ActorType.LEARNER,
+        )
+        await connection.execute(
+            tables.personalized_training_materials.update()
+            .where(tables.personalized_training_materials.c.material_id == material_id)
+            .values(
+                status="in_progress",
+                active_workflow_run_id=run.workflow_run_id,
+                started_at=sa.func.coalesce(
+                    tables.personalized_training_materials.c.started_at,
+                    now,
+                ),
+                completed_at=None,
+                updated_at=now,
+            )
+        )
+        return await _workspace_view(connection, run)
+
+
 @learner_run_router.get("/{workflow_run_id}", response_model=LearnerRunView)
 async def get_run(workflow_run_id: str) -> LearnerRunView:
     async with get_engine().connect() as connection:
@@ -404,7 +559,7 @@ async def advance_run(
         )
         if tool_result.status is not ToolStatus.SUCCEEDED or tool_result.data is None:
             raise DomainError(PublicErrorCode.SAVE_NOT_CONFIRMED, tool_result.reason_codes[0])
-        saved, replayed = tool_result.data
+        saved, replayed = cast(tuple[VerticalSliceRun, bool], tool_result.data)
     return _run_view(saved, replayed=replayed)
 
 
@@ -485,6 +640,18 @@ async def complete_run(
         )
         saved, replayed = await _save_run(
             connection, run, transition, idempotency_key, body, "complete_run"
+        )
+        await connection.execute(
+            tables.personalized_training_materials.update()
+            .where(
+                tables.personalized_training_materials.c.active_workflow_run_id
+                == saved.workflow_run_id
+            )
+            .values(
+                status="completed",
+                completed_at=saved.updated_at,
+                updated_at=saved.updated_at,
+            )
         )
     return _run_view(saved, replayed=replayed)
 
@@ -665,13 +832,22 @@ async def _material_view(
     connection: AsyncConnection,
     task: LearningTask,
 ) -> LearnerReadingMaterialView | LearnerExpressionMaterialView:
-    item = content_catalog.learner_item(task.current_material.content_version_id)
+    personalized_row = await material_row_for_task(connection, task)
+    item = (
+        personalized_learner_item(personalized_row)
+        if personalized_row is not None
+        else content_catalog.learner_item(task.current_material.content_version_id)
+    )
     if task.task_type in {TaskType.CALIBRATION_READING, TaskType.MATCHED_READING}:
         paragraphs = item.get("paragraphs")
-        question = content_catalog.reading_question_for(
-            task.current_material.content_version_id,
-            task.task_id,
-            task.learner_profile,
+        question = (
+            personalized_reading_question(personalized_row)
+            if personalized_row is not None
+            else content_catalog.reading_question_for(
+                task.current_material.content_version_id,
+                task.task_id,
+                task.learner_profile,
+            )
         )
         options = question.get("options") if isinstance(question, dict) else None
         annotations = item.get("allowed_annotations")
@@ -685,9 +861,13 @@ async def _material_view(
                 PublicErrorCode.CONTENT_NOT_ELIGIBLE,
                 "learner_reading_projection_missing",
             )
-        challenge = content_catalog.grammar_challenge_for(
-            task.task_id,
-            task.current_material.content_version_id,
+        challenge = (
+            personalized_grammar_challenge(personalized_row)
+            if personalized_row is not None
+            else content_catalog.grammar_challenge_for(
+                task.task_id,
+                task.current_material.content_version_id,
+            )
         )
         challenge_state = await load_grammar_challenge_state(
             connection,

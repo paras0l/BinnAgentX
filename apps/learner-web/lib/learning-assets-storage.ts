@@ -48,7 +48,8 @@ export interface LearningAssetsState {
 /**
  * `content` and `note` are transient compatibility inputs from existing
  * learning surfaces. They are deliberately ignored by the browser index and
- * are never persisted to localStorage or sent to the metadata API.
+ * are never persisted to localStorage. They are sent only once to the vault
+ * bridge while creating a note, never stored in the metadata index.
  */
 export interface LearningAssetInput {
   kind: LearningAssetKind;

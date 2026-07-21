@@ -64,6 +64,29 @@ _RUNTIME_SPECS = (
         max_calls_per_run=8,
         fallback_policy="reject",
     ),
+    ToolSpec(
+        name="obsidian.read_learning_context.v1",
+        version="1.0.0",
+        kind=ToolKind.QUERY,
+        risk_level=ToolRiskLevel.MODERATE,
+        allowed_actor_types=frozenset({ToolActorType.ORCHESTRATOR, ToolActorType.SYSTEM}),
+        required_permission_scopes=frozenset({"obsidian:read"}),
+        timeout_seconds=10,
+        max_calls_per_run=12,
+        fallback_policy="reject",
+    ),
+    ToolSpec(
+        name="obsidian.write_learning_note.v1",
+        version="1.0.0",
+        kind=ToolKind.COMMAND,
+        risk_level=ToolRiskLevel.HIGH,
+        allowed_actor_types=frozenset({ToolActorType.ORCHESTRATOR, ToolActorType.SYSTEM}),
+        required_permission_scopes=frozenset({"obsidian:write"}),
+        requires_idempotency_key=True,
+        timeout_seconds=30,
+        max_calls_per_run=8,
+        fallback_policy="queue_for_plugin_sync",
+    ),
 )
 
 _CONTENT_OPS_SPECS = (
@@ -97,9 +120,24 @@ _CONTENT_OPS_SPECS = (
 class ToolRegistry:
     def __init__(self, specs: tuple[ToolSpec, ...]) -> None:
         self._specs = {spec.name: spec for spec in specs}
+        self._disabled: set[str] = set()
 
     def get(self, name: str) -> ToolSpec:
         return self._specs[name]
+
+    def list(self) -> tuple[ToolSpec, ...]:
+        return tuple(sorted(self._specs.values(), key=lambda spec: spec.name))
+
+    def set_enabled(self, name: str, enabled: bool) -> None:
+        if name not in self._specs:
+            raise KeyError(name)
+        if enabled:
+            self._disabled.discard(name)
+        else:
+            self._disabled.add(name)
+
+    def is_enabled(self, name: str) -> bool:
+        return name in self._specs and name not in self._disabled
 
     def allowed_for(
         self,
@@ -112,7 +150,8 @@ class ToolRegistry:
         return tuple(
             spec
             for spec in self._specs.values()
-            if actor_type in spec.allowed_actor_types
+            if spec.name not in self._disabled
+            and actor_type in spec.allowed_actor_types
             and (not spec.allowed_run_stages or run_stage in spec.allowed_run_stages)
             and (not spec.allowed_task_types or task_type in spec.allowed_task_types)
             and spec.required_permission_scopes.issubset(permission_scopes)

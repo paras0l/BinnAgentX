@@ -28,6 +28,8 @@ dependencies = [
 [project.scripts]
 binnagent-api = "binnagent_api.main:run"
 binnagent-worker = "binnagent_worker.main:run"
+binnagent-obsidian-bridge = "binnagent_api.obsidian_bridge:run"
+binnagent-asset-exporter = "binnagent_worker.asset_exporter:run"
 
 [dependency-groups]
 dev = [

@@ -4,16 +4,24 @@ import { useCallback, useEffect, useMemo, useState, useTransition } from "react"
 
 import {
   ControlApiError,
+  activateManagedPrompt,
   cancelContentGenerationJob,
+  createManagedPrompt,
   createContentGenerationJob,
   createExperienceCode,
   getContentControlStatus,
   getContentGenerationJob,
   listContentGenerationJobs,
   listExperienceCodes,
+  listManagedLearners,
+  listManagedPrompts,
+  listManagedTools,
   publishContentGenerationJob,
   retryContentGenerationJob,
   revokeExperienceCode,
+  revokeManagedLearnerSessions,
+  updateManagedPrompt,
+  updateManagedTool,
   type ContentControlStatus,
   type ContentGenerationEvent,
   type ContentGenerationJob,
@@ -22,9 +30,14 @@ import {
   type CreatedExperienceCode,
   type ExperienceCode,
   type ExperienceCodeStatus,
+  type ManagedLearner,
+  type ManagedPrompt,
+  type ManagedTool,
+  type PromptDraftInput,
 } from "../lib/control-api";
+import { PromptsConsole, ToolsConsole } from "./agent-configuration-console";
 
-type View = "content" | "access";
+type View = "content" | "tools" | "prompts" | "access" | "users";
 
 const JOB_STATUS_LABELS: Record<ContentGenerationJobStatus, string> = {
   queued: "排队中",
@@ -82,6 +95,9 @@ export default function ControlHomePage() {
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [jobDetail, setJobDetail] = useState<ContentGenerationJobDetail | null>(null);
   const [codes, setCodes] = useState<ExperienceCode[]>([]);
+  const [users, setUsers] = useState<ManagedLearner[]>([]);
+  const [tools, setTools] = useState<ManagedTool[]>([]);
+  const [prompts, setPrompts] = useState<ManagedPrompt[]>([]);
   const [contentSeed, setContentSeed] = useState(20260719);
   const [label, setLabel] = useState("小范围体验");
   const [maxUses, setMaxUses] = useState(25);
@@ -118,8 +134,11 @@ export default function ControlHomePage() {
       getContentControlStatus(),
       listContentGenerationJobs(),
       listExperienceCodes(),
+      listManagedLearners(),
+      listManagedTools(),
+      listManagedPrompts(),
     ])
-      .then(async ([nextStatus, nextJobs, nextCodes]) => {
+      .then(async ([nextStatus, nextJobs, nextCodes, nextUsers, nextTools, nextPrompts]) => {
         if (!active) return;
         setStatus(nextStatus);
         setJobs((current) => [
@@ -134,6 +153,9 @@ export default function ControlHomePage() {
             (item) => !nextCodes.some((candidate) => candidate.code_id === item.code_id),
           ),
         ]);
+        setUsers(nextUsers);
+        setTools(nextTools);
+        setPrompts(nextPrompts);
         const firstId = nextJobs[0]?.job_id;
         if (firstId) {
           const detail = await getContentGenerationJob(firstId);
@@ -205,8 +227,17 @@ export default function ControlHomePage() {
           <button className={view === "content" ? "active" : ""} onClick={() => setView("content")}>
             内容与 Agent
           </button>
+          <button className={view === "tools" ? "active" : ""} onClick={() => setView("tools")}>
+            Tools
+          </button>
+          <button className={view === "prompts" ? "active" : ""} onClick={() => setView("prompts")}>
+            Prompts
+          </button>
           <button className={view === "access" ? "active" : ""} onClick={() => setView("access")}>
             体验访问
+          </button>
+          <button className={view === "users" ? "active" : ""} onClick={() => setView("users")}>
+            用户管理
           </button>
         </nav>
         <div className="operator-chip">
@@ -411,7 +442,96 @@ export default function ControlHomePage() {
             </aside>
           </section>
         </>
-      ) : (
+      ) : view === "tools" ? (
+        <ToolsConsole
+          tools={tools}
+          pending={isPending}
+          error={error}
+          onRefresh={() => {
+            setError(null);
+            startTransition(async () => {
+              try {
+                setTools(await listManagedTools());
+              } catch (reason) {
+                setError(controlErrorMessage(reason));
+              }
+            });
+          }}
+          onToggle={(tool) => {
+            setError(null);
+            startTransition(async () => {
+              try {
+                const updated = await updateManagedTool(
+                  tool.name,
+                  !tool.enabled,
+                  tool.policy_version,
+                );
+                setTools((current) =>
+                  current.map((item) => (item.name === updated.name ? updated : item)),
+                );
+              } catch (reason) {
+                setError(controlErrorMessage(reason));
+              }
+            });
+          }}
+        />
+      ) : view === "prompts" ? (
+        <PromptsConsole
+          prompts={prompts}
+          pending={isPending}
+          error={error}
+          onRefresh={() => {
+            setError(null);
+            startTransition(async () => {
+              try {
+                setPrompts(await listManagedPrompts());
+              } catch (reason) {
+                setError(controlErrorMessage(reason));
+              }
+            });
+          }}
+          onCreate={(input: PromptDraftInput) => {
+            setError(null);
+            startTransition(async () => {
+              try {
+                const created = await createManagedPrompt(input);
+                setPrompts((current) => [created, ...current]);
+              } catch (reason) {
+                setError(controlErrorMessage(reason));
+              }
+            });
+          }}
+          onUpdate={(prompt, input) => {
+            setError(null);
+            startTransition(async () => {
+              try {
+                const updated = await updateManagedPrompt(prompt, input);
+                setPrompts((current) =>
+                  current.map((item) =>
+                    item.prompt_id === updated.prompt_id &&
+                    item.prompt_version === updated.prompt_version
+                      ? updated
+                      : item,
+                  ),
+                );
+              } catch (reason) {
+                setError(controlErrorMessage(reason));
+              }
+            });
+          }}
+          onActivate={(prompt) => {
+            setError(null);
+            startTransition(async () => {
+              try {
+                await activateManagedPrompt(prompt);
+                setPrompts(await listManagedPrompts());
+              } catch (reason) {
+                setError(controlErrorMessage(reason));
+              }
+            });
+          }}
+        />
+      ) : view === "access" ? (
         <AccessConsole
           codes={codes}
           label={label}
@@ -460,8 +580,185 @@ export default function ControlHomePage() {
             });
           }}
         />
+      ) : (
+        <UsersConsole
+          users={users}
+          pending={isPending}
+          error={error}
+          onRefresh={() => {
+            setError(null);
+            startTransition(async () => {
+              try {
+                setUsers(await listManagedLearners());
+              } catch (reason) {
+                setError(controlErrorMessage(reason));
+              }
+            });
+          }}
+          onRevokeSessions={(learnerId) => {
+            setError(null);
+            startTransition(async () => {
+              try {
+                const updated = await revokeManagedLearnerSessions(learnerId);
+                setUsers((current) =>
+                  current.map((item) => (item.learner_id === learnerId ? updated : item)),
+                );
+              } catch (reason) {
+                setError(controlErrorMessage(reason));
+              }
+            });
+          }}
+        />
       )}
     </main>
+  );
+}
+
+function UsersConsole({
+  users,
+  pending,
+  error,
+  onRefresh,
+  onRevokeSessions,
+}: {
+  users: ManagedLearner[];
+  pending: boolean;
+  error: string | null;
+  onRefresh: () => void;
+  onRevokeSessions: (learnerId: string) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const filteredUsers = useMemo(
+    () =>
+      normalizedQuery
+        ? users.filter((user) =>
+            [user.nickname, user.email, user.learner_id]
+              .join(" ")
+              .toLocaleLowerCase()
+              .includes(normalizedQuery),
+          )
+        : users,
+    [normalizedQuery, users],
+  );
+  const registeredCount = users.filter((user) => user.account_type === "registered").length;
+  const activeCount = users.filter((user) => user.active_session_count > 0).length;
+  const obsidianCount = users.filter((user) => user.obsidian_paired).length;
+
+  return (
+    <>
+      <section className="page-intro">
+        <div>
+          <p className="eyebrow">LEARNER OPERATIONS</p>
+          <h1>用户管理</h1>
+          <p>查看账号、登录状态、训练与资产概况；敏感凭据不会出现在控制舱。</p>
+        </div>
+        <div className="intro-actions">
+          <button type="button" disabled={pending} onClick={onRefresh}>
+            刷新用户
+          </button>
+        </div>
+      </section>
+
+      {error ? (
+        <div className="error-banner" role="alert">
+          {error}
+        </div>
+      ) : null}
+
+      <section className="status-grid user-status-grid" aria-label="用户概况">
+        <StatusCard
+          label="全部用户"
+          value={`${users.length}`}
+          tone="neutral"
+          detail="当前数据库账号"
+        />
+        <StatusCard
+          label="注册账号"
+          value={`${registeredCount}`}
+          tone="healthy"
+          detail={`${users.length - registeredCount} 个体验账号`}
+        />
+        <StatusCard
+          label="当前在线"
+          value={`${activeCount}`}
+          tone={activeCount ? "healthy" : "neutral"}
+          detail="存在未过期且未撤销的会话"
+        />
+        <StatusCard
+          label="Obsidian 已配对"
+          value={`${obsidianCount}`}
+          tone={obsidianCount ? "healthy" : "neutral"}
+          detail="至少存在一个有效同步连接"
+        />
+      </section>
+
+      <section className="users-panel">
+        <div className="section-heading users-heading">
+          <div>
+            <p className="eyebrow">ACCOUNT DIRECTORY</p>
+            <h2>账号目录</h2>
+          </div>
+          <label>
+            <span>搜索用户</span>
+            <input
+              type="search"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="昵称、邮箱或用户 ID"
+            />
+          </label>
+        </div>
+
+        <div className="users-table">
+          <div className="users-table-head">
+            <span>账号</span>
+            <span>最近登录</span>
+            <span>学习数据</span>
+            <span>集成</span>
+            <span>操作</span>
+          </div>
+          {filteredUsers.map((user) => (
+            <article className="user-row" key={user.learner_id}>
+              <span className="user-identity">
+                <strong>{user.nickname}</strong>
+                <small>{user.email || "体验账号（无邮箱）"}</small>
+                <code>{shortId(user.learner_id)}</code>
+              </span>
+              <span>
+                <strong>{user.last_login_at ? formatDate(user.last_login_at) : "从未登录"}</strong>
+                <small>
+                  {user.active_session_count > 0
+                    ? `${user.active_session_count} 个有效会话`
+                    : "当前无有效会话"}
+                </small>
+              </span>
+              <span>
+                <strong>{user.completed_run_count} 次完整训练</strong>
+                <small>{user.asset_count} 条资产</small>
+              </span>
+              <span>
+                <strong>{user.account_type === "registered" ? "正式注册" : "体验访问"}</strong>
+                <small>{user.obsidian_paired ? "Obsidian 已配对" : "Obsidian 未配对"}</small>
+              </span>
+              <span className="user-actions">
+                <button
+                  type="button"
+                  className="danger-button"
+                  disabled={pending || user.active_session_count === 0}
+                  onClick={() => onRevokeSessions(user.learner_id)}
+                >
+                  退出所有设备
+                </button>
+              </span>
+            </article>
+          ))}
+          {filteredUsers.length === 0 ? (
+            <p className="empty-state">没有符合当前搜索条件的用户。</p>
+          ) : null}
+        </div>
+      </section>
+    </>
   );
 }
 

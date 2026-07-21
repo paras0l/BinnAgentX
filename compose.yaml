@@ -84,6 +84,14 @@ services:
       - binnagent_generated_content:/app/fixtures/content/v1/generated
       - binnagent_prefect_task_storage:/opt/prefect/task-storage
 
+  asset-exporter:
+    <<: *python-service
+    command: ["binnagent-asset-exporter"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
   app:
     <<: *python-service
     command:

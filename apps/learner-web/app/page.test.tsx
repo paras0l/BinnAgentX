@@ -369,6 +369,236 @@ describe("learner home", () => {
     });
     expect(screen.queryByLabelText("内容")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "创建索引" })).toBeEnabled();
+    expect(screen.queryByRole("heading", { name: "训练任务队列" })).not.toBeInTheDocument();
+  });
+
+  it("opens a plugin-synced asset through its Obsidian URI without calling the bridge", async () => {
+    saveExperienceProfile("learner_synthetic_local", {
+      exam_track: "english_1",
+      target_score: 70,
+      weekly_minutes: 420,
+      self_reported_level: "developing",
+      prior_exam_seen: false,
+      session_minutes: 45,
+      feedback_density: "minimal",
+      timed: false,
+      evidence_count: 0,
+      confidence_band: "low",
+    });
+    const documentUri = "obsidian://open?vault=bin01&file=BinnAgentX%2FAssets%2Ffirst-day.md";
+    const openWindow = vi.fn();
+    vi.stubGlobal("open", openWindow);
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/session")) {
+        return Response.json({
+          learner_id: "learner_synthetic_local",
+          nickname: "本地学习者",
+          email: "local@binnagent.invalid",
+          invite_code: "BINN-LOCAL",
+          account_type: "registered",
+        });
+      }
+      if (url.endsWith("/v1/assets")) {
+        return Response.json([
+          {
+            asset_id: "asset_first_day",
+            kind: "vocabulary",
+            title: "第一天词汇",
+            tags: ["binnagent", "vocabulary"],
+            source_type: "obsidian",
+            source_title: "Obsidian",
+            source_task_id: null,
+            evidence_status: "pending_validation",
+            evidence_count: 0,
+            last_verified_at: null,
+            next_review_at: null,
+            starred: false,
+            sync_status: "synced",
+            sync_error_code: null,
+            document_uri: documentUri,
+            document_updated_at: "2026-07-21T12:00:00Z",
+            created_at: "2026-07-21T12:00:00Z",
+            updated_at: "2026-07-21T12:00:00Z",
+            version: 1,
+          },
+        ]);
+      }
+      if (url.endsWith("/vault-status")) {
+        return Response.json({ adapter: "disabled", connected: false, detail: "disabled" });
+      }
+      if (url.endsWith("/obsidian-plugin-status")) {
+        return Response.json({ paired: true, synced_context_count: 1, last_synced_at: null });
+      }
+      if (url.endsWith("/v1/training-materials")) return Response.json([]);
+      return Response.json({ detail: "not_found" }, { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LearnerHomePage />);
+    fireEvent.click(await screen.findByRole("button", { name: "学习资产" }));
+    fireEvent.click(await screen.findByRole("button", { name: "在 Obsidian 中打开" }));
+
+    expect(openWindow).toHaveBeenCalledWith(documentUri, "_blank", "noopener,noreferrer");
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      expect.stringContaining("/v1/assets/asset_first_day/open"),
+      expect.anything(),
+    );
+    expect(screen.queryByText(/操作未完成（503）/)).not.toBeInTheDocument();
+  });
+
+  it("shows persistent personalized materials in the home training queue", async () => {
+    saveExperienceProfile("learner_synthetic_local", {
+      exam_track: "english_1",
+      target_score: 70,
+      weekly_minutes: 420,
+      self_reported_level: "developing",
+      prior_exam_seen: false,
+      session_minutes: 45,
+      feedback_density: "minimal",
+      timed: false,
+      evidence_count: 0,
+      confidence_band: "low",
+    });
+    const material = {
+      material_id: "training_material_0001",
+      title: "Why Shared Workspaces Keep Growing",
+      paragraphs: [
+        "Although older offices separated teams, recent evidence supports shared spaces.",
+        "Readers should distinguish the concession from the writer's main claim.",
+        "The same structure can carry a new judgment in a different context.",
+      ],
+      focus_points: ["让步信息与主句判断"],
+      source_context_count: 2,
+      training_eligible: true,
+      start_block_reason: null,
+      status: "ready",
+      started_at: null,
+      completed_at: null,
+      created_at: "2026-07-21T12:00:00Z",
+      updated_at: "2026-07-21T12:00:00Z",
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith("/session")) {
+          return Response.json({
+            learner_id: "learner_synthetic_local",
+            nickname: "本地学习者",
+            email: "local@binnagent.invalid",
+            invite_code: "BINN-LOCAL",
+            account_type: "registered",
+          });
+        }
+        if (url.endsWith("/v1/assets")) return Response.json([]);
+        if (url.endsWith("/vault-status")) {
+          return Response.json({ adapter: "disabled", connected: false, detail: "disabled" });
+        }
+        if (url.endsWith("/obsidian-plugin-status")) {
+          return Response.json({
+            paired: true,
+            synced_context_count: 2,
+            last_synced_at: "2026-07-21T12:00:00Z",
+          });
+        }
+        if (url.endsWith("/v1/training-materials") && !init?.method) {
+          return Response.json([material]);
+        }
+        if (url.endsWith("/v1/runs/personalized/training_material_0001")) {
+          return Response.json({
+            ...resumableWorkspace,
+            run: {
+              ...resumableWorkspace.run,
+              workflow_run_id: "workflow_run_personalized_0001",
+              current_task_id: "task_personalized_0001",
+            },
+            task: {
+              ...resumableWorkspace.task,
+              task_id: "task_personalized_0001",
+              workflow_run_id: "workflow_run_personalized_0001",
+              current_content_version_id: material.material_id,
+            },
+            material: {
+              ...resumableWorkspace.material,
+              content_version_id: material.material_id,
+              title: material.title,
+              paragraphs: material.paragraphs.map((text, index) => ({
+                paragraph_id: `personalized_p_0${index + 1}`,
+                text,
+              })),
+              question: {
+                ...resumableWorkspace.material.question,
+                prompt: "Which statement best captures the central purpose of the passage?",
+              },
+            },
+          });
+        }
+        return Response.json({ detail: "not_found" }, { status: 404 });
+      }),
+    );
+
+    render(<LearnerHomePage />);
+
+    expect(await screen.findByRole("heading", { name: "训练任务队列" })).toBeVisible();
+    expect(screen.getByText("个性化阅读 · 3 段 · 综合 2 篇笔记 · 7/21")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "选择并开始" }));
+    expect(await screen.findByText(/recent evidence supports shared spaces/)).toBeVisible();
+    expect(
+      screen.getByRole("heading", {
+        name: "Which statement best captures the central purpose of the passage?",
+      }),
+    ).toBeVisible();
+    expect(screen.getByRole("button", { name: "保存 V1（不结束本步）" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "提前结束本步" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "完成本次阅读" })).not.toBeInTheDocument();
+  });
+
+  it("routes an unconfigured Obsidian queue action directly to setup", async () => {
+    saveExperienceProfile("learner_synthetic_local", {
+      exam_track: "english_1",
+      target_score: 70,
+      weekly_minutes: 420,
+      self_reported_level: "developing",
+      prior_exam_seen: false,
+      session_minutes: 45,
+      feedback_density: "minimal",
+      timed: false,
+      evidence_count: 0,
+      confidence_band: "low",
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/session")) {
+          return Response.json({
+            learner_id: "learner_synthetic_local",
+            nickname: "本地学习者",
+            email: "local@binnagent.invalid",
+            invite_code: "BINN-LOCAL",
+            account_type: "registered",
+          });
+        }
+        if (url.endsWith("/v1/assets")) return Response.json([]);
+        if (url.endsWith("/vault-status")) {
+          return Response.json({ adapter: "disabled", connected: false, detail: "disabled" });
+        }
+        if (url.endsWith("/obsidian-plugin-status")) {
+          return Response.json({ paired: false, synced_context_count: 0, last_synced_at: null });
+        }
+        if (url.endsWith("/v1/training-materials")) return Response.json([]);
+        return Response.json({ detail: "not_found" }, { status: 404 });
+      }),
+    );
+
+    render(<LearnerHomePage />);
+
+    const configureButton = await screen.findByRole("button", { name: "去配置 Obsidian" });
+    expect(screen.queryByRole("button", { name: /从 Obsidian 笔记生成新材料/ })).toBeNull();
+    fireEvent.click(configureButton);
+    expect(screen.getByRole("dialog", { name: "连接你的知识库" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: /把读过的痕迹/ })).toBeVisible();
   });
 
   it("starts stage progress at zero before any stage is completed", () => {

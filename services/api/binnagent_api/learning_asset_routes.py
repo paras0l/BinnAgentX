@@ -7,20 +7,32 @@ and opening behind a restricted adapter.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import secrets
 from datetime import UTC, datetime
+from typing import Any
+from urllib.parse import quote
 from uuid import uuid4
 
 import sqlalchemy as sa
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Header, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from binnagent_api.database import get_engine
-from binnagent_api.knowledge_vault import KnowledgeVaultError, knowledge_vault_from_settings
+from binnagent_api.knowledge_vault import (
+    KnowledgeVaultError,
+    KnowledgeVaultStatus,
+    knowledge_vault_from_settings,
+)
 from binnagent_api.learner_auth import LearnerIdentity
 from binnagent_api.settings import get_settings
 from binnagent_api.vertical_slice import tables
 
 learning_asset_router = APIRouter(prefix="/v1/assets", tags=["learning-assets"])
+obsidian_sync_router = APIRouter(prefix="/v1/obsidian-sync", tags=["obsidian-sync"])
 
 _ASSET_KINDS = {
     "vocabulary",
@@ -53,6 +65,7 @@ class CreateLearningAssetRequest(BaseModel):
     source_task_id: str | None = Field(default=None, max_length=128)
     source_annotation_id: str | None = Field(default=None, max_length=128)
     source_intervention_id: str | None = Field(default=None, max_length=128)
+    initial_content: str | None = Field(default=None, max_length=12_000)
 
     @field_validator("kind")
     @classmethod
@@ -118,6 +131,66 @@ class LearningAssetView(BaseModel):
     version: int
 
 
+class KnowledgeVaultStatusView(BaseModel):
+    adapter: str
+    connected: bool
+    detail: str
+
+
+class ObsidianPluginConnectionView(BaseModel):
+    connection_id: str
+    sync_secret: str
+
+
+class ObsidianPluginSyncStatusView(BaseModel):
+    paired: bool
+    synced_context_count: int
+    last_synced_at: datetime | None
+
+
+class ObsidianContextEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source_key: str = Field(min_length=1, max_length=1000)
+    asset_id: str | None = Field(default=None, max_length=128)
+    title: str = Field(min_length=1, max_length=240)
+    kind: str
+    tags: list[str] = Field(default_factory=list, max_length=24)
+    excerpt: str = Field(min_length=1, max_length=1200)
+    modified_at: datetime
+
+    @field_validator("kind")
+    @classmethod
+    def valid_context_kind(cls, value: str) -> str:
+        if value not in _ASSET_KINDS:
+            raise ValueError("asset_kind_invalid")
+        return value
+
+
+class ObsidianContextImportRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    schema_version: str
+    vault_name: str = Field(min_length=1, max_length=128)
+    entries: list[ObsidianContextEntry] = Field(max_length=80)
+
+
+class ObsidianAssetExportView(BaseModel):
+    asset_id: str
+    kind: str
+    title: str
+    tags: list[str]
+    source_type: str
+    source_task_id: str | None
+    initial_content: str | None
+
+
+class ObsidianAssetExportAck(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    source_key: str = Field(min_length=1, max_length=1000)
+    content_hash: str = Field(min_length=64, max_length=64)
+    modified_at: datetime
+    vault_name: str = Field(min_length=1, max_length=128)
+
+
 def _asset_view(row: sa.RowMapping) -> LearningAssetView:
     return LearningAssetView(
         asset_id=str(row["asset_id"]),
@@ -143,7 +216,7 @@ def _asset_view(row: sa.RowMapping) -> LearningAssetView:
 
 
 async def _owned_asset(
-    connection: sa.AsyncConnection, learner_id: str, asset_id: str
+    connection: AsyncConnection, learner_id: str, asset_id: str
 ) -> sa.RowMapping:
     row = (
         (
@@ -160,6 +233,35 @@ async def _owned_asset(
     if row is None:
         raise HTTPException(status_code=404, detail="asset_not_found")
     return row
+
+
+async def _require_obsidian_connection(
+    connection: AsyncConnection,
+    connection_id: str,
+    authorization: str | None,
+) -> sa.RowMapping:
+    if authorization is None or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="obsidian_sync_unauthorized")
+    secret_hash = hashlib.sha256(authorization.removeprefix("Bearer ").encode()).hexdigest()
+    row = (
+        (
+            await connection.execute(
+                sa.select(tables.obsidian_sync_connections).where(
+                    tables.obsidian_sync_connections.c.connection_id == connection_id,
+                    tables.obsidian_sync_connections.c.revoked_at.is_(None),
+                )
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if row is None or not hmac.compare_digest(str(row["secret_hash"]), secret_hash):
+        raise HTTPException(status_code=401, detail="obsidian_sync_unauthorized")
+    return row
+
+
+def _obsidian_uri(vault_name: str, source_key: str) -> str:
+    return f"obsidian://open?vault={quote(vault_name)}&file={quote(source_key)}"
 
 
 @learning_asset_router.get("", response_model=list[LearningAssetView])
@@ -181,6 +283,275 @@ async def list_learning_assets(request: Request) -> list[LearningAssetView]:
             .all()
         )
     return [_asset_view(row) for row in rows]
+
+
+@learning_asset_router.get("/vault-status", response_model=KnowledgeVaultStatusView)
+async def knowledge_vault_status() -> KnowledgeVaultStatusView:
+    try:
+        vault_status: KnowledgeVaultStatus = await knowledge_vault_from_settings(
+            get_settings()
+        ).status()
+    except ValueError as exc:
+        vault_status = KnowledgeVaultStatus(
+            adapter="obsidian_bridge", connected=False, detail=str(exc)
+        )
+    return KnowledgeVaultStatusView(
+        adapter=vault_status.adapter,
+        connected=vault_status.connected,
+        detail=vault_status.detail,
+    )
+
+
+@learning_asset_router.post(
+    "/obsidian-plugin-connections", response_model=ObsidianPluginConnectionView
+)
+async def create_obsidian_plugin_connection(request: Request) -> ObsidianPluginConnectionView:
+    identity: LearnerIdentity = request.state.learner_identity
+    now = datetime.now(UTC)
+    connection_id = f"obsync_{uuid4().hex}"
+    sync_secret = secrets.token_urlsafe(32)
+    async with get_engine().begin() as connection:
+        await connection.execute(
+            tables.obsidian_sync_connections.insert().values(
+                connection_id=connection_id,
+                learner_id=identity.learner_id,
+                secret_hash=hashlib.sha256(sync_secret.encode()).hexdigest(),
+                created_at=now,
+                last_used_at=None,
+                revoked_at=None,
+            )
+        )
+    return ObsidianPluginConnectionView(connection_id=connection_id, sync_secret=sync_secret)
+
+
+@learning_asset_router.get("/obsidian-plugin-status", response_model=ObsidianPluginSyncStatusView)
+async def obsidian_plugin_sync_status(request: Request) -> ObsidianPluginSyncStatusView:
+    identity: LearnerIdentity = request.state.learner_identity
+    async with get_engine().connect() as connection:
+        paired, last_synced_at, synced_context_count = (
+            await connection.execute(
+                sa.select(
+                    sa.func.count(tables.obsidian_sync_connections.c.connection_id),
+                    sa.func.max(tables.obsidian_sync_connections.c.last_used_at),
+                    sa.select(sa.func.count())
+                    .select_from(tables.obsidian_learning_context)
+                    .where(tables.obsidian_learning_context.c.learner_id == identity.learner_id)
+                    .scalar_subquery(),
+                ).where(
+                    tables.obsidian_sync_connections.c.learner_id == identity.learner_id,
+                    tables.obsidian_sync_connections.c.revoked_at.is_(None),
+                )
+            )
+        ).one()
+    return ObsidianPluginSyncStatusView(
+        paired=bool(paired),
+        synced_context_count=int(synced_context_count),
+        last_synced_at=last_synced_at,
+    )
+
+
+@obsidian_sync_router.post("/{connection_id}/import")
+async def import_obsidian_context(
+    connection_id: str,
+    body: ObsidianContextImportRequest,
+    authorization: str | None = Header(default=None),
+) -> dict[str, int]:
+    if body.schema_version != "learning-context/v1":
+        raise HTTPException(status_code=401, detail="obsidian_sync_unauthorized")
+    now = datetime.now(UTC)
+    async with get_engine().begin() as connection:
+        row = await _require_obsidian_connection(connection, connection_id, authorization)
+        for entry in body.entries:
+            context_id = hashlib.sha256(f"{connection_id}:{entry.source_key}".encode()).hexdigest()
+            content_hash = hashlib.sha256(entry.excerpt.encode()).hexdigest()
+            asset_id = entry.asset_id or f"asset_obs_{context_id[:24]}"
+            values = {
+                "context_id": context_id,
+                "learner_id": row["learner_id"],
+                "connection_id": connection_id,
+                "source_key": entry.source_key,
+                "title": entry.title,
+                "asset_kind": entry.kind,
+                "tags": entry.tags,
+                "excerpt": entry.excerpt,
+                "content_hash": content_hash,
+                "source_modified_at": entry.modified_at,
+                "received_at": now,
+            }
+            insert_statement = pg_insert(tables.obsidian_learning_context).values(**values)
+            statement = insert_statement.on_conflict_do_update(
+                index_elements=[tables.obsidian_learning_context.c.context_id], set_=values
+            )
+            await connection.execute(statement)
+            existing_asset = (
+                (
+                    await connection.execute(
+                        sa.select(tables.learning_asset_index).where(
+                            tables.learning_asset_index.c.asset_id == asset_id,
+                            tables.learning_asset_index.c.learner_id == row["learner_id"],
+                        )
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            asset_values: dict[str, Any] = {
+                "asset_kind": entry.kind,
+                "display_title": entry.title,
+                "tag_index": entry.tags,
+                "vault_provider": "obsidian_plugin",
+                "vault_id": body.vault_name,
+                "document_id": asset_id,
+                "relative_path": entry.source_key,
+                "document_uri": _obsidian_uri(body.vault_name, entry.source_key),
+                "content_hash": content_hash,
+                "document_updated_at": entry.modified_at,
+                "sync_status": "synced",
+                "sync_error_code": None,
+                "indexed_at": now,
+                "updated_at": now,
+            }
+            if existing_asset is None:
+                await connection.execute(
+                    tables.learning_asset_index.insert().values(
+                        asset_id=asset_id,
+                        learner_id=row["learner_id"],
+                        source_type="import",
+                        source_title="Obsidian",
+                        source_task_id=None,
+                        source_annotation_id=None,
+                        source_intervention_id=None,
+                        evidence_status="pending_validation",
+                        evidence_count=0,
+                        last_verified_at=None,
+                        next_review_at=None,
+                        starred=False,
+                        created_at=now,
+                        version=1,
+                        **asset_values,
+                    )
+                )
+            else:
+                await connection.execute(
+                    tables.learning_asset_index.update()
+                    .where(tables.learning_asset_index.c.asset_id == asset_id)
+                    .values(**asset_values, version=int(existing_asset["version"]) + 1)
+                )
+                await connection.execute(
+                    tables.outbox_messages.update()
+                    .where(
+                        tables.outbox_messages.c.topic == "asset_export_requested",
+                        tables.outbox_messages.c.aggregate_id == asset_id,
+                        tables.outbox_messages.c.status == "pending",
+                    )
+                    .values(
+                        status="processed",
+                        payload={"asset_id": asset_id, "delivered_via": "obsidian_plugin"},
+                        processed_at=now,
+                    )
+                )
+        await connection.execute(
+            tables.obsidian_sync_connections.update()
+            .where(tables.obsidian_sync_connections.c.connection_id == connection_id)
+            .values(last_used_at=now)
+        )
+    return {"imported": len(body.entries)}
+
+
+@obsidian_sync_router.get("/{connection_id}/exports", response_model=list[ObsidianAssetExportView])
+async def list_obsidian_asset_exports(
+    connection_id: str,
+    authorization: str | None = Header(default=None),
+) -> list[ObsidianAssetExportView]:
+    async with get_engine().connect() as connection:
+        connection_row = await _require_obsidian_connection(
+            connection, connection_id, authorization
+        )
+        rows = (
+            (
+                await connection.execute(
+                    sa.select(tables.learning_asset_index, tables.outbox_messages.c.payload)
+                    .join(
+                        tables.outbox_messages,
+                        sa.and_(
+                            tables.outbox_messages.c.aggregate_id
+                            == tables.learning_asset_index.c.asset_id,
+                            tables.outbox_messages.c.topic == "asset_export_requested",
+                            tables.outbox_messages.c.status == "pending",
+                        ),
+                    )
+                    .where(tables.learning_asset_index.c.learner_id == connection_row["learner_id"])
+                    .order_by(tables.outbox_messages.c.occurred_at)
+                    .limit(80)
+                )
+            )
+            .mappings()
+            .all()
+        )
+    return [
+        ObsidianAssetExportView(
+            asset_id=str(row["asset_id"]),
+            kind=str(row["asset_kind"]),
+            title=str(row["display_title"]),
+            tags=list(row["tag_index"]),
+            source_type=str(row["source_type"]),
+            source_task_id=row["source_task_id"],
+            initial_content=(row["payload"] or {}).get("initial_content"),
+        )
+        for row in rows
+    ]
+
+
+@obsidian_sync_router.post("/{connection_id}/exports/{asset_id}/ack")
+async def acknowledge_obsidian_asset_export(
+    connection_id: str,
+    asset_id: str,
+    body: ObsidianAssetExportAck,
+    authorization: str | None = Header(default=None),
+) -> dict[str, str]:
+    now = datetime.now(UTC)
+    async with get_engine().begin() as connection:
+        connection_row = await _require_obsidian_connection(
+            connection, connection_id, authorization
+        )
+        asset = await _owned_asset(connection, str(connection_row["learner_id"]), asset_id)
+        await connection.execute(
+            tables.learning_asset_index.update()
+            .where(tables.learning_asset_index.c.asset_id == asset_id)
+            .values(
+                vault_provider="obsidian_plugin",
+                vault_id=body.vault_name,
+                document_id=asset_id,
+                relative_path=body.source_key,
+                document_uri=_obsidian_uri(body.vault_name, body.source_key),
+                content_hash=body.content_hash,
+                document_updated_at=body.modified_at,
+                indexed_at=now,
+                sync_status="synced",
+                sync_error_code=None,
+                updated_at=now,
+                version=int(asset["version"]) + 1,
+            )
+        )
+        await connection.execute(
+            tables.outbox_messages.update()
+            .where(
+                tables.outbox_messages.c.topic == "asset_export_requested",
+                tables.outbox_messages.c.aggregate_id == asset_id,
+                tables.outbox_messages.c.status == "pending",
+            )
+            .values(
+                status="processed",
+                payload={"asset_id": asset_id, "delivered_via": "obsidian_plugin"},
+                processed_at=now,
+            )
+        )
+        await connection.execute(
+            tables.obsidian_sync_connections.update()
+            .where(tables.obsidian_sync_connections.c.connection_id == connection_id)
+            .values(last_used_at=now)
+        )
+    return {"status": "synced"}
 
 
 @learning_asset_router.get("/{asset_id}", response_model=LearningAssetView)
@@ -238,7 +609,11 @@ async def create_learning_asset(
                 message_id=uuid4(),
                 topic="asset_export_requested",
                 aggregate_id=asset_id,
-                payload={"asset_id": asset_id, "export_schema_version": "asset/v1"},
+                payload={
+                    "asset_id": asset_id,
+                    "export_schema_version": "asset/v1",
+                    "initial_content": body.initial_content,
+                },
                 status="pending",
                 attempt_count=0,
                 occurred_at=now,
@@ -246,13 +621,23 @@ async def create_learning_asset(
                 processed_at=None,
             )
         )
-    return await _export_asset(identity.learner_id, asset_id)
+    exported = await _export_asset(
+        identity.learner_id,
+        asset_id,
+        initial_content=body.initial_content,
+    )
+    if exported.sync_status == "synced":
+        await _complete_asset_export_messages(asset_id)
+    return exported
 
 
 @learning_asset_router.post("/{asset_id}/sync", response_model=LearningAssetView)
 async def sync_learning_asset(asset_id: str, request: Request) -> LearningAssetView:
     identity: LearnerIdentity = request.state.learner_identity
-    return await _export_asset(identity.learner_id, asset_id)
+    exported = await _export_asset(identity.learner_id, asset_id)
+    if exported.sync_status == "synced":
+        await _complete_asset_export_messages(asset_id)
+    return exported
 
 
 @learning_asset_router.post("/{asset_id}/open", status_code=status.HTTP_204_NO_CONTENT)
@@ -290,7 +675,12 @@ async def star_learning_asset(
     return _asset_view(updated)
 
 
-async def _export_asset(learner_id: str, asset_id: str) -> LearningAssetView:
+async def _export_asset(
+    learner_id: str,
+    asset_id: str,
+    *,
+    initial_content: str | None = None,
+) -> LearningAssetView:
     async with get_engine().connect() as connection:
         row = await _owned_asset(connection, learner_id, asset_id)
     try:
@@ -301,6 +691,7 @@ async def _export_asset(learner_id: str, asset_id: str) -> LearningAssetView:
             tags=tuple(str(tag) for tag in row["tag_index"]),
             source_type=str(row["source_type"]),
             source_task_id=row["source_task_id"],
+            initial_content=initial_content,
         )
     except KnowledgeVaultError as exc:
         if exc.code == "knowledge_vault_unavailable":
@@ -334,3 +725,39 @@ async def _export_asset(learner_id: str, asset_id: str) -> LearningAssetView:
         )
         updated = await _owned_asset(connection, learner_id, asset_id)
     return _asset_view(updated)
+
+
+async def _complete_asset_export_messages(asset_id: str) -> None:
+    now = datetime.now(UTC)
+    async with get_engine().begin() as connection:
+        await connection.execute(
+            tables.outbox_messages.update()
+            .where(
+                tables.outbox_messages.c.topic == "asset_export_requested",
+                tables.outbox_messages.c.aggregate_id == asset_id,
+                tables.outbox_messages.c.status == "pending",
+            )
+            .values(status="processed", processed_at=now)
+        )
+
+
+async def export_pending_asset(asset_id: str) -> str:
+    """Worker entry point for a durable `asset_export_requested` outbox item."""
+    async with get_engine().connect() as connection:
+        row = (
+            (
+                await connection.execute(
+                    sa.select(tables.learning_asset_index).where(
+                        tables.learning_asset_index.c.asset_id == asset_id
+                    )
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+    if row is None:
+        return "missing"
+    exported = await _export_asset(str(row["learner_id"]), asset_id)
+    if exported.sync_status == "synced":
+        await _complete_asset_export_messages(asset_id)
+    return exported.sync_status

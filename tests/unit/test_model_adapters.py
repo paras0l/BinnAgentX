@@ -4,6 +4,7 @@ from decimal import Decimal
 import httpx2
 import pytest
 from binnagent_agent import AnnotationAnalysisRequest, PriorityFeedbackRequest
+from binnagent_agent.prompts import RenderedPrompt
 from binnagent_api.model_adapters import (
     RemoteAnnotationAnalysisAdapter,
     RemotePriorityFeedbackAdapter,
@@ -19,7 +20,21 @@ def _request() -> PriorityFeedbackRequest:
         attempt_text="The evidence is useful, but the conclusion is too broad.",
         fallback_reason_code="approved_fallback",
         fallback_feedback="Check whether your conclusion stays within the evidence in the passage.",
+        learner_memory=(("Concession pattern", "Although narrows the claim."),),
     )
+
+
+class ManagedPromptRuntime:
+    async def resolve(self, prompt_id: str, variables: dict[str, object]) -> RenderedPrompt:
+        assert prompt_id == "expression.priority_feedback"
+        assert "output_schema" in variables
+        return RenderedPrompt(
+            prompt_id=prompt_id,
+            prompt_version="v9",
+            text="MANAGED_RUNTIME_PROMPT",
+            model_policy={"temperature": 0.33, "max_tokens": 260},
+            source="database",
+        )
 
 
 @pytest.mark.asyncio
@@ -89,6 +104,46 @@ async def test_remote_priority_feedback_adapters_use_compatible_provider_protoco
         assert body["response_format"] == {"type": "json_object"}
     else:
         assert body["thinking"] == {"type": "disabled"}
+    assert "<learner_memory>" in body["messages"][1]["content"]
+    assert "Concession pattern" in body["messages"][1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_remote_adapter_uses_managed_prompt_text_policy_and_version() -> None:
+    seen: dict[str, object] = {}
+    content = json.dumps(
+        {
+            "schema_version": "1.0.0",
+            "focus": "logic",
+            "feedback": "Keep the conclusion within the evidence stated in the passage.",
+            "evidence_quote": "the conclusion is too broad",
+            "replacement_text": None,
+        }
+    )
+
+    async def handler(request: httpx2.Request) -> httpx2.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx2.Response(200, json={"choices": [{"message": {"content": content}}]})
+
+    adapter = RemotePriorityFeedbackAdapter(
+        provider="deepseek",
+        base_url="https://models.example",
+        model="test-model",
+        api_key="test-key",
+        estimated_cost_usd=Decimal("0.02"),
+        max_tokens=400,
+        timeout_seconds=2,
+        transport=httpx2.MockTransport(handler),
+        prompt_resolver=ManagedPromptRuntime(),
+    )
+    result = await adapter.generate(_request())
+
+    body = seen["body"]
+    assert isinstance(body, dict)
+    assert "MANAGED_RUNTIME_PROMPT" in body["messages"][0]["content"]
+    assert body["temperature"] == 0.33
+    assert body["max_tokens"] == 260
+    assert result.prompt_version == "v9"
 
 
 @pytest.mark.asyncio
@@ -153,6 +208,7 @@ async def test_annotation_adapter_routes_sentence_selection_to_translation_and_g
             fallback_diagnosis="先找主干。",
             fallback_breakdown=("找主语和谓语。",),
             fallback_next_check="谁做了什么?",
+            learner_memory=(("Sentence core", "先定位有限谓语。"),),
         )
     )
 
@@ -162,5 +218,6 @@ async def test_annotation_adapter_routes_sentence_selection_to_translation_and_g
     messages = body["messages"]
     assert isinstance(messages, list)
     assert "selection_scope: sentence_or_paragraph" in messages[1]["content"]
+    assert "Sentence core" in messages[1]["content"]
     assert "translation 必须" in messages[0]["content"]
     assert body["thinking"] == {"type": "enabled"}

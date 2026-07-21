@@ -165,11 +165,15 @@ class Settings(BaseSettings):
     enable_irt_cat: bool = False
     enable_automatic_total_score: bool = False
     enable_predicted_score_gain: bool = False
-    knowledge_vault_adapter: Literal["disabled", "obsidian_cli"] = "disabled"
+    # Docker services use the local host bridge.  `obsidian_cli` is retained for
+    # source installs where the API itself runs on the desktop host.
+    knowledge_vault_adapter: Literal["disabled", "obsidian_bridge", "obsidian_cli"] = "disabled"
     obsidian_cli_command: str = "obsidian"
     obsidian_vault_name: str | None = None
     obsidian_managed_directory: str = "BinnAgentX"
     obsidian_cli_timeout_seconds: int = 15
+    obsidian_bridge_url: str = "http://host.docker.internal:8787"
+    obsidian_bridge_token: SecretStr | None = None
 
     @model_validator(mode="after")
     def resolve_remote_default_and_prevent_unsafe_production(self) -> Self:

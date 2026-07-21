@@ -222,6 +222,14 @@ async def test_email_registration_session_logout_and_account_lookup() -> None:
         assert session.status_code == 200
         assert session.json()["learner_id"] == identity["learner_id"]
 
+        personalized_command = await client.post(
+            "/learner/v1/runs/personalized/training_material_missing",
+            headers={"Idempotency-Key": "personalized-route-auth-check"},
+            json={},
+        )
+        assert personalized_command.status_code == 422, personalized_command.text
+        assert personalized_command.json()["code"] == "CONTENT_NOT_ELIGIBLE"
+
         logged_out = await client.post("/learner/v1/auth/logout")
         assert logged_out.status_code == 204
         assert (await client.get("/learner/v1/auth/session")).status_code == 401
@@ -233,6 +241,42 @@ async def test_email_registration_session_logout_and_account_lookup() -> None:
         assert accounts.json()["accounts"] == [
             {"learner_id": identity["learner_id"], "nickname": "First Learner"}
         ]
+
+
+@pytest.mark.asyncio
+async def test_control_user_management_lists_accounts_and_revokes_sessions() -> None:
+    transport = httpx2.ASGITransport(app=create_app())
+    control_headers = {"X-BinnAgent-Control-Role": "developer_reviewer"}
+    async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
+        email = "managed@example.com"
+        token = await _verify_email(client, email, "112233")
+        registered = await client.post(
+            "/learner/v1/auth/register",
+            json={
+                "email": email,
+                "verification_token": token,
+                "nickname": "Managed Learner",
+                "invite_code": "BINN-LOCAL-FIRST",
+            },
+        )
+        assert registered.status_code == 201, registered.text
+        learner_id = registered.json()["learner_id"]
+
+        listed = await client.get("/control/v1/users", headers=control_headers)
+        assert listed.status_code == 200, listed.text
+        managed = next(item for item in listed.json() if item["learner_id"] == learner_id)
+        assert managed["email"] == email
+        assert managed["active_session_count"] == 1
+        assert managed["asset_count"] == 0
+        assert managed["obsidian_paired"] is False
+
+        revoked = await client.post(
+            f"/control/v1/users/{learner_id}/revoke-sessions",
+            headers=control_headers,
+        )
+        assert revoked.status_code == 200, revoked.text
+        assert revoked.json()["active_session_count"] == 0
+        assert (await client.get("/learner/v1/auth/session")).status_code == 401
 
 
 @pytest.mark.asyncio

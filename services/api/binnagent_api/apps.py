@@ -7,14 +7,17 @@ from binnagent_domain.vertical_slice.errors import DomainError
 from fastapi import Depends, FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
+from binnagent_api.agent_configuration_routes import agent_configuration_router
 from binnagent_api.auth import ControlIdentity, require_control_identity
 from binnagent_api.auth_routes import auth_router
 from binnagent_api.content_generation import content_generation_router
 from binnagent_api.database import get_engine
 from binnagent_api.experience_routes import experience_control_router
 from binnagent_api.learner_auth import resolve_request_identity
-from binnagent_api.learning_asset_routes import learning_asset_router
+from binnagent_api.learning_asset_routes import learning_asset_router, obsidian_sync_router
 from binnagent_api.settings import get_settings
+from binnagent_api.training_material_routes import training_material_router
+from binnagent_api.user_management_routes import user_management_router
 from binnagent_api.vertical_slice import tables
 from binnagent_api.vertical_slice.repository import TaskNotFoundError
 from binnagent_api.vertical_slice.routes import control_router, learner_router
@@ -62,13 +65,15 @@ def create_learner_app() -> FastAPI:
     learner.include_router(learner_router)
     learner.include_router(learner_run_router)
     learner.include_router(learning_asset_router)
+    learner.include_router(obsidian_sync_router)
+    learner.include_router(training_material_router)
     _register_error_handlers(learner)
     return learner
 
 
 def _is_public_learner_path(path: str) -> bool:
     return path in {"/v1/meta", "/docs", "/openapi.json"} or path.startswith(
-        ("/v1/auth/", "/docs/")
+        ("/v1/auth/", "/v1/obsidian-sync/", "/docs/")
     )
 
 
@@ -77,7 +82,12 @@ def _mounted_learner_path(path: str) -> str:
 
 
 async def _identity_owns_resource(path: str, learner_id: str) -> bool:
-    run_match = re.match(r"^/v1/runs/([^/]+)", path)
+    # Static commands under /v1/runs own their target through the command
+    # handler. Treating "personalized" as a workflow_run_id rejects every
+    # generated-reading start before the route can verify material ownership.
+    run_match = (
+        None if path.startswith("/v1/runs/personalized/") else re.match(r"^/v1/runs/([^/]+)", path)
+    )
     task_match = re.match(r"^/v1/tasks/([^/]+)", path)
     if run_match is None and task_match is None:
         return True
@@ -134,6 +144,8 @@ def create_control_app() -> FastAPI:
     control.include_router(control_run_router)
     control.include_router(content_generation_router)
     control.include_router(experience_control_router)
+    control.include_router(user_management_router)
+    control.include_router(agent_configuration_router)
     _register_error_handlers(control)
     return control
 

@@ -19,10 +19,10 @@
     "format": "prettier --write . && uv run ruff format",
     "format:check": "prettier --check . && uv run ruff format --check",
     "lint": "pnpm --recursive --if-present lint && uv run ruff check",
-    "test:contract": "uv run pytest tests/contract",
-    "test:integration": "uv run pytest tests/integration",
+    "test:contract": "uv run python -m pytest tests/contract",
+    "test:integration": "uv run python -m pytest tests/integration",
     "test:e2e": "playwright test",
-    "test:unit": "pnpm --recursive --if-present test && uv run pytest tests/unit",
+    "test:unit": "pnpm --recursive --if-present test && uv run python -m pytest tests/unit",
     "typecheck": "pnpm --recursive --if-present typecheck && uv run python -m mypy python services tests",
     "api": "uv run binnagent-api",
     "worker": "uv run binnagent-worker"

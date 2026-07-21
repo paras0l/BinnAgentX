@@ -47,6 +47,18 @@ docs/                       # 产品、架构、研发记录和 ADR
 - 不需要某个前端时使用 `--no-learner` 或 `--no-control`；排障时追加 `--verbose`。使用 `docker compose -p binnagentx down` 停止容器；业务数据库、Prefect 元数据和跨容器任务参数分别保存在明确命名的持久卷中。
 - 需要逐个调试宿主机进程时使用 `./scripts/deploy.sh --host-services`，此模式保留原来的 `uv` / `pnpm` 启动与 `Ctrl-C` 清理行为。
 
+控制舱的“用户管理”展示当前数据库中的注册账号与体验账号、最近登录、有效会话、完整训练次数、资产数量和 Obsidian 配对状态。开发审核角色可以撤销某个用户的全部有效会话，使其所有设备重新登录；控制舱不会展示验证码、会话 token 或 Obsidian Sync Secret。
+
+控制舱同时提供 BinnAgentX 独立的 **Tools** 与 **Prompts** 管理：Tools 页面治理代码注册能力、风险、权限 Schema 和持久化启停策略；Obsidian 已内化为所有学习 Agent 共用、学习者隔离的长期记忆 Provider，显式读写 Tool 只是同一记忆模块的受治理入口。Prompts 页面管理草稿、激活、归档、变量、模型策略和渲染预览；`python/binnagent_agent/prompts/` 保存代码默认目录和变量契约，远程模型运行时会解析数据库活动版本，控制舱修改不再是孤立配置。所有记录固定使用 `project_key=binnagentx`，不读取或覆盖旧 BinnAgent 的注册表与 Prompt。详细边界见[Agent 配置控制面](docs/44-Agent配置控制面.md)与[Obsidian Agent 记忆模块](docs/45-Obsidian作为Agent记忆模块.md)。
+
+### 本机 Obsidian 学习资产
+
+学习资产页只保存索引与训练证据；笔记正文保留在用户自己的 Obsidian Vault。普通用户在资产页的“配置 Obsidian”中选择 Vault、下载 `BinnAgentX-Learning-Sync-v0.1.2.zip`，再把页面生成的 Connection ID 和 Sync Secret 填入插件。连接按学习账号持久化在 PostgreSQL，插件凭据保存在 Vault 的插件设置中；刷新、退出登录、容器重启或再次登录都不会要求重复配置。只有连接尚未完成首次同步、已撤销或同步失效时，学习首页才把“从 Obsidian 笔记生成新材料”切换为“去配置 Obsidian”。插件启动后及每 60 秒自动同步已授权范围，也可用命令面板中的 **Sync approved learning context** 立即重试。
+
+双向闭环为：学习端新增资产或保存阅读标注 → 待导出队列 → 插件在 `BinnAgentX/Assets/` 创建笔记并回执 → Obsidian 模板笔记上传有限摘录并登记为元数据资产 → BinnAgent 根据这些已授权摘录生成新的个性化英语阅读并放入学习首页的训练任务队列 → 用户选择材料后进入既有阅读实验室，继续复用选项作答、语义标注、语法挑战、V1/V2、H1–H4、表达迁移、难度反馈和完成记录 → 新标注再次进入资产队列。训练材料状态由这套标准训练运行驱动并持久化；队列不另设阅读器或手工完成按钮。同一时间只允许一个标准训练运行：当前材料可继续，其他材料显示“先继续当前训练”，避免点击后才产生任务冲突。资产页不负责生成或展示阅读正文，资产 API 响应也不包含笔记正文或摘录。
+
+`binnagent-obsidian-bridge` 是开发和受管部署场景的可选增强：它只允许创建和打开 `BinnAgentX/` 目录中的笔记，监听 `127.0.0.1:8787` 并要求 token。它用于后台异步投递，不是普通学习者开始使用 Obsidian 的前置条件。
+
 Agent 核心代码统一从 `binnagent_agent` 导入；模型提供方、预算、安全策略和未来的持久记忆都必须留在该包定义的边界内。可再生依赖、缓存、测试报告与视觉验收截图不进入版本库。
 
 ## 固定使用周期

@@ -1,0 +1,16 @@
+{
+  "name": "obsidian-binnagentx-learning-sync",
+  "version": "0.1.2",
+  "private": true,
+  "scripts": {
+    "build": "node esbuild.mjs production",
+    "dev": "node esbuild.mjs",
+    "check": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.13",
+    "esbuild": "0.25.12",
+    "obsidian": "1.8.7",
+    "typescript": "5.9.3"
+  }
+}

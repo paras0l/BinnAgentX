@@ -131,7 +131,70 @@ export async function listLearningAssets(): Promise<LearningAssetsState> {
   return { schemaVersion: 2, items: assets.map(learningAssetFromApi) };
 }
 
+export interface KnowledgeVaultStatus {
+  adapter: "disabled" | "obsidian_bridge" | "obsidian_cli";
+  connected: boolean;
+  detail: string;
+}
+
+export function getKnowledgeVaultStatus(): Promise<KnowledgeVaultStatus> {
+  return request<KnowledgeVaultStatus>("/v1/assets/vault-status");
+}
+
+export interface ObsidianPluginConnection {
+  connection_id: string;
+  sync_secret: string;
+}
+
+export function createObsidianPluginConnection(): Promise<ObsidianPluginConnection> {
+  return request<ObsidianPluginConnection>("/v1/assets/obsidian-plugin-connections", {
+    method: "POST",
+  });
+}
+
+export interface ObsidianPluginSyncStatus {
+  paired: boolean;
+  synced_context_count: number;
+  last_synced_at: string | null;
+}
+
+export interface PersonalizedTrainingMaterial {
+  material_id: string;
+  title: string;
+  paragraphs: string[];
+  focus_points: string[];
+  source_context_count: number;
+  training_eligible: boolean;
+  start_block_reason: "calibration_required" | "active_training" | null;
+  status: "ready" | "in_progress" | "completed";
+  started_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export function listTrainingMaterials(): Promise<PersonalizedTrainingMaterial[]> {
+  return request<PersonalizedTrainingMaterial[]>("/v1/training-materials");
+}
+
+export function generatePersonalizedTrainingMaterial(): Promise<PersonalizedTrainingMaterial> {
+  return request<PersonalizedTrainingMaterial>("/v1/training-materials/personalized", {
+    method: "POST",
+  });
+}
+
+export function startPersonalizedReading(materialId: string): Promise<LearnerWorkspaceView> {
+  return command(`/v1/runs/personalized/${materialId}`, "start_personalized_reading", {});
+}
+
+export function getObsidianPluginSyncStatus(): Promise<ObsidianPluginSyncStatus> {
+  return request<ObsidianPluginSyncStatus>("/v1/assets/obsidian-plugin-status");
+}
+
 export async function createLearningAsset(input: LearningAssetInput): Promise<LearningAsset> {
+  const initialContent = [input.content ? `> ${input.content}` : null, input.note ?? null]
+    .filter((value): value is string => Boolean(value))
+    .join("\n\n");
   const asset = await request<LearningAssetApiView>("/v1/assets", {
     method: "POST",
     body: JSON.stringify({
@@ -141,6 +204,9 @@ export async function createLearningAsset(input: LearningAssetInput): Promise<Le
       source_type: input.sourceType ?? "manual",
       source_title: input.sourceTitle ?? null,
       source_task_id: input.sourceTaskId ?? null,
+      // Kept only for this request so detailed captures go directly to the
+      // vault bridge, never to browser storage or the metadata index.
+      initial_content: initialContent || null,
     }),
   });
   return learningAssetFromApi(asset);

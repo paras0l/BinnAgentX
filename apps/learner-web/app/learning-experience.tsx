@@ -29,11 +29,18 @@ import {
   createRun,
   getResumeWorkspace,
   getWorkspace,
+  getKnowledgeVaultStatus,
+  getObsidianPluginSyncStatus,
+  generatePersonalizedTrainingMaterial,
   LearnerApiError,
   listLearningAssets,
+  listTrainingMaterials,
   openLearningAsset,
+  startPersonalizedReading,
   starLearningAsset,
-  syncLearningAsset,
+  type KnowledgeVaultStatus,
+  type ObsidianPluginSyncStatus,
+  type PersonalizedTrainingMaterial,
 } from "../lib/api";
 import type { LearnerProfileInput, LearnerTaskView, LearnerWorkspaceView } from "../lib/contracts";
 import { clearResumeRunId, loadResumeRunId, saveResumeRunId } from "../lib/draft-storage";
@@ -50,11 +57,9 @@ import {
   saveLearnerPreferences,
 } from "../lib/experience-storage";
 import type { LearnerIdentity } from "../lib/auth-api";
-import {
-  EMPTY_LEARNING_ASSETS,
-  type LearningAssetInput,
-} from "../lib/learning-assets-storage";
+import { EMPTY_LEARNING_ASSETS, type LearningAssetInput } from "../lib/learning-assets-storage";
 import { LearningAssetsPanel } from "./learning-assets-panel";
+import { TrainingTaskQueue } from "./training-task-queue";
 import { LearningWorkspace } from "./learning-workspace";
 import { getThemeDefinition, THEME_LIST, THEME_TIERS, type ThemeId } from "../theme/registry";
 import {
@@ -123,6 +128,11 @@ export function LearningExperience({
   );
   const [calibrationDeferred, setCalibrationDeferred] = useState(false);
   const [learningAssets, setLearningAssets] = useState(() => EMPTY_LEARNING_ASSETS);
+  const [vaultStatus, setVaultStatus] = useState<KnowledgeVaultStatus | null>(null);
+  const [pluginSyncStatus, setPluginSyncStatus] = useState<ObsidianPluginSyncStatus | null>(null);
+  const [trainingMaterials, setTrainingMaterials] = useState<PersonalizedTrainingMaterial[]>([]);
+  const [isGeneratingMaterial, setIsGeneratingMaterial] = useState(false);
+  const [configureObsidianRequested, setConfigureObsidianRequested] = useState(false);
   const [surface, setSurface] = useState<
     "home" | "training" | "profile" | "profile-edit" | "preferences" | "assets"
   >("home");
@@ -178,11 +188,37 @@ export function LearningExperience({
     };
   }, [identity.learner_id]);
 
+  const refreshVaultStatus = useCallback(() => {
+    void getKnowledgeVaultStatus()
+      .then(setVaultStatus)
+      .catch(() => {
+        setVaultStatus(null);
+      });
+  }, []);
+
+  const refreshLearningAssets = useCallback(() => {
+    void Promise.all([listLearningAssets(), getObsidianPluginSyncStatus()])
+      .then(([assets, pluginStatus]) => {
+        setLearningAssets(assets);
+        setPluginSyncStatus(pluginStatus);
+      })
+      .catch((reason: unknown) => setError(errorMessage(reason)));
+  }, []);
+
   useEffect(() => {
     let active = true;
-    void listLearningAssets()
-      .then((assets) => {
-        if (active) setLearningAssets(assets);
+    void Promise.all([
+      listLearningAssets(),
+      getKnowledgeVaultStatus(),
+      getObsidianPluginSyncStatus(),
+      listTrainingMaterials(),
+    ])
+      .then(([assets, status, pluginStatus, materials]) => {
+        if (!active) return;
+        setLearningAssets(assets);
+        setVaultStatus(status);
+        setPluginSyncStatus(pluginStatus);
+        setTrainingMaterials(materials);
       })
       .catch(() => {
         // The index is supplementary metadata and cannot block a learning session.
@@ -236,6 +272,9 @@ export function LearningExperience({
         if (experience?.profile) {
           setExperience(recordCompletedSession(identity.learner_id, next.run, experience.profile));
         }
+        void listTrainingMaterials()
+          .then(setTrainingMaterials)
+          .catch(() => undefined);
       }
     },
     [experience, identity.learner_id],
@@ -312,18 +351,53 @@ export function LearningExperience({
     setExperience(recordTemporaryTask(identity.learner_id));
   }, [identity.learner_id]);
 
-  const captureLearningAsset = useCallback(
-    (input: LearningAssetInput) => {
-      void createLearningAsset(input)
-        .then((asset) => {
-          setLearningAssets((current) => ({
-            ...current,
-            items: [asset, ...current.items.filter((item) => item.assetId !== asset.assetId)],
-          }));
-        })
-        .catch((reason: unknown) => setError(errorMessage(reason)));
+  const captureLearningAsset = useCallback((input: LearningAssetInput) => {
+    void createLearningAsset(input)
+      .then((asset) => {
+        setLearningAssets((current) => ({
+          ...current,
+          items: [asset, ...current.items.filter((item) => item.assetId !== asset.assetId)],
+        }));
+      })
+      .catch((reason: unknown) => setError(errorMessage(reason)));
+  }, []);
+
+  const generateTrainingMaterial = useCallback(() => {
+    setIsGeneratingMaterial(true);
+    setError(null);
+    void generatePersonalizedTrainingMaterial()
+      .then((material) => {
+        setTrainingMaterials((current) => [
+          material,
+          ...current.filter((item) => item.material_id !== material.material_id),
+        ]);
+      })
+      .catch((reason: unknown) => setError(errorMessage(reason)))
+      .finally(() => setIsGeneratingMaterial(false));
+  }, []);
+
+  const startPersonalizedMaterial = useCallback(
+    (material: PersonalizedTrainingMaterial) => {
+      setError(null);
+      startTransition(async () => {
+        try {
+          const next = await startPersonalizedReading(material.material_id);
+          setTrainingMaterials((current) =>
+            current.map((item) =>
+              item.material_id === material.material_id
+                ? { ...item, status: "in_progress", completed_at: null }
+                : item,
+            ),
+          );
+          setWorkspace(next);
+          saveResumeRunId(identity.learner_id, next.run.workflow_run_id);
+          setSurface("training");
+        } catch (reason) {
+          setError(errorMessage(reason));
+        }
+      });
     },
-    [],
+    [identity.learner_id],
   );
 
   const toggleNavigation = useCallback(() => {
@@ -358,24 +432,30 @@ export function LearningExperience({
           const current = learningAssets.items.find((item) => item.assetId === assetId);
           if (!current) return;
           void starLearningAsset(assetId, !current.starred, current.version)
-            .then((asset) => setLearningAssets((state) => ({
-              ...state,
-              items: state.items.map((item) => (item.assetId === assetId ? asset : item)),
-            })))
+            .then((asset) =>
+              setLearningAssets((state) => ({
+                ...state,
+                items: state.items.map((item) => (item.assetId === assetId ? asset : item)),
+              })),
+            )
             .catch((reason: unknown) => setError(errorMessage(reason)));
         }}
-        onOpen={(assetId, documentUri) => {
-          if (documentUri) window.open(documentUri, "_blank", "noopener,noreferrer");
-          void openLearningAsset(assetId).catch((reason: unknown) => setError(errorMessage(reason)));
+        onOpen={(asset) => {
+          setError(null);
+          if (asset.documentUri) {
+            window.open(asset.documentUri, "_blank", "noopener,noreferrer");
+            return;
+          }
+          void openLearningAsset(asset.assetId).catch((reason: unknown) =>
+            setError(errorMessage(reason)),
+          );
         }}
-        onSync={(assetId) => {
-          void syncLearningAsset(assetId)
-            .then((asset) => setLearningAssets((state) => ({
-              ...state,
-              items: state.items.map((item) => (item.assetId === assetId ? asset : item)),
-            })))
-            .catch((reason: unknown) => setError(errorMessage(reason)));
-        }}
+        vaultStatus={vaultStatus}
+        onRefreshVaultStatus={refreshVaultStatus}
+        onRefreshAssets={refreshLearningAssets}
+        pluginSyncStatus={pluginSyncStatus}
+        openVaultSetupInitially={configureObsidianRequested}
+        onVaultSetupClose={() => setConfigureObsidianRequested(false)}
       />
     );
   } else if (surface === "profile" && experience) {
@@ -433,6 +513,17 @@ export function LearningExperience({
         onResume={resumeTraining}
         onContinueSession={(session) => startPractice(session.workflowRunId, session.runVersion)}
         onStartFirst={() => startFirstRun(experience.profile)}
+        trainingMaterials={trainingMaterials}
+        syncedContextCount={pluginSyncStatus?.synced_context_count ?? 0}
+        obsidianConfigurationChecked={pluginSyncStatus !== null}
+        obsidianConfigured={Boolean(pluginSyncStatus?.paired && pluginSyncStatus.last_synced_at)}
+        isGeneratingMaterial={isGeneratingMaterial}
+        onGenerateMaterial={generateTrainingMaterial}
+        onConfigureObsidian={() => {
+          setConfigureObsidianRequested(true);
+          setSurface("assets");
+        }}
+        onOpenTrainingMaterial={startPersonalizedMaterial}
         onOpenProfile={() => {
           setSurface("profile");
         }}
@@ -705,9 +796,17 @@ interface LearningHomeProps {
   calibrationDeferred: boolean;
   isPending: boolean;
   resumableWorkspace: LearnerWorkspaceView | null;
+  trainingMaterials: PersonalizedTrainingMaterial[];
+  syncedContextCount: number;
+  obsidianConfigurationChecked: boolean;
+  obsidianConfigured: boolean;
+  isGeneratingMaterial: boolean;
   onResume: () => void;
   onContinueSession: (session: CompletedSessionRecord) => void;
   onStartFirst: () => void;
+  onGenerateMaterial: () => void;
+  onConfigureObsidian: () => void;
+  onOpenTrainingMaterial: (material: PersonalizedTrainingMaterial) => void;
   onOpenProfile: () => void;
   onOpenPreferences: () => void;
 }
@@ -717,9 +816,17 @@ function LearningHome({
   calibrationDeferred,
   isPending,
   resumableWorkspace,
+  trainingMaterials,
+  syncedContextCount,
+  obsidianConfigurationChecked,
+  obsidianConfigured,
+  isGeneratingMaterial,
   onResume,
   onContinueSession,
   onStartFirst,
+  onGenerateMaterial,
+  onConfigureObsidian,
+  onOpenTrainingMaterial,
   onOpenProfile,
   onOpenPreferences,
 }: LearningHomeProps) {
@@ -740,6 +847,8 @@ function LearningHome({
   const resumableStage = resumableWorkspace
     ? TRAINING_STAGE_LABELS[resumableWorkspace.run.stage]
     : null;
+  const openSystemTask = () =>
+    hasResumableTask ? onResume() : latest ? onContinueSession(latest) : onStartFirst();
 
   return (
     <main className="home-shell">
@@ -788,9 +897,7 @@ function LearningHome({
           <button
             className="primary-button strong-action"
             type="button"
-            onClick={() =>
-              hasResumableTask ? onResume() : latest ? onContinueSession(latest) : onStartFirst()
-            }
+            onClick={openSystemTask}
             disabled={isPending}
           >
             {isPending
@@ -821,6 +928,32 @@ function LearningHome({
           </div>
         </dl>
       </section>
+
+      <TrainingTaskQueue
+        materials={trainingMaterials}
+        syncedContextCount={syncedContextCount}
+        obsidianConfigurationChecked={obsidianConfigurationChecked}
+        obsidianConfigured={obsidianConfigured}
+        isGenerating={isGeneratingMaterial}
+        systemTask={{
+          title: hasResumableTask
+            ? (resumableWorkspace?.material?.title ?? "继续上次系统训练")
+            : latest
+              ? "下一次匹配读写训练"
+              : "首次独立校准",
+          description: hasResumableTask
+            ? `已保留在${resumableStage ?? "当前阶段"}，可从原位置继续。`
+            : latest
+              ? recommendationFor(latest.difficultyRating)
+              : "先完成两段轻量校准，建立后续材料匹配基线。",
+          actionLabel: hasResumableTask ? "继续训练" : latest ? "开始训练" : "开始校准",
+          statusLabel: hasResumableTask ? "进行中" : "系统推荐",
+        }}
+        onGenerate={onGenerateMaterial}
+        onConfigureObsidian={onConfigureObsidian}
+        onOpenSystemTask={openSystemTask}
+        onOpenMaterial={onOpenTrainingMaterial}
+      />
 
       <section className="home-grid" data-ui-anchor="primary-actions">
         <article className="weekly-card">

@@ -19,6 +19,14 @@ from binnagent_agent.gateways.model import (
     PriorityFeedbackOutput,
     PriorityFeedbackRequest,
 )
+from binnagent_agent.memory import (
+    LearnerMemoryPort,
+    MemoryAccessContext,
+    MemoryCandidate,
+    MemoryQuery,
+    MemoryReceipt,
+    MemoryRecord,
+)
 from binnagent_agent.policies.budget import BudgetDecision, ModelBudget, evaluate_model_budget
 
 __all__ = [
@@ -36,6 +44,12 @@ __all__ = [
     "ExpressionReviewResult",
     "GatewayOutcome",
     "GatewayResult",
+    "LearnerMemoryPort",
+    "MemoryAccessContext",
+    "MemoryCandidate",
+    "MemoryQuery",
+    "MemoryReceipt",
+    "MemoryRecord",
     "ModelAdapterResponse",
     "ModelBudget",
     "PriorityFeedbackGateway",

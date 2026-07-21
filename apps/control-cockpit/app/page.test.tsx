@@ -26,6 +26,44 @@ const STATUS = {
   active_pack_job_id: null,
 };
 
+const TOOL = {
+  project_key: "binnagentx",
+  name: "obsidian.read_learning_context.v1",
+  display_name: "检索学习者记忆（Obsidian）",
+  version: "1.0.0",
+  description: "读取当前学习者已授权同步的有限摘录。",
+  kind: "query",
+  risk_level: "moderate",
+  source: "agent_memory",
+  enabled: true,
+  allowed_actor_types: ["orchestrator"],
+  required_permission_scopes: ["obsidian:read"],
+  requires_human_approval: false,
+  requires_idempotency_key: false,
+  input_schema: { type: "object" },
+  output_schema: { type: "object" },
+  policy_version: 1,
+  updated_at: null,
+};
+
+const PROMPT = {
+  project_key: "binnagentx",
+  prompt_id: "personalized_reading.generate",
+  prompt_version: "v1",
+  owner: "learning_content",
+  purpose: "根据已授权 Obsidian 学习上下文生成个性化英语阅读。",
+  template_text: "围绕 {{contexts}} 生成新阅读，只输出 {{output_schema}}。",
+  variables: ["contexts", "output_schema"],
+  model_policy: { temperature: 0.45, max_tokens: 1800 },
+  status: "active",
+  content_hash: "a".repeat(64),
+  version: 1,
+  created_by_role: "developer_reviewer",
+  activated_at: "2026-07-21T12:00:00Z",
+  created_at: "2026-07-21T12:00:00Z",
+  updated_at: "2026-07-21T12:00:00Z",
+};
+
 describe("control cockpit home", () => {
   afterEach(() => {
     cleanup();
@@ -39,6 +77,28 @@ describe("control cockpit home", () => {
         const url = String(input);
         if (url.endsWith("content-generation/status")) return Response.json(STATUS);
         if (url.endsWith("content-generation/jobs")) return Response.json([]);
+        if (url.endsWith("/tools")) return Response.json([TOOL]);
+        if (url.includes("/tools/") && init?.method === "PATCH") {
+          return Response.json({ ...TOOL, enabled: false, policy_version: 2 });
+        }
+        if (url.endsWith("/prompts")) return Response.json([PROMPT]);
+        if (url.endsWith("/users")) {
+          return Response.json([
+            {
+              learner_id: "learner_managed_0001",
+              nickname: "Aya",
+              email: "aya@example.com",
+              account_type: "registered",
+              created_at: "2026-07-20T09:00:00Z",
+              updated_at: "2026-07-21T09:00:00Z",
+              last_login_at: "2026-07-21T09:00:00Z",
+              active_session_count: 1,
+              completed_run_count: 2,
+              asset_count: 5,
+              obsidian_paired: true,
+            },
+          ]);
+        }
         if (url.endsWith("experience-codes") && init?.method === "POST") {
           return Response.json(
             {
@@ -88,5 +148,38 @@ describe("control cockpit home", () => {
     expect(await screen.findByText("TRY-8K4MN-9KX2P")).toBeVisible();
     expect(screen.getByText("内测班")).toBeVisible();
     expect(screen.getByText("0 / 12 人")).toBeVisible();
+  });
+
+  it("lists learners and their operational state in user management", async () => {
+    render(<ControlHomePage />);
+    fireEvent.click(screen.getByRole("button", { name: "用户管理" }));
+
+    expect(await screen.findByRole("heading", { name: "用户管理" })).toBeVisible();
+    expect(screen.getByText("aya@example.com")).toBeVisible();
+    expect(screen.getByText("2 次完整训练")).toBeVisible();
+    expect(screen.getByText("5 条资产")).toBeVisible();
+    expect(screen.getAllByText("Obsidian 已配对")).toHaveLength(2);
+    expect(screen.getByRole("button", { name: "退出所有设备" })).toBeEnabled();
+  });
+
+  it("manages the isolated Obsidian tool catalog", async () => {
+    render(<ControlHomePage />);
+    fireEvent.click(screen.getByRole("button", { name: "Tools" }));
+
+    expect(await screen.findByRole("heading", { name: "Tools 管理" })).toBeVisible();
+    expect(screen.getByText("检索学习者记忆（Obsidian）")).toBeVisible();
+    expect(screen.getByText("obsidian:read")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "停用" }));
+    expect(await screen.findByRole("button", { name: "启用" })).toBeVisible();
+  });
+
+  it("shows versioned BinnAgentX prompts without crossing project boundaries", async () => {
+    render(<ControlHomePage />);
+    fireEvent.click(screen.getByRole("button", { name: "Prompts" }));
+
+    expect(await screen.findByRole("heading", { name: "Prompt 管理" })).toBeVisible();
+    expect(screen.getByText("project: binnagentx")).toBeVisible();
+    expect(screen.getAllByText("personalized_reading.generate").length).toBeGreaterThan(0);
+    await waitFor(() => expect(screen.getByDisplayValue(/围绕 \{\{contexts\}\}/)).toBeDisabled());
   });
 });

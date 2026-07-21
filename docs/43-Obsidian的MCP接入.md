@@ -719,6 +719,63 @@ BinnAgentX
 
 这三个系统各自只有一个权威职责，就不会出现正文冲突、掌握度失真、个人内容进入代码仓库或 OpenWiki 生成结果反向污染学习证据的问题。
 
+---
+
+# 十二、2026-07-21 双向学习闭环实现与验收
+
+## 已实现路径
+
+1. 学习端资产页通过 PostgreSQL `learning_asset_index` 展示标题、分类、标签、来源、证据和同步状态，不返回 Obsidian 正文或同步摘录。
+2. 学习端新增资产、训练标注和个性化阅读标注都写入 `asset_export_requested` outbox；正文仅作为投递中的一次性载荷，插件回执后即替换为不含正文的交付回执。
+3. Obsidian 插件 v0.1.2 使用独立 Connection ID 和 Sync Secret 拉取待导出资产，在 `BinnAgentX/Assets/` 创建带稳定 `binnagent_asset_id` 的笔记，并向服务端回执文件引用和内容哈希。
+4. 插件只扫描用户明确允许的文件夹或标签，排除 `BinnAgentX/Templates/` 模板源文件；模板复制出的普通笔记没有资产 ID 时，服务端生成稳定资产 ID，并只把标题、标签、路径引用和同步状态写入资产索引。
+5. 有限摘录保存在 `obsidian_learning_context`，只用于个性化内容生成；`POST /v1/training-materials/personalized` 将最近已授权上下文作为不可信学习材料交给受配置约束的模型适配器，生成 3–6 段的新英文阅读及迁移重点，并持久化到 `personalized_training_materials`。
+6. 学习首页通过 `GET /v1/training-materials` 展示统一训练任务队列。系统任务与个性化材料同时可选，个性化材料按 `ready`、`in_progress`、`completed` 保存状态；资产页不提供材料生成入口，也不展示阅读正文。
+7. 用户从队列选择材料后，`POST /v1/runs/personalized/{material_id}` 把它适配为标准 `practice / matched_reading` 运行并进入既有阅读实验室。选项作答、语义标注、语法挑战、V1/V2、H1–H4、表达迁移、难度反馈、暂停恢复和完成记录全部复用原链路；队列本身不渲染正文、不保存标注，也不能手工改成完成。`GET /v1/training-materials` 同时返回可启动性与阻塞原因：没有完成校准时提示先校准，已有其他标准训练运行时提示“先继续当前训练”，只有绑定当前运行的个性化材料仍可继续，避免前端先发起一个必然冲突的请求。阅读实验室保存的标注继续生成带 `source_task_id` 的 `annotation` 资产，再由同一插件队列同步到 Obsidian。
+8. 插件在 Obsidian 启动后和每 60 秒自动双向同步，也保留命令面板手动重试；设置页记录最近同步时间或错误，便于排障。
+9. 连接配置按学习账号保存在 PostgreSQL，Sync Secret 只在创建时返回并由 Vault 插件设置持久化。刷新页面、退出后重新登录及容器重建都会复用原连接；只有连接未完成首次同步、被撤销或状态失效时才引导用户重新配置。
+10. 学习首页的队列入口根据连接健康状态切换：配置有效且至少同步过一次时显示“从 Obsidian 笔记生成新材料”，否则显示“去配置 Obsidian”并直接打开资产页配置流程。配置有效但暂无授权笔记时保留生成入口并提示先同步模板笔记。
+11. 部署前已经打开的旧学习端可能仍调用废弃的材料状态接口；兼容路由不再返回无语义的 404，也绝不恢复手工改状态能力，而是返回 `SESSION_CONFLICT` 提示重新载入。刷新后的客户端只使用标准运行接口。
+12. 登录所有权中间件只对带真实 `workflow_run_id` 的运行资源做预检；`/v1/runs/personalized/{material_id}` 是静态启动命令，由处理器校验材料归属，不能把路径段 `personalized` 误判为运行 ID。认证集成测试必须覆盖该命令已穿过中间件，而不只测试未挂载的领域路由。
+13. 插件同步资产已经带有账号对应 Vault 和文件路径的 `obsidian://` 深链，资产页点击“在 Obsidian 中打开”时只调用该本机协议。只有缺少深链的受管 Bridge 资产才请求服务端 `/v1/assets/{asset_id}/open`；两条路径不得同时执行，否则普通插件模式会在成功唤起 Obsidian 后被 Bridge 的 503 误报覆盖。
+
+## 本机真实验收记录
+
+使用学习端 `http://127.0.0.1:3000`、API `http://127.0.0.1:8000`、Obsidian 1.12.7 和 Vault `bin01` 完成：
+
+* 体验账号登录成功；
+* 学习端创建“让步结构中的主句判断”，插件生成 `BinnAgentX/Assets/让步结构中的主句判断-*.md`，资产状态从 `pending_export` 变为 `synced`；
+* 按语法模板创建“让步结构的主句位置”，自动同步后资产页新增对应元数据卡片，卡片不展示正文；
+* LongCat 根据 3 条已授权 Obsidian 上下文生成阅读 `Rethinking Shared Spaces in Modern Cities`，内容自然复现 although 让步结构、主句判断与 `make + 宾语 + 形容词`；
+* 在生成阅读中保存段落标注后，资产总数从 3 增至 4、待同步从 0 增至 1；Obsidian 重启触发自动同步并创建 `BinnAgentX/Assets/个性化阅读标注-*.md`，最终学习端显示 4 条资产、4 条插件上下文、待同步 0；
+* 自动化集成测试 `tests/integration/test_obsidian_learning_loop.py` 覆盖导出、回执、模板笔记导入、元数据脱敏、个性化阅读与标注再导出。
+
+## 训练任务队列调整验收
+
+根据 2026-07-21 产品复核，个性化阅读不再放在资产页生成。真实学习端完成以下复验：
+
+* 学习首页新增“训练任务队列”，同时显示系统推荐任务和可选择的个性化材料；资产页已移除生成器及阅读正文；
+* LongCat 根据 4 条已授权 Obsidian 上下文生成 `Rethinking Urban Space in the Age of Shared Mobility`，材料以“待训练”进入队列；
+* 用户点击“选择并开始”后材料状态变为“进行中”，并直接进入原有阅读实验室，不存在第二套个性化阅读工作区；
+* 若已有别的标准训练进行中，其他个性化材料入口禁用并显示“先继续当前训练”；当前运行所绑定的材料保留“继续训练”，不会并行创建第二条运行；
+* 用户按原流程完成阅读、表达迁移、难度反馈和收尾后，材料状态才持久化为“已完成”，刷新或重新登录仍可从队列再次训练；
+* 队列训练标注新增第 5 条资产，插件自动写入 Obsidian，最终数据库为 5 条资产、5 条授权上下文、0 条待导出；
+* Alembic `0016_personalized_training_queue` 提供队列表，`0017_personalized_reading_lab` 关联标准训练运行，`0018_repair_legacy_materials` 将旧前端留下的“进行中但没有运行”状态恢复为待训练；集成测试验证个性化材料可使用原有标注、H1、表达迁移、难度反馈和统一完成状态，且生成材料不会混入资产索引，只有用户标注才进入资产闭环。
+* 已补充入口状态回归测试：有效连接展示生成按钮；无效或未完成同步的连接只展示配置按钮，点击后直接打开“连接你的知识库”。
+
+## 账号与配置持久化复核
+
+本次排查确认学习会话 cookie 的有效期为 30 天，账号、会话和 Obsidian 连接都存放在 PostgreSQL 持久卷，正常刷新、重新登录和容器重建不会删除。此前账号反复消失并非产品登录逻辑所致，而是集成测试直接连接开发数据库并在清理阶段删除了全表学习者数据；历史上不同 Compose 项目名也留下了彼此隔离的旧数据卷。
+
+修复后 `tests/integration/conftest.py` 在导入应用前强制切换到名称以 `_test` 结尾的独立数据库，自动建库并执行迁移；不符合命名约束时立即拒绝运行。完整集成测试执行后，开发库的用户、Obsidian 连接、资产和训练材料计数保持不变。Compose 项目名固定为 `binnagentx`，避免后续启动时无意切换到另一套数据卷。
+
+## 安装与排障
+
+* 发布包：`releases/BinnAgentX-Learning-Sync-v0.1.2.zip`；学习端下载副本位于 `apps/learner-web/public/downloads/`。
+* 插件最终目录必须是 `<Vault>/.obsidian/plugins/binnagentx-learning-sync/`。同一插件 ID 的重复目录会导致 Obsidian 不加载插件；本次验收已将旧的重复目录移到 `<Vault>/.obsidian/plugin-backups/`，可恢复但不再参与插件扫描。
+* 服务端连接显示“已配对”但没有最近同步时间时，先检查插件目录是否唯一，再查看插件设置页的“最近同步”。
+* 本次没有运行或重建 OpenWiki；本文和 README 是权威源文档，OpenWiki 仍由用户按既有流程手动维护。
+
 [1]: https://obsidian.md/help/cli "Obsidian CLI - Obsidian Help"
 [2]: https://github.com/bitbonsai/mcpvault "GitHub - bitbonsai/mcpvault: A lightweight Model Context Protocol (MCP) server for safe Obsidian vault access · GitHub"
 [3]: https://github.com/langchain-ai/openwiki "GitHub - langchain-ai/openwiki: OpenWiki is a CLI that writes and maintains agent documentation for your codebase. · GitHub"

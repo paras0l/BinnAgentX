@@ -199,18 +199,14 @@ async def test_reading_help_escalates_sequentially_through_h4() -> None:
                 headers={"Idempotency-Key": f"reading-help-h{level}"},
                 json={
                     "expected_version": current["version"],
-                    "input_attempt_version_id": current["attempts"][-1][
-                        "attempt_version_id"
-                    ],
+                    "input_attempt_version_id": current["attempts"][-1]["attempt_version_id"],
                 },
             )
             assert hint.status_code == 200, hint.text
             current = hint.json()
             assert current["highest_hint_level"] == level
             assert current["interventions"][-1]["hint_level"] == level
-            assert current["interventions"][-1]["reason_code"] == (
-                f"learner_requested_h{level}"
-            )
+            assert current["interventions"][-1]["reason_code"] == (f"learner_requested_h{level}")
             if level < 4:
                 revised = await client.post(
                     f"/learner/v1/tasks/{task_id}/attempts",

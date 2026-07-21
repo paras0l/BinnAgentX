@@ -7,7 +7,8 @@
 - `agents/`：领域 Agent 角色与决策接口；
 - `workflows/`：可恢复的长流程、状态图和任务编排；
 - `tools/`：Agent 可调用的显式、可审计工具；
-- `memory/`：学习者记忆、检查点与持久状态边界；
+- `memory/`：所有 Agent 共用的 provider-neutral 学习者记忆契约；当前由 API 层的 Obsidian Provider 实现 `recall` / `remember`，核心包不依赖 Vault 或数据库；
+- `prompts/`：BinnAgentX 代码审核过的 Prompt 默认目录、变量契约与渲染边界；API 层只负责解析本项目数据库中的活动覆盖版本；
 - `prompts/`：版本化提示资产及其组装逻辑；
 - `gateways/`：模型与其他外部能力的结构化网关；
 - `policies/`：预算、安全、介入等级等确定性策略。

@@ -34,6 +34,8 @@ class ToolExecutor:
         *,
         human_approved: bool = False,
     ) -> ToolResult[T]:
+        if not self._registry.is_enabled(tool_name):
+            return ToolResult(status=ToolStatus.REJECTED, reason_codes=["tool_disabled"])
         spec = self._registry.get(tool_name)
         rejection = self._validate(spec, context, human_approved)
         if rejection is not None:

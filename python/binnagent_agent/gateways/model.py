@@ -166,6 +166,7 @@ class PriorityFeedbackRequest:
     attempt_text: str
     fallback_reason_code: str
     fallback_feedback: str
+    learner_memory: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -184,6 +185,7 @@ class AnnotationAnalysisRequest:
     fallback_translation: str | None = None
     fallback_vocabulary_note: str | None = None
     fallback_grammar_structure: tuple[str, ...] = ()
+    learner_memory: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -199,6 +201,7 @@ class ExpressionReviewRequest:
 class ModelAdapterResponse:
     payload: object
     actual_cost_usd: Decimal
+    prompt_version: str | None = None
 
 
 class PriorityFeedbackAdapter(Protocol):
@@ -428,7 +431,7 @@ class PriorityFeedbackGateway:
         )
         return GatewayResult(
             adapter=self._adapter.name,
-            prompt_version=self.prompt_version,
+            prompt_version=response.prompt_version or self.prompt_version,
             outcome=(
                 GatewayOutcome.VALIDATED_MODEL
                 if self._adapter.is_remote
@@ -648,7 +651,7 @@ class AnnotationAnalysisGateway:
         )
         return AnnotationAnalysisResult(
             adapter=self._adapter.name,
-            prompt_version=self.prompt_version,
+            prompt_version=response.prompt_version or self.prompt_version,
             outcome=(
                 GatewayOutcome.VALIDATED_MODEL
                 if self._adapter.is_remote
@@ -758,6 +761,13 @@ class ExpressionReviewResult:
     evidence_hash: str | None
     rejection_code: str | None
 
+    @property
+    def used_fallback(self) -> bool:
+        return self.outcome not in {
+            GatewayOutcome.VALIDATED_FIXTURE,
+            GatewayOutcome.VALIDATED_MODEL,
+        }
+
 
 class ExpressionReviewGateway:
     prompt_version = "prompt_expression_style_review_v1"
@@ -838,7 +848,7 @@ class ExpressionReviewGateway:
         serialized = self._serialize(output.thinking_difference, tuple(output.versions))
         return ExpressionReviewResult(
             adapter=self._adapter.name,
-            prompt_version=self.prompt_version,
+            prompt_version=response.prompt_version or self.prompt_version,
             outcome=(
                 GatewayOutcome.VALIDATED_MODEL
                 if self._adapter.is_remote

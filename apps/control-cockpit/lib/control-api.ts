@@ -18,6 +18,68 @@ export interface CreatedExperienceCode extends ExperienceCode {
   experience_code: string;
 }
 
+export interface ManagedLearner {
+  learner_id: string;
+  nickname: string;
+  email: string;
+  account_type: "registered" | "experience";
+  created_at: string;
+  updated_at: string;
+  last_login_at: string | null;
+  active_session_count: number;
+  completed_run_count: number;
+  asset_count: number;
+  obsidian_paired: boolean;
+}
+
+export interface ManagedTool {
+  project_key: "binnagentx";
+  name: string;
+  display_name: string;
+  version: string;
+  description: string;
+  kind: "query" | "decision" | "command" | "model";
+  risk_level: "low" | "moderate" | "high" | "control";
+  source: string;
+  enabled: boolean;
+  allowed_actor_types: string[];
+  required_permission_scopes: string[];
+  requires_human_approval: boolean;
+  requires_idempotency_key: boolean;
+  input_schema: Record<string, unknown>;
+  output_schema: Record<string, unknown>;
+  policy_version: number;
+  updated_at: string | null;
+}
+
+export interface ManagedPrompt {
+  project_key: "binnagentx";
+  prompt_id: string;
+  prompt_version: string;
+  owner: string;
+  purpose: string;
+  template_text: string;
+  variables: string[];
+  model_policy: Record<string, unknown>;
+  status: "draft" | "active" | "archived";
+  content_hash: string;
+  version: number;
+  created_by_role: string;
+  activated_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PromptDraftInput {
+  prompt_id: string;
+  prompt_version: string;
+  owner: string;
+  purpose: string;
+  template_text: string;
+  variables: string[];
+  model_policy: Record<string, unknown>;
+}
+
 export class ControlApiError extends Error {}
 
 export type ContentGenerationJobStatus =
@@ -134,6 +196,57 @@ export function createExperienceCode(input: {
 
 export function revokeExperienceCode(codeId: string): Promise<ExperienceCode> {
   return controlRequest(`experience-codes/${codeId}/revoke`, { method: "POST" });
+}
+
+export function listManagedLearners(): Promise<ManagedLearner[]> {
+  return controlRequest("users");
+}
+
+export function revokeManagedLearnerSessions(learnerId: string): Promise<ManagedLearner> {
+  return controlRequest(`users/${learnerId}/revoke-sessions`, { method: "POST" });
+}
+
+export function listManagedTools(): Promise<ManagedTool[]> {
+  return controlRequest("tools");
+}
+
+export function updateManagedTool(
+  name: string,
+  enabled: boolean,
+  expectedVersion: number,
+): Promise<ManagedTool> {
+  return controlRequest(`tools/${encodeURIComponent(name)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ enabled, expected_version: expectedVersion }),
+  });
+}
+
+export function listManagedPrompts(): Promise<ManagedPrompt[]> {
+  return controlRequest("prompts");
+}
+
+export function createManagedPrompt(input: PromptDraftInput): Promise<ManagedPrompt> {
+  return controlRequest("prompts", { method: "POST", body: JSON.stringify(input) });
+}
+
+export function updateManagedPrompt(
+  prompt: ManagedPrompt,
+  input: Omit<PromptDraftInput, "prompt_id" | "prompt_version">,
+): Promise<ManagedPrompt> {
+  return controlRequest(
+    `prompts/${encodeURIComponent(prompt.prompt_id)}/${encodeURIComponent(prompt.prompt_version)}`,
+    {
+      method: "PUT",
+      body: JSON.stringify({ ...input, expected_version: prompt.version }),
+    },
+  );
+}
+
+export function activateManagedPrompt(prompt: ManagedPrompt): Promise<ManagedPrompt> {
+  return controlRequest(
+    `prompts/${encodeURIComponent(prompt.prompt_id)}/${encodeURIComponent(prompt.prompt_version)}/activate`,
+    { method: "POST", body: JSON.stringify({ expected_version: prompt.version }) },
+  );
 }
 
 export function listContentGenerationJobs(): Promise<ContentGenerationJob[]> {

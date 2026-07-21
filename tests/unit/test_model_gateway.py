@@ -47,7 +47,11 @@ class StubRemoteAdapter:
         self.called = True
         if self.delay:
             await asyncio.sleep(self.delay)
-        return ModelAdapterResponse(payload=self.payload, actual_cost_usd=Decimal("0.04"))
+        return ModelAdapterResponse(
+            payload=self.payload,
+            actual_cost_usd=Decimal("0.04"),
+            prompt_version="v42",
+        )
 
 
 def valid_payload() -> dict[str, object]:
@@ -109,6 +113,7 @@ async def test_valid_remote_candidate_is_accepted_only_after_schema_and_evidence
     assert result.actual_cost_usd == Decimal("0.04")
     assert result.focus == "logic"
     assert result.evidence_hash is not None
+    assert result.prompt_version == "v42"
 
 
 @pytest.mark.asyncio
