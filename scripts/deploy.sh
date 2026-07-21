@@ -325,18 +325,18 @@ export PYTHONUNBUFFERED=1
 export PYTHONPATH="$PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 
 if (( (NEED_DATABASE == 1 && SKIP_COMPOSE == 0) || RUN_CONTAINER_STACK == 1 )); then
-  if (( ${#COMPOSE_FILES[@]-0} == 0 )); then
+  if (( ${#COMPOSE_FILES[@]} == 0 )); then
     collect_compose_files_from_value "${COMPOSE_FILE:-}"
     collect_compose_files_from_value "${COMPOSE_FILES_ENV:-}"
   fi
-  if (( ${#COMPOSE_FILES[@]-0} == 0 )); then
+  if (( ${#COMPOSE_FILES[@]} == 0 )); then
     collect_default_compose_files
   fi
-  (( ${#COMPOSE_FILES[@]-0} > 0 )) || die "未找到 Compose 文件"
+  (( ${#COMPOSE_FILES[@]} > 0 )) || die "未找到 Compose 文件"
 fi
 
 compose_cmd=(docker compose)
-if (( ${#COMPOSE_FILES[@]-0} > 0 )); then
+if (( ${#COMPOSE_FILES[@]} > 0 )); then
   for compose_file in "${COMPOSE_FILES[@]}"; do
     compose_cmd+=(-f "$compose_file")
   done
@@ -874,7 +874,7 @@ cleanup() {
   fi
   CLEANUP_DONE=1
 
-  if (( ${#SERVICE_PIDS[@]-0} > 0 || COMPOSE_STARTED_BY_SCRIPT == 1 )); then
+  if (( ${#SERVICE_PIDS[@]} > 0 || COMPOSE_STARTED_BY_SCRIPT == 1 )); then
     printf '\n'
     info "停止本次启动的服务"
   fi
@@ -884,7 +884,7 @@ cleanup() {
   if (( COMPOSE_STARTED_BY_SCRIPT == 1 )); then
     run_logged "$LOG_DIR/bootstrap.log" "${compose_cmd[@]}" stop postgres || true
   fi
-  if (( ${#SERVICE_PIDS[@]-0} > 0 || COMPOSE_STARTED_BY_SCRIPT == 1 )); then
+  if (( ${#SERVICE_PIDS[@]} > 0 || COMPOSE_STARTED_BY_SCRIPT == 1 )); then
     success "已停止"
   fi
   release_instance_state
@@ -1015,7 +1015,7 @@ if (( RUN_CONTROL == 1 )); then
     "${PNPM_CMD[@]}" dev:control
 fi
 
-if (( ${#SERVICE_PIDS[@]-0} == 0 )); then
+if (( ${#SERVICE_PIDS[@]} == 0 )); then
   printf '\n'
   success "一次性检查完成"
   info "日志: $LOG_DIR"
