@@ -167,6 +167,12 @@ class LocalContentCatalog:
 
     @staticmethod
     def _target_question_tier(profile: LearnerProfileSnapshot) -> str:
+        if profile.current_level in {"foundation", "developing"}:
+            return "foundation" if profile.confidence_band == "low" else "standard"
+        if profile.current_level == "independent":
+            return "standard"
+        if profile.current_level == "advanced":
+            return "advanced"
         if (
             profile.self_reported_level
             in {

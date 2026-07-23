@@ -6,6 +6,12 @@ import httpx2
 import pytest
 import pytest_asyncio
 import sqlalchemy as sa
+from binnagent_agent.agents.obsidian_inbox_organizer import (
+    InboxAdapterResult,
+    InboxClassificationOutput,
+    InboxNote,
+)
+from binnagent_api import obsidian_organizer
 from binnagent_api.database import dispose_engine, get_engine
 from binnagent_api.main import create_app
 from binnagent_api.model_adapters import PersonalizedReadingOutput
@@ -62,6 +68,17 @@ async def _clean() -> None:
             tables.learning_asset_index,
         ):
             await connection.execute(sa.delete(table))
+
+
+@pytest.mark.asyncio
+async def test_personalized_material_requires_matching_obsidian_context() -> None:
+    transport = httpx2.ASGITransport(app=create_app())
+    async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post("/learner/v1/training-materials/personalized")
+
+    assert response.status_code == 409
+    assert response.json()["code"] == "OBSIDIAN_CONTEXT_REQUIRED"
+    assert response.json()["reason"] == "obsidian_context_required"
 
 
 @pytest.mark.asyncio
@@ -499,7 +516,31 @@ async def test_bidirectional_sync_personalized_reading_and_annotation_export(
 
 
 @pytest.mark.asyncio
-async def test_login_triggered_inbox_organization_is_planned_and_acknowledged() -> None:
+async def test_login_triggered_inbox_organization_is_planned_and_acknowledged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class IntentAdapter:
+        async def classify(self, notes: tuple[InboxNote, ...]) -> InboxAdapterResult:
+            return InboxAdapterResult(
+                output=InboxClassificationOutput.model_validate(
+                    {
+                        "classifications": [
+                            {
+                                "context_id": note.context_id,
+                                "kind": "grammar",
+                            }
+                            for note in notes
+                        ]
+                    }
+                ),
+                prompt_version="test-intent-v1",
+            )
+
+    monkeypatch.setattr(
+        obsidian_organizer,
+        "inbox_classification_adapter",
+        lambda _settings: IntentAdapter(),
+    )
     transport = httpx2.ASGITransport(app=create_app())
     async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
         paired = await client.post("/learner/v1/assets/obsidian-plugin-connections")
@@ -531,7 +572,30 @@ async def test_login_triggered_inbox_organization_is_planned_and_acknowledged() 
         )
         assert imported.status_code == 200, imported.text
         plan = imported.json()["organization"]
+        assert plan["status"] == "planned"
+        assert plan["inbox_count"] == 1
+        assert plan["classified_count"] == 1
         assert plan["actions"][0]["target_folder"] == "BinnAgentX/02-Grammar"
+        repeated = await client.post(
+            f"/learner/v1/obsidian-sync/{connection_id}/import",
+            headers=headers,
+            json={
+                "schema_version": "learning-context/v1",
+                "vault_name": "bin01",
+                "entries": [
+                    {
+                        "source_key": "BinnAgentX/00-Inbox/although.md",
+                        "title": "Although",
+                        "kind": "grammar",
+                        "tags": ["grammar"],
+                        "excerpt": "Although introduces a concession before the main claim.",
+                        "modified_at": datetime.now(UTC).isoformat(),
+                    }
+                ],
+            },
+        )
+        assert repeated.status_code == 200, repeated.text
+        assert repeated.json()["organization"] == plan
         acknowledged = await client.post(
             f"/learner/v1/obsidian-sync/{connection_id}/organizer-runs/{plan['run_id']}/ack",
             headers=headers,
@@ -545,3 +609,38 @@ async def test_login_triggered_inbox_organization_is_planned_and_acknowledged() 
                 )
             )
         assert status_value == "completed"
+
+
+@pytest.mark.asyncio
+async def test_asset_page_can_queue_one_manual_organization_run() -> None:
+    transport = httpx2.ASGITransport(app=create_app())
+    async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
+        unpaired = await client.post("/learner/v1/assets/obsidian-organizer-runs")
+        assert unpaired.status_code == 409
+        assert unpaired.json()["code"] == "OBSIDIAN_CONNECTION_REQUIRED"
+
+        paired = await client.post("/learner/v1/assets/obsidian-plugin-connections")
+        assert paired.status_code == 200, paired.text
+
+        first = await client.post("/learner/v1/assets/obsidian-organizer-runs")
+        repeated = await client.post("/learner/v1/assets/obsidian-organizer-runs")
+
+        assert first.status_code == 202, first.text
+        assert repeated.status_code == 202, repeated.text
+        assert first.json() == repeated.json()
+        assert first.json()["status"] == "queued"
+        assert first.json()["next_step"] == "sync_obsidian_plugin"
+
+        async with get_engine().connect() as connection:
+            run = (
+                (
+                    await connection.execute(
+                        sa.select(tables.obsidian_organizer_runs).where(
+                            tables.obsidian_organizer_runs.c.run_id == first.json()["run_id"]
+                        )
+                    )
+                )
+                .mappings()
+                .one()
+            )
+        assert run["trigger_type"] == "manual"

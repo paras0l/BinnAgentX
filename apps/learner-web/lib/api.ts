@@ -27,6 +27,19 @@ interface ApiErrorBody {
   current_version?: number | null;
 }
 
+export interface CurrentLevel {
+  status: "insufficient_evidence" | "ready";
+  overall_level: "foundation" | "developing" | "independent" | "advanced" | null;
+  dimensions: Partial<
+    Record<
+      "reading_comprehension" | "vocabulary" | "grammar" | "written_expression",
+      "foundation" | "developing" | "independent" | "advanced"
+    >
+  >;
+  confidence_band: "low" | "medium" | "high";
+  evidence_count: number;
+}
+
 export class LearnerApiError extends Error {
   readonly code: PublicErrorCode | "UNKNOWN";
   readonly currentVersion: number | null;
@@ -131,6 +144,10 @@ export async function listLearningAssets(): Promise<LearningAssetsState> {
   return { schemaVersion: 2, items: assets.map(learningAssetFromApi) };
 }
 
+export function getCurrentLevel(): Promise<CurrentLevel> {
+  return request<CurrentLevel>("/v1/profile/current-level");
+}
+
 export interface KnowledgeVaultStatus {
   adapter: "disabled" | "obsidian_bridge" | "obsidian_cli";
   connected: boolean;
@@ -156,6 +173,18 @@ export interface ObsidianPluginSyncStatus {
   paired: boolean;
   synced_context_count: number;
   last_synced_at: string | null;
+}
+
+export interface ObsidianOrganizerRun {
+  run_id: string;
+  status: "queued" | "planned";
+  next_step: "sync_obsidian_plugin";
+}
+
+export function triggerObsidianInboxOrganization(): Promise<ObsidianOrganizerRun> {
+  return request<ObsidianOrganizerRun>("/v1/assets/obsidian-organizer-runs", {
+    method: "POST",
+  });
 }
 
 export interface PersonalizedTrainingMaterial {

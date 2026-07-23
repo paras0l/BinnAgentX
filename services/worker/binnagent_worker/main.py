@@ -18,6 +18,7 @@ from binnagent_agent.workflows.content_generation import (
 )
 from binnagent_api.content_generation_service import build_content_generation_workflow
 from binnagent_api.database import dispose_engine, get_engine
+from binnagent_api.learner_level_service import process_next_level_assessment
 from binnagent_api.personalized_material_service import (
     enqueue_due_personalized_material,
     process_next_personalized_material,
@@ -273,6 +274,7 @@ async def run_worker(*, stop_event: asyncio.Event | None = None, once: bool = Fa
             await requeue_interrupted_personalized_materials()
             await enqueue_due_personalized_material()
             processed = await process_next_content_job()
+            processed = await process_next_level_assessment() or processed
             processed = await process_next_personalized_material() or processed
             if once:
                 return

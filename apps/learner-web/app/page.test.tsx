@@ -372,6 +372,67 @@ describe("learner home", () => {
     expect(screen.queryByRole("heading", { name: "训练任务队列" })).not.toBeInTheDocument();
   });
 
+  it("queues the existing Inbox organizer flow from the asset page", async () => {
+    saveExperienceProfile("learner_synthetic_local", {
+      exam_track: "english_1",
+      target_score: 70,
+      weekly_minutes: 420,
+      self_reported_level: "developing",
+      prior_exam_seen: false,
+      session_minutes: 45,
+      feedback_density: "minimal",
+      timed: false,
+      evidence_count: 0,
+      confidence_band: "low",
+    });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/session")) {
+        return Response.json({
+          learner_id: "learner_synthetic_local",
+          nickname: "本地学习者",
+          email: "local@binnagent.invalid",
+          invite_code: "BINN-LOCAL",
+          account_type: "registered",
+        });
+      }
+      if (url.endsWith("/v1/assets/obsidian-organizer-runs")) {
+        expect(init?.method).toBe("POST");
+        return Response.json(
+          {
+            run_id: "organizer_manual_1",
+            status: "queued",
+            next_step: "sync_obsidian_plugin",
+          },
+          { status: 202 },
+        );
+      }
+      if (url.endsWith("/v1/assets")) return Response.json([]);
+      if (url.endsWith("/vault-status")) {
+        return Response.json({ adapter: "disabled", connected: false, detail: "disabled" });
+      }
+      if (url.endsWith("/obsidian-plugin-status")) {
+        return Response.json({ paired: true, synced_context_count: 2, last_synced_at: null });
+      }
+      if (url.endsWith("/v1/training-materials")) return Response.json([]);
+      return Response.json({ detail: "not_found" }, { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<LearnerHomePage />);
+    fireEvent.click(await screen.findByRole("button", { name: "学习资产" }));
+    fireEvent.click(await screen.findByRole("button", { name: "整理 Obsidian 收件箱" }));
+
+    expect(await screen.findByText("整理任务已提交")).toBeVisible();
+    expect(screen.getByText(/插件通常会在 60 秒内自动整理/)).toBeVisible();
+    expect(screen.getByText("Sync approved learning context")).toBeVisible();
+    expect(screen.getByText(/看到“整理 N 条 Inbox 笔记”即表示完成/)).toBeVisible();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/learner/v1/assets/obsidian-organizer-runs",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
   it("opens a plugin-synced asset through its Obsidian URI without calling the bridge", async () => {
     saveExperienceProfile("learner_synthetic_local", {
       exam_track: "english_1",

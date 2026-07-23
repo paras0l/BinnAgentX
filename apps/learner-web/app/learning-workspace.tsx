@@ -3664,7 +3664,10 @@ function WrapUpWorkspace({
       <header>
         <p className="eyebrow">本次收尾</p>
         <h1>刚才的匹配阅读，对你来说有多难？</h1>
-        <p>这是你对材料负荷的反馈，不是能力分数。系统会把它作为下一次匹配的一条证据。</p>
+        <p>
+          这是你对材料负荷的反馈，不是能力分数。水平评测 Agent
+          会结合本次学习行为更新当前适配水平，并用于下一篇文章。
+        </p>
       </header>
       <fieldset className="difficulty-options" disabled={isPending}>
         <legend className="sr-only">选择材料难度</legend>

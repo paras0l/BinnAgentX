@@ -20,6 +20,7 @@ interface SyncSettings {
   libraryVersion: number;
   lastSyncedAt: string;
   lastSyncError: string;
+  lastSyncSummary: string;
 }
 
 interface LearningContextEntry {
@@ -52,6 +53,9 @@ interface OrganizationAction {
 
 interface OrganizationPlan {
   run_id: string;
+  status: "queued" | "planned" | "noop";
+  inbox_count: number;
+  classified_count: number;
   actions: OrganizationAction[];
 }
 
@@ -92,6 +96,7 @@ const DEFAULT_SETTINGS: SyncSettings = {
   libraryVersion: 0,
   lastSyncedAt: "",
   lastSyncError: "",
+  lastSyncSummary: "",
 };
 
 const LEARNING_TEMPLATES: Record<string, string> = {
@@ -614,13 +619,14 @@ export default class BinnAgentXLearningSyncPlugin extends Plugin {
         throw new Error(`BinnAgentX 拒绝同步（${response.status}）`);
       const result = response.json as ImportResponse;
       const organized = await this.applyOrganizationPlan(result.organization);
+      const organizationSummary = summarizeOrganization(result.organization, organized);
+      const syncSummary =
+        `接收 ${exported} 条资产，上传 ${entries.length} 条学习上下文；` + organizationSummary;
       this.settings.lastSyncedAt = new Date().toISOString();
       this.settings.lastSyncError = "";
+      this.settings.lastSyncSummary = syncSummary;
       await this.saveSettings();
-      if (showNotice)
-        new Notice(
-          `双向同步完成：接收 ${exported} 条资产，上传 ${entries.length} 条学习上下文，整理 ${organized} 条 Inbox 笔记。`,
-        );
+      if (showNotice) new Notice(`双向同步完成：${syncSummary}`);
     } catch (error) {
       const message = error instanceof Error ? error.message : "同步失败";
       this.settings.lastSyncError = message;
@@ -630,7 +636,7 @@ export default class BinnAgentXLearningSyncPlugin extends Plugin {
   }
 
   private async applyOrganizationPlan(plan: OrganizationPlan | null): Promise<number> {
-    if (!plan?.actions.length) return 0;
+    if (plan?.status !== "planned" || !plan.actions.length) return 0;
     const allowedTargets = new Set([
       `${LIBRARY_ROOT}/01-Vocabulary`,
       `${LIBRARY_ROOT}/02-Grammar`,
@@ -790,7 +796,9 @@ class BinnAgentXSettingTab extends PluginSettingTab {
       .setDesc(
         this.plugin.settings.lastSyncError
           ? `失败：${this.plugin.settings.lastSyncError}`
-          : this.plugin.settings.lastSyncedAt || "尚未完成同步",
+          : this.plugin.settings.lastSyncedAt
+            ? `${this.plugin.settings.lastSyncedAt}；${this.plugin.settings.lastSyncSummary || "同步完成"}`
+            : "尚未完成同步",
       );
     new Setting(containerEl)
       .setName("允许的文件夹")
@@ -835,6 +843,32 @@ class BinnAgentXSettingTab extends PluginSettingTab {
         }),
       );
   }
+}
+
+function summarizeOrganization(plan: OrganizationPlan | null, organized: number): string {
+  if (!plan) return "本轮没有排队的 Inbox 整理任务。";
+  if (plan.status === "noop") return "Inbox 中没有待整理笔记。";
+  if (plan.status === "queued") {
+    return (
+      `Inbox 有 ${plan.inbox_count} 条待整理笔记，可靠分类 ${plan.classified_count} 条；` +
+      "本轮未移动，任务会在下次同步重试。"
+    );
+  }
+  const folderLabels: Record<string, string> = {
+    [`${LIBRARY_ROOT}/01-Vocabulary`]: "词汇",
+    [`${LIBRARY_ROOT}/02-Grammar`]: "语法",
+    [`${LIBRARY_ROOT}/03-Reading`]: "阅读",
+    [`${LIBRARY_ROOT}/04-Writing`]: "写作",
+  };
+  const counts = new Map<string, number>();
+  for (const action of plan.actions) {
+    const label = folderLabels[action.target_folder] ?? action.target_folder;
+    counts.set(label, (counts.get(label) ?? 0) + 1);
+  }
+  const destinations = [...counts.entries()]
+    .map(([label, count]) => `${label} ${count} 条`)
+    .join("、");
+  return `整理完成：移动 ${organized} 条 Inbox 笔记（${destinations}）。`;
 }
 
 function splitScope(value: string): string[] {

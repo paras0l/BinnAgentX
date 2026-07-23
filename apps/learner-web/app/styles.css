@@ -3264,7 +3264,7 @@ textarea:disabled {
 
 .profile-overview {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
   margin-bottom: 18px;
 }
@@ -5187,6 +5187,8 @@ textarea:disabled {
 .assets-heading-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 9px;
 }
 
@@ -5195,6 +5197,63 @@ textarea:disabled {
   align-items: center;
   gap: 7px;
   white-space: nowrap;
+}
+
+.asset-organizer-notice {
+  margin: -16px 0 20px;
+  color: #51645a;
+  font-size: 13px;
+  text-align: right;
+}
+
+.asset-organizer-guide {
+  display: grid;
+  gap: 10px;
+  margin: -10px 0 22px;
+  padding: 16px 18px;
+  border: 1px solid #cbdcd1;
+  border-radius: 14px;
+  color: #344b3e;
+  background: #f1f7f3;
+}
+
+.asset-organizer-guide > div {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.asset-organizer-guide svg {
+  flex: 0 0 auto;
+  color: #397453;
+}
+
+.asset-organizer-guide strong,
+.asset-organizer-guide p,
+.asset-organizer-guide ol {
+  margin: 0;
+}
+
+.asset-organizer-guide > p,
+.asset-organizer-guide small {
+  color: #596a60;
+}
+
+.asset-organizer-guide ol {
+  display: grid;
+  gap: 6px;
+  padding-left: 22px;
+}
+
+.asset-organizer-guide kbd,
+.asset-organizer-guide code {
+  border: 1px solid #c6d1ca;
+  border-radius: 5px;
+  padding: 2px 5px;
+  color: #263d30;
+  background: #fff;
+  font: inherit;
+  font-size: 0.92em;
 }
 
 .assets-summary {

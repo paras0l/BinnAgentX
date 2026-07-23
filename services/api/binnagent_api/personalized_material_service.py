@@ -15,6 +15,10 @@ from binnagent_evaluation.trajectory import evaluate_trajectory
 
 from binnagent_api.database import get_engine
 from binnagent_api.knowledge_extraction_service import enrich_review_contexts
+from binnagent_api.learner_level_service import (
+    generation_level_context,
+    latest_level_assessment,
+)
 from binnagent_api.model_adapters import PersonalizedReadingOutput, personalized_reading_adapter
 from binnagent_api.settings import get_settings
 from binnagent_api.vertical_slice import tables
@@ -290,6 +294,9 @@ async def _generate_with_claim(row: dict[str, Any]) -> str:
             .mappings()
             .all()
         )
+        adaptation_profile = generation_level_context(
+            await latest_level_assessment(connection, str(row["learner_id"]))
+        )
     contexts = tuple(
         {
             "kind": str(context["asset_kind"]),
@@ -344,6 +351,7 @@ async def _generate_with_claim(row: dict[str, Any]) -> str:
         output = await generate_personalized_reading(
             contexts,
             goal=str(row["requested_goal"]),
+            adaptation_profile=adaptation_profile,
         )
         steps.append("model.personalized_reading")
         await _record_event(
@@ -474,10 +482,21 @@ async def generate_personalized_reading(
     contexts: tuple[dict[str, Any], ...],
     *,
     goal: str,
+    adaptation_profile: dict[str, Any] | None = None,
 ) -> PersonalizedReadingOutput:
+    resolved_profile = adaptation_profile or {
+        "overall_level": "developing",
+        "dimensions": {},
+        "confidence_band": "low",
+        "instruction": "证据不足, 采用保守负荷。",
+    }
     adapter = personalized_reading_adapter(get_settings())
     if adapter is not None:
-        return await adapter.generate(contexts, goal=goal)
+        return await adapter.generate(
+            contexts,
+            goal=goal,
+            adaptation_profile=resolved_profile,
+        )
     focus = ", ".join(str(item["title"]) for item in contexts[:3])
     return PersonalizedReadingOutput(
         title="A Second Look at Familiar Ideas",
@@ -496,6 +515,7 @@ async def generate_personalized_reading(
         ],
         focus_points=[
             f"目标: {goal}",
+            f"当前适配水平: {resolved_profile['overall_level']}",
             *[f"迁移复现: {item['title']}" for item in contexts[:3]],
         ][:5],
         source_titles=[str(item["title"]) for item in contexts[:3]],

@@ -17,6 +17,13 @@ from binnagent_agent import (
     PriorityFeedbackOutput,
     PriorityFeedbackRequest,
 )
+from binnagent_agent.agents.obsidian_inbox_organizer import (
+    OBSIDIAN_INBOX_ORGANIZER_PROMPT_ID,
+    InboxAdapterResult,
+    InboxClassificationAdapter,
+    InboxClassificationOutput,
+    InboxNote,
+)
 from binnagent_agent.gateways.model import (
     AnnotationAnalysisAdapter,
     ExpressionReviewAdapter,
@@ -115,10 +122,97 @@ class _RemoteModelAdapterBase:
             raise ValueError("model_response_content_missing")
         return content
 
+    def _structured_payload(
+        self,
+        *,
+        messages: list[dict[str, str]],
+        schema: dict[str, Any],
+        temperature: float,
+        max_tokens: int,
+        longcat_thinking: Literal["enabled", "disabled"],
+    ) -> dict[str, Any]:
+        bounded_max_tokens = min(self._max_tokens, max_tokens)
+        if self._provider == "ollama":
+            return {
+                "model": self._model,
+                "messages": messages,
+                "stream": False,
+                "format": schema,
+                "options": {
+                    "temperature": temperature,
+                    "num_predict": bounded_max_tokens,
+                },
+            }
+        payload: dict[str, Any] = {
+            "model": self._model,
+            "messages": messages,
+            "stream": False,
+            "temperature": temperature,
+            "max_tokens": bounded_max_tokens,
+        }
+        if self._provider == "longcat":
+            payload["thinking"] = {"type": longcat_thinking}
+        else:
+            payload["response_format"] = {"type": "json_object"}
+        return payload
+
+
+class RemoteInboxClassificationAdapter(_RemoteModelAdapterBase):
+    async def classify(self, notes: tuple[InboxNote, ...]) -> InboxAdapterResult:
+        schema = InboxClassificationOutput.model_json_schema()
+        rendered = await self._resolve_prompt(
+            OBSIDIAN_INBOX_ORGANIZER_PROMPT_ID,
+            {"output_schema": json.dumps(schema, ensure_ascii=False, separators=(",", ":"))},
+        )
+        serialized_notes = json.dumps(
+            [
+                {
+                    "context_id": note.context_id,
+                    "title": note.title,
+                    "source_key": note.source_key,
+                    "tags": note.tags,
+                    "excerpt": note.excerpt,
+                    "declared_kind": note.declared_kind,
+                }
+                for note in notes
+            ],
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        messages: list[dict[str, str]] = [
+            {"role": "system", "content": rendered.text},
+            {
+                "role": "user",
+                "content": f"<inbox_notes>{serialized_notes}</inbox_notes>",
+            },
+        ]
+        temperature = _policy_float(rendered, "temperature", 0.0, minimum=0.0, maximum=1.0)
+        max_tokens = _policy_int(
+            rendered, "max_tokens", self._max_tokens, minimum=200, maximum=4000
+        )
+        if self._provider == "longcat":
+            messages.append({"role": "user", "content": "只输出符合 Schema 的 JSON 对象。"})
+        payload = self._structured_payload(
+            messages=messages,
+            schema=schema,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            longcat_thinking="disabled",
+        )
+        response = await self._generate_payload(payload)
+        return InboxAdapterResult(
+            output=InboxClassificationOutput.model_validate(response.payload),
+            prompt_version=rendered.prompt_version,
+        )
+
 
 class PersonalizedReadingAdapter(_RemoteModelAdapterBase):
     async def generate(
-        self, contexts: tuple[dict[str, Any], ...], *, goal: str
+        self,
+        contexts: tuple[dict[str, Any], ...],
+        *,
+        goal: str,
+        adaptation_profile: dict[str, Any],
     ) -> PersonalizedReadingOutput:
         schema = PersonalizedReadingOutput.model_json_schema()
         rendered = await self._resolve_prompt(
@@ -126,6 +220,7 @@ class PersonalizedReadingAdapter(_RemoteModelAdapterBase):
             {
                 "contexts": "用户消息中的 <learner_memory>",
                 "generation_goal": "用户消息中的 <generation_goal>",
+                "adaptation_profile": "用户消息中的 <adaptation_profile>",
                 "output_schema": json.dumps(schema, ensure_ascii=False, separators=(",", ":")),
             },
         )
@@ -142,6 +237,8 @@ class PersonalizedReadingAdapter(_RemoteModelAdapterBase):
                     "私人路径。文章应为3到6段、总长180到320个英文词，并自然复现需要巩固的词汇、"
                     "语法或阅读策略。focus_points 用中文简述本次迁移重点。source_titles 只能"
                     "逐字复制文章实际使用的输入笔记 title；无法可靠判断时返回空数组。"
+                    "adaptation_profile 是当前适配水平而非考试分数；用它同时约束词汇、句法、"
+                    "篇章关系和支架强度，置信度低时最多只提高一个挑战维度。"
                     "只返回 JSON。\n" + rendered.text
                 ),
             },
@@ -149,35 +246,24 @@ class PersonalizedReadingAdapter(_RemoteModelAdapterBase):
                 "role": "user",
                 "content": (
                     f"<generation_goal>{goal}</generation_goal>\n"
+                    "<adaptation_profile>"
+                    f"{json.dumps(adaptation_profile, ensure_ascii=False)}"
+                    "</adaptation_profile>\n"
                     f"<learner_memory>\n{source}\n</learner_memory>"
                 ),
             },
         ]
         temperature = _policy_float(rendered, "temperature", 0.45, minimum=0.0, maximum=1.0)
         max_tokens = _policy_int(rendered, "max_tokens", 1800, minimum=200, maximum=4000)
-        payload: dict[str, Any] = {
-            "model": self._model,
-            "messages": messages,
-            "stream": False,
-            "temperature": temperature,
-            "max_tokens": min(self._max_tokens, max_tokens),
-        }
-        if self._provider == "ollama":
-            payload = {
-                "model": self._model,
-                "messages": messages,
-                "stream": False,
-                "format": schema,
-                "options": {
-                    "temperature": temperature,
-                    "num_predict": min(self._max_tokens, max_tokens),
-                },
-            }
-        elif self._provider == "longcat":
-            payload["thinking"] = {"type": "disabled"}
+        if self._provider == "longcat":
             messages.append({"role": "user", "content": "只输出符合 Schema 的 JSON 对象。"})
-        else:
-            payload["response_format"] = {"type": "json_object"}
+        payload = self._structured_payload(
+            messages=messages,
+            schema=schema,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            longcat_thinking="disabled",
+        )
         response = await self._generate_payload(payload)
         return PersonalizedReadingOutput.model_validate(response.payload)
 
@@ -213,17 +299,6 @@ class RemotePriorityFeedbackAdapter(_RemoteModelAdapterBase):
         max_tokens = _policy_int(
             rendered, "max_tokens", self._max_tokens, minimum=200, maximum=4000
         )
-        if self._provider == "ollama":
-            return {
-                "model": self._model,
-                "messages": messages,
-                "stream": False,
-                "format": schema,
-                "options": {
-                    "temperature": temperature,
-                    "num_predict": min(self._max_tokens, max_tokens),
-                },
-            }
         if self._provider == "longcat":
             messages.append(
                 {
@@ -231,18 +306,13 @@ class RemotePriorityFeedbackAdapter(_RemoteModelAdapterBase):
                     "content": "只输出符合上述 JSON Schema 的 JSON 对象, 不要 Markdown。",
                 }
             )
-        payload: dict[str, Any] = {
-            "model": self._model,
-            "messages": messages,
-            "stream": False,
-            "temperature": temperature,
-            "max_tokens": min(self._max_tokens, max_tokens),
-        }
-        if self._provider == "longcat":
-            payload["thinking"] = {"type": "disabled"}
-        elif self._provider == "deepseek":
-            payload["response_format"] = {"type": "json_object"}
-        return payload
+        return self._structured_payload(
+            messages=messages,
+            schema=schema,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            longcat_thinking="disabled",
+        )
 
 
 class RemoteAnnotationAnalysisAdapter(_RemoteModelAdapterBase):
@@ -275,28 +345,13 @@ class RemoteAnnotationAnalysisAdapter(_RemoteModelAdapterBase):
         max_tokens = _policy_int(
             rendered, "max_tokens", self._max_tokens, minimum=200, maximum=4000
         )
-        payload: dict[str, Any] = {
-            "model": self._model,
-            "messages": messages,
-            "stream": False,
-            "temperature": temperature,
-            "max_tokens": min(self._max_tokens, max_tokens),
-        }
-        if self._provider == "ollama":
-            payload = {
-                "model": self._model,
-                "messages": messages,
-                "stream": False,
-                "format": schema,
-                "options": {
-                    "temperature": temperature,
-                    "num_predict": min(self._max_tokens, max_tokens),
-                },
-            }
-        elif self._provider == "longcat":
-            payload["thinking"] = {"type": "enabled"}
-        elif self._provider == "deepseek":
-            payload["response_format"] = {"type": "json_object"}
+        payload = self._structured_payload(
+            messages=messages,
+            schema=schema,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            longcat_thinking="enabled",
+        )
         response = await self._generate_payload(payload)
         return ModelAdapterResponse(
             payload=response.payload,
@@ -333,28 +388,13 @@ class RemoteExpressionReviewAdapter(_RemoteModelAdapterBase):
         max_tokens = _policy_int(
             rendered, "max_tokens", self._max_tokens, minimum=200, maximum=4000
         )
-        payload: dict[str, Any] = {
-            "model": self._model,
-            "messages": messages,
-            "stream": False,
-            "temperature": temperature,
-            "max_tokens": min(self._max_tokens, max_tokens),
-        }
-        if self._provider == "ollama":
-            payload = {
-                "model": self._model,
-                "messages": messages,
-                "stream": False,
-                "format": schema,
-                "options": {
-                    "temperature": temperature,
-                    "num_predict": min(self._max_tokens, max_tokens),
-                },
-            }
-        elif self._provider == "longcat":
-            payload["thinking"] = {"type": "enabled"}
-        elif self._provider == "deepseek":
-            payload["response_format"] = {"type": "json_object"}
+        payload = self._structured_payload(
+            messages=messages,
+            schema=schema,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            longcat_thinking="enabled",
+        )
         response = await self._generate_payload(payload)
         return ModelAdapterResponse(
             payload=response.payload,
@@ -363,46 +403,59 @@ class RemoteExpressionReviewAdapter(_RemoteModelAdapterBase):
         )
 
 
+def _remote_adapter[RemoteAdapterT: _RemoteModelAdapterBase](
+    adapter_type: type[RemoteAdapterT],
+    settings: Settings,
+    *,
+    minimum_max_tokens: int = 0,
+) -> RemoteAdapterT:
+    if settings.model_adapter == "ollama":
+        provider: ProviderName = "ollama"
+        base_url = settings.ollama_base_url
+        model = settings.ollama_chat_model
+        api_key = None
+    elif settings.model_adapter == "deepseek":
+        provider = "deepseek"
+        base_url = settings.deepseek_base_url
+        model = settings.deepseek_chat_model
+        api_key = (
+            settings.deepseek_api_key.get_secret_value() if settings.deepseek_api_key else None
+        )
+    elif settings.model_adapter == "longcat":
+        provider = "longcat"
+        base_url = settings.longcat_base_url
+        model = settings.longcat_chat_model
+        api_key = settings.longcat_api_key.get_secret_value() if settings.longcat_api_key else None
+    else:
+        raise ValueError(f"remote_model_adapter_required:{settings.model_adapter}")
+    return adapter_type(
+        provider=provider,
+        base_url=base_url,
+        model=model,
+        api_key=api_key,
+        estimated_cost_usd=settings.model_estimated_cost_usd,
+        max_tokens=max(settings.model_max_tokens, minimum_max_tokens),
+        timeout_seconds=settings.model_timeout_seconds,
+        prompt_resolver=prompt_runtime,
+    )
+
+
+def inbox_classification_adapter(
+    settings: Settings | None = None,
+) -> InboxClassificationAdapter | None:
+    resolved = settings or get_settings()
+    if not resolved.enable_remote_model_calls or resolved.model_adapter == "deterministic_fixture":
+        return None
+    return _remote_adapter(RemoteInboxClassificationAdapter, resolved)
+
+
 def priority_feedback_adapter(
     settings: Settings | None = None,
 ) -> PriorityFeedbackAdapter:
     resolved = settings or get_settings()
     if resolved.model_adapter == "deterministic_fixture":
         return DeterministicPriorityFeedbackAdapter()
-    if resolved.model_adapter == "ollama":
-        return RemotePriorityFeedbackAdapter(
-            provider="ollama",
-            base_url=resolved.ollama_base_url,
-            model=resolved.ollama_chat_model,
-            api_key=None,
-            estimated_cost_usd=resolved.model_estimated_cost_usd,
-            max_tokens=resolved.model_max_tokens,
-            timeout_seconds=resolved.model_timeout_seconds,
-            prompt_resolver=prompt_runtime,
-        )
-    if resolved.model_adapter == "deepseek":
-        return RemotePriorityFeedbackAdapter(
-            provider="deepseek",
-            base_url=resolved.deepseek_base_url,
-            model=resolved.deepseek_chat_model,
-            api_key=(
-                resolved.deepseek_api_key.get_secret_value() if resolved.deepseek_api_key else None
-            ),
-            estimated_cost_usd=resolved.model_estimated_cost_usd,
-            max_tokens=resolved.model_max_tokens,
-            timeout_seconds=resolved.model_timeout_seconds,
-            prompt_resolver=prompt_runtime,
-        )
-    return RemotePriorityFeedbackAdapter(
-        provider="longcat",
-        base_url=resolved.longcat_base_url,
-        model=resolved.longcat_chat_model,
-        api_key=(resolved.longcat_api_key.get_secret_value() if resolved.longcat_api_key else None),
-        estimated_cost_usd=resolved.model_estimated_cost_usd,
-        max_tokens=resolved.model_max_tokens,
-        timeout_seconds=resolved.model_timeout_seconds,
-        prompt_resolver=prompt_runtime,
-    )
+    return _remote_adapter(RemotePriorityFeedbackAdapter, resolved)
 
 
 def annotation_analysis_adapter(
@@ -411,80 +464,14 @@ def annotation_analysis_adapter(
     resolved = settings or get_settings()
     if resolved.model_adapter == "deterministic_fixture":
         return DeterministicAnnotationAnalysisAdapter()
-    if resolved.model_adapter == "ollama":
-        return RemoteAnnotationAnalysisAdapter(
-            provider="ollama",
-            base_url=resolved.ollama_base_url,
-            model=resolved.ollama_chat_model,
-            api_key=None,
-            estimated_cost_usd=resolved.model_estimated_cost_usd,
-            max_tokens=resolved.model_max_tokens,
-            timeout_seconds=resolved.model_timeout_seconds,
-            prompt_resolver=prompt_runtime,
-        )
-    if resolved.model_adapter == "deepseek":
-        return RemoteAnnotationAnalysisAdapter(
-            provider="deepseek",
-            base_url=resolved.deepseek_base_url,
-            model=resolved.deepseek_chat_model,
-            api_key=(
-                resolved.deepseek_api_key.get_secret_value() if resolved.deepseek_api_key else None
-            ),
-            estimated_cost_usd=resolved.model_estimated_cost_usd,
-            max_tokens=resolved.model_max_tokens,
-            timeout_seconds=resolved.model_timeout_seconds,
-            prompt_resolver=prompt_runtime,
-        )
-    return RemoteAnnotationAnalysisAdapter(
-        provider="longcat",
-        base_url=resolved.longcat_base_url,
-        model=resolved.longcat_chat_model,
-        api_key=(resolved.longcat_api_key.get_secret_value() if resolved.longcat_api_key else None),
-        estimated_cost_usd=resolved.model_estimated_cost_usd,
-        max_tokens=resolved.model_max_tokens,
-        timeout_seconds=resolved.model_timeout_seconds,
-        prompt_resolver=prompt_runtime,
-    )
+    return _remote_adapter(RemoteAnnotationAnalysisAdapter, resolved)
 
 
 def expression_review_adapter(settings: Settings | None = None) -> ExpressionReviewAdapter:
     resolved = settings or get_settings()
     if resolved.model_adapter == "deterministic_fixture":
         return DeterministicExpressionReviewAdapter()
-    if resolved.model_adapter == "ollama":
-        return RemoteExpressionReviewAdapter(
-            provider="ollama",
-            base_url=resolved.ollama_base_url,
-            model=resolved.ollama_chat_model,
-            api_key=None,
-            estimated_cost_usd=resolved.model_estimated_cost_usd,
-            max_tokens=resolved.model_max_tokens,
-            timeout_seconds=resolved.model_timeout_seconds,
-            prompt_resolver=prompt_runtime,
-        )
-    if resolved.model_adapter == "deepseek":
-        return RemoteExpressionReviewAdapter(
-            provider="deepseek",
-            base_url=resolved.deepseek_base_url,
-            model=resolved.deepseek_chat_model,
-            api_key=(
-                resolved.deepseek_api_key.get_secret_value() if resolved.deepseek_api_key else None
-            ),
-            estimated_cost_usd=resolved.model_estimated_cost_usd,
-            max_tokens=resolved.model_max_tokens,
-            timeout_seconds=resolved.model_timeout_seconds,
-            prompt_resolver=prompt_runtime,
-        )
-    return RemoteExpressionReviewAdapter(
-        provider="longcat",
-        base_url=resolved.longcat_base_url,
-        model=resolved.longcat_chat_model,
-        api_key=(resolved.longcat_api_key.get_secret_value() if resolved.longcat_api_key else None),
-        estimated_cost_usd=resolved.model_estimated_cost_usd,
-        max_tokens=resolved.model_max_tokens,
-        timeout_seconds=resolved.model_timeout_seconds,
-        prompt_resolver=prompt_runtime,
-    )
+    return _remote_adapter(RemoteExpressionReviewAdapter, resolved)
 
 
 def personalized_reading_adapter(
@@ -493,39 +480,10 @@ def personalized_reading_adapter(
     resolved = settings or get_settings()
     if resolved.model_adapter == "deterministic_fixture":
         return None
-    if resolved.model_adapter == "ollama":
-        return PersonalizedReadingAdapter(
-            provider="ollama",
-            base_url=resolved.ollama_base_url,
-            model=resolved.ollama_chat_model,
-            api_key=None,
-            estimated_cost_usd=resolved.model_estimated_cost_usd,
-            max_tokens=max(resolved.model_max_tokens, 1800),
-            timeout_seconds=resolved.model_timeout_seconds,
-            prompt_resolver=prompt_runtime,
-        )
-    if resolved.model_adapter == "deepseek":
-        return PersonalizedReadingAdapter(
-            provider="deepseek",
-            base_url=resolved.deepseek_base_url,
-            model=resolved.deepseek_chat_model,
-            api_key=(
-                resolved.deepseek_api_key.get_secret_value() if resolved.deepseek_api_key else None
-            ),
-            estimated_cost_usd=resolved.model_estimated_cost_usd,
-            max_tokens=max(resolved.model_max_tokens, 1800),
-            timeout_seconds=resolved.model_timeout_seconds,
-            prompt_resolver=prompt_runtime,
-        )
-    return PersonalizedReadingAdapter(
-        provider="longcat",
-        base_url=resolved.longcat_base_url,
-        model=resolved.longcat_chat_model,
-        api_key=(resolved.longcat_api_key.get_secret_value() if resolved.longcat_api_key else None),
-        estimated_cost_usd=resolved.model_estimated_cost_usd,
-        max_tokens=max(resolved.model_max_tokens, 1800),
-        timeout_seconds=resolved.model_timeout_seconds,
-        prompt_resolver=prompt_runtime,
+    return _remote_adapter(
+        PersonalizedReadingAdapter,
+        resolved,
+        minimum_max_tokens=1800,
     )
 
 

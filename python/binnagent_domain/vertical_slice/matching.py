@@ -73,12 +73,17 @@ class ConservativeMaterialMatcher:
 
         high_support = any(item.highest_hint_level >= 3 for item in observations)
         low_confidence_profile = (
-            profile.self_reported_level in {SelfReportedLevel.WEAK, SelfReportedLevel.UNKNOWN}
+            profile.confidence_band == "low"
+            or profile.current_level == "foundation"
+            or profile.self_reported_level in {SelfReportedLevel.WEAK, SelfReportedLevel.UNKNOWN}
             or profile.evidence_count < 2
         )
         conservative = high_support or low_confidence_profile or len(observations) < 2
         independently_steady = (
-            profile.self_reported_level is SelfReportedLevel.STEADY
+            (
+                profile.current_level in {"independent", "advanced"}
+                or profile.self_reported_level is SelfReportedLevel.STEADY
+            )
             and len(observations) >= 2
             and all(
                 item.highest_hint_level == 0

@@ -52,6 +52,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 from binnagent_api.auth import ControlIdentity, require_control_identity
 from binnagent_api.database import get_engine
 from binnagent_api.learner_auth import LearnerIdentity, ensure_identity_learner
+from binnagent_api.learner_level_service import enqueue_level_assessment, latest_level_assessment
 from binnagent_api.learning_evidence_service import record_personalized_run_evidence
 from binnagent_api.personalized_reading_content import (
     grammar_challenge as personalized_grammar_challenge,
@@ -215,11 +216,21 @@ async def continue_run(
         }
         completed_count = sum(task.state is TaskState.COMPLETED for task in terminal_tasks.values())
         evidence_count = predecessor.learner_profile.evidence_count + completed_count
+        level_assessment = await latest_level_assessment(connection, str(predecessor.learner_id))
         profile = replace(
             predecessor.learner_profile,
             learner_snapshot_id=_id("learner_snapshot"),
             evidence_count=evidence_count,
-            confidence_band="medium" if evidence_count >= 2 else "low",
+            confidence_band=(
+                level_assessment.confidence_band
+                if level_assessment is not None
+                else "medium"
+                if evidence_count >= 2
+                else "low"
+            ),
+            current_level=(
+                level_assessment.overall_level if level_assessment is not None else None
+            ),
             created_at=now,
         )
         candidates = content_catalog.candidates_for(TaskType.MATCHED_READING)
@@ -369,12 +380,18 @@ async def start_personalized_reading_run(
             predecessor = successor
 
         now = datetime.now(UTC)
+        level_assessment = await latest_level_assessment(connection, identity.learner_id)
         profile = replace(
             predecessor.learner_profile,
             learner_snapshot_id=_id("learner_snapshot"),
             evidence_count=predecessor.learner_profile.evidence_count + 1,
             confidence_band=(
-                "medium" if predecessor.learner_profile.evidence_count + 1 >= 2 else "low"
+                level_assessment.confidence_band
+                if level_assessment is not None
+                else ("medium" if predecessor.learner_profile.evidence_count + 1 >= 2 else "low")
+            ),
+            current_level=(
+                level_assessment.overall_level if level_assessment is not None else None
             ),
             created_at=now,
         )
@@ -596,6 +613,13 @@ async def record_run_difficulty(
             body,
             "record_run_difficulty",
         )
+        if not replayed:
+            await enqueue_level_assessment(
+                connection,
+                learner_id=saved.learner_id,
+                workflow_run_id=saved.workflow_run_id,
+                now=saved.updated_at,
+            )
     return _run_view(saved, replayed=replayed)
 
 

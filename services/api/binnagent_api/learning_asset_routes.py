@@ -16,6 +16,8 @@ from urllib.parse import quote
 from uuid import uuid4
 
 import sqlalchemy as sa
+from binnagent_domain.public_errors import PublicErrorCode
+from binnagent_domain.vertical_slice.errors import DomainError
 from fastapi import APIRouter, Header, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -30,6 +32,7 @@ from binnagent_api.knowledge_vault import (
 from binnagent_api.learner_auth import LearnerIdentity
 from binnagent_api.obsidian_organizer import (
     complete_organization,
+    enqueue_manual_organization,
     plan_pending_organization,
 )
 from binnagent_api.settings import get_settings
@@ -150,6 +153,12 @@ class ObsidianPluginSyncStatusView(BaseModel):
     paired: bool
     synced_context_count: int
     last_synced_at: datetime | None
+
+
+class ObsidianOrganizerRunView(BaseModel):
+    run_id: str
+    status: str
+    next_step: str
 
 
 class ObsidianContextEntry(BaseModel):
@@ -356,6 +365,36 @@ async def obsidian_plugin_sync_status(request: Request) -> ObsidianPluginSyncSta
         paired=bool(paired),
         synced_context_count=int(synced_context_count),
         last_synced_at=last_synced_at,
+    )
+
+
+@learning_asset_router.post(
+    "/obsidian-organizer-runs",
+    response_model=ObsidianOrganizerRunView,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def trigger_obsidian_organization(request: Request) -> ObsidianOrganizerRunView:
+    identity: LearnerIdentity = request.state.learner_identity
+    async with get_engine().begin() as connection:
+        paired = await connection.scalar(
+            sa.select(sa.func.count(tables.obsidian_sync_connections.c.connection_id)).where(
+                tables.obsidian_sync_connections.c.learner_id == identity.learner_id,
+                tables.obsidian_sync_connections.c.revoked_at.is_(None),
+            )
+        )
+        if not paired:
+            raise DomainError(
+                PublicErrorCode.OBSIDIAN_CONNECTION_REQUIRED,
+                "obsidian_plugin_connection_required",
+            )
+        run_id, run_status = await enqueue_manual_organization(
+            connection,
+            learner_id=identity.learner_id,
+        )
+    return ObsidianOrganizerRunView(
+        run_id=run_id,
+        status=run_status,
+        next_step="sync_obsidian_plugin",
     )
 
 

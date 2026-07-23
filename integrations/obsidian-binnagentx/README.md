@@ -29,7 +29,7 @@ Then enable **BinnAgentX Learning Sync** in Obsidian's Community plugins.
 
 ## Install for learners
 
-1. Download `BinnAgentX-Learning-Sync-v0.1.5.zip` from the BinnAgentX release.
+1. Download `BinnAgentX-Learning-Sync-v0.1.6.zip` from the BinnAgentX release.
 2. Unzip it into `<your-vault>/.obsidian/plugins/`; the final path must be
    `<your-vault>/.obsidian/plugins/binnagentx-learning-sync/main.js`.
 3. Open Obsidian **Settings → Community plugins**, turn off Restricted mode if
@@ -61,6 +61,14 @@ Then enable **BinnAgentX Learning Sync** in Obsidian's Community plugins.
    Vocabulary, Grammar, Reading, and Writing managed folders, moves files without
    rewriting their content, and acknowledges the complete plan. Templates,
    dashboards, the guide, and bundled examples are excluded from sync.
+
+The completion notice reports each part separately: assets received from
+BinnAgentX, approved context uploaded, Inbox notes detected and reliably
+classified, notes actually moved, and destination counts. “Sync completed”
+does not by itself mean that Inbox organization moved files. If any intent
+classification batch fails or omits a note, the plugin moves none of that run,
+reports that organization is pending retry, and retries the same queued run on
+the next sync.
 
 Automatic bidirectional sync is enabled by default after pairing and runs when
 Obsidian opens and every 60 seconds. It can be disabled in plugin settings.

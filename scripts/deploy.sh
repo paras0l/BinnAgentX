@@ -381,6 +381,37 @@ run_logged_with_heartbeat() {
   return "$status"
 }
 
+compose_log_has_registry_failure() {
+  local logfile="$1"
+  grep -Eq \
+    'failed to resolve source metadata|unexpected status from HEAD request|TLS handshake timeout|error pinging v2 registry' \
+    "$logfile"
+}
+
+retry_container_build_with_local_bases() {
+  local logfile="$1"
+  shift
+  local python_base_image="${COMPOSE_PROJECT_NAME}-app:latest"
+  local node_base_image="${COMPOSE_PROJECT_NAME}-learner:latest"
+
+  (( REBUILD_IMAGES == 1 )) || return 1
+  compose_log_has_registry_failure "$logfile" || return 1
+  docker image inspect "$python_base_image" >/dev/null 2>&1 || return 1
+  docker image inspect "$node_base_image" >/dev/null 2>&1 || return 1
+
+  warn "基础镜像仓库不可用；使用本项目现有健康镜像作为构建基底重试"
+  {
+    printf '\n--- registry fallback ---\n'
+    printf 'PYTHON_BASE_IMAGE=%s\n' "$python_base_image"
+    printf 'NODE_BASE_IMAGE=%s\n' "$node_base_image"
+  } >> "$logfile"
+  run_logged_with_heartbeat "$logfile" "使用本地基底重新构建容器" \
+    env \
+      "BINNAGENT_PYTHON_BASE_IMAGE=$python_base_image" \
+      "BINNAGENT_NODE_BASE_IMAGE=$node_base_image" \
+      "$@"
+}
+
 background_command_is_running() {
   local pid="$1"
   local process_state=""
@@ -923,8 +954,11 @@ start_container_stack() {
   : > "$LOG_DIR/compose.log"
   if ! run_logged_with_heartbeat "$LOG_DIR/compose.log" "容器仍在构建或重启" \
     "${compose_cmd[@]}" "${up_args[@]}" "${targets[@]}"; then
-    show_log_tail "$LOG_DIR/compose.log" 50
-    die "容器构建或启动失败"
+    if ! retry_container_build_with_local_bases "$LOG_DIR/compose.log" \
+      "${compose_cmd[@]}" "${up_args[@]}" "${targets[@]}"; then
+      show_log_tail "$LOG_DIR/compose.log" 50
+      die "容器构建或启动失败"
+    fi
   fi
 
   (( needs_app == 0 )) || \

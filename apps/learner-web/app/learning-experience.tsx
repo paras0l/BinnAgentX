@@ -28,6 +28,7 @@ import {
   createLearningAsset,
   createRun,
   getResumeWorkspace,
+  getCurrentLevel,
   getWorkspace,
   getKnowledgeVaultStatus,
   getObsidianPluginSyncStatus,
@@ -40,7 +41,9 @@ import {
   retryPersonalizedTrainingMaterial,
   startPersonalizedReading,
   starLearningAsset,
+  triggerObsidianInboxOrganization,
   type KnowledgeVaultStatus,
+  type CurrentLevel,
   type ObsidianPluginSyncStatus,
   type PersonalizedTrainingMaterial,
 } from "../lib/api";
@@ -133,6 +136,7 @@ export function LearningExperience({
   const [vaultStatus, setVaultStatus] = useState<KnowledgeVaultStatus | null>(null);
   const [pluginSyncStatus, setPluginSyncStatus] = useState<ObsidianPluginSyncStatus | null>(null);
   const [trainingMaterials, setTrainingMaterials] = useState<PersonalizedTrainingMaterial[]>([]);
+  const [currentLevel, setCurrentLevel] = useState<CurrentLevel | null>(null);
   const [isGeneratingMaterial, setIsGeneratingMaterial] = useState(false);
   const [configureObsidianRequested, setConfigureObsidianRequested] = useState(false);
   const [surface, setSurface] = useState<
@@ -242,6 +246,21 @@ export function LearningExperience({
       active = false;
     };
   }, [identity.learner_id]);
+
+  useEffect(() => {
+    if (surface !== "profile") return;
+    let active = true;
+    void getCurrentLevel()
+      .then((level) => {
+        if (active) setCurrentLevel(level);
+      })
+      .catch(() => {
+        // A level is supplementary and must never block the learning journey.
+      });
+    return () => {
+      active = false;
+    };
+  }, [identity.learner_id, surface]);
 
   const startFirstRun = useCallback(
     (profile: LearnerProfileInput) => {
@@ -479,6 +498,15 @@ export function LearningExperience({
         vaultStatus={vaultStatus}
         onRefreshVaultStatus={refreshVaultStatus}
         onRefreshAssets={refreshLearningAssets}
+        onOrganizeInbox={async () => {
+          setError(null);
+          try {
+            await triggerObsidianInboxOrganization();
+          } catch (reason: unknown) {
+            setError(errorMessage(reason));
+            throw reason;
+          }
+        }}
         pluginSyncStatus={pluginSyncStatus}
         openVaultSetupInitially={configureObsidianRequested}
         onVaultSetupClose={() => setConfigureObsidianRequested(false)}
@@ -486,7 +514,11 @@ export function LearningExperience({
     );
   } else if (surface === "profile" && experience) {
     content = (
-      <LearnerProfilePanel experience={experience} onEdit={() => setSurface("profile-edit")} />
+      <LearnerProfilePanel
+        experience={experience}
+        currentLevel={currentLevel}
+        onEdit={() => setSurface("profile-edit")}
+      />
     );
   } else if (surface === "preferences" && experience) {
     content = (
@@ -1146,9 +1178,11 @@ function formatSessionDate(value: string): string {
 
 function LearnerProfilePanel({
   experience,
+  currentLevel,
   onEdit,
 }: {
   experience: LearnerExperienceState;
+  currentLevel: CurrentLevel | null;
   onEdit: () => void;
 }) {
   const { profile, sessions } = experience;
@@ -1158,6 +1192,9 @@ function LearnerProfilePanel({
     completedTasks > 0 ? Math.round(((completedTasks - supportedTasks) / completedTasks) * 100) : 0;
   const evidenceLevel =
     sessions.length >= 6 ? "形成趋势" : sessions.length >= 2 ? "正在积累" : "证据不足";
+  const levelLabel = currentLevel?.overall_level
+    ? adaptationLevelLabel(currentLevel.overall_level)
+    : "待积累";
 
   return (
     <main className="insight-shell">
@@ -1170,6 +1207,15 @@ function LearnerProfilePanel({
       </header>
 
       <section className="profile-overview" aria-label="画像概览">
+        <article>
+          <span>当前适配水平</span>
+          <strong>{levelLabel}</strong>
+          <p>
+            {currentLevel?.status === "ready"
+              ? `${confidenceLabel(currentLevel.confidence_band)} · ${currentLevel.evidence_count} 条综合证据`
+              : "完成训练并评价难度后更新"}
+          </p>
+        </article>
         <article>
           <span>证据状态</span>
           <strong>{evidenceLevel}</strong>
@@ -1188,6 +1234,30 @@ function LearnerProfilePanel({
       </section>
 
       <section className="profile-evidence-grid">
+        {currentLevel?.status === "ready" ? (
+          <article className="profile-dimension-card">
+            <p className="step-label">当前水平维度</p>
+            <h2>材料会按这些维度共同调整</h2>
+            <ul>
+              <li>
+                <strong>阅读理解：</strong>
+                {dimensionLevelLabel(currentLevel.dimensions.reading_comprehension)}
+              </li>
+              <li>
+                <strong>词汇：</strong>
+                {dimensionLevelLabel(currentLevel.dimensions.vocabulary)}
+              </li>
+              <li>
+                <strong>语法：</strong>
+                {dimensionLevelLabel(currentLevel.dimensions.grammar)}
+              </li>
+              <li>
+                <strong>书面表达：</strong>
+                {dimensionLevelLabel(currentLevel.dimensions.written_expression)}
+              </li>
+            </ul>
+          </article>
+        ) : null}
         <article className="profile-dimension-card">
           <p className="step-label">当前可观察倾向</p>
           <h2>
@@ -1231,6 +1301,25 @@ function LearnerProfilePanel({
       </footer>
     </main>
   );
+}
+
+function adaptationLevelLabel(level: NonNullable<CurrentLevel["overall_level"]>): string {
+  return {
+    foundation: "基础建立",
+    developing: "发展中",
+    independent: "独立运用",
+    advanced: "进阶迁移",
+  }[level];
+}
+
+function dimensionLevelLabel(
+  level: CurrentLevel["dimensions"][keyof CurrentLevel["dimensions"]],
+): string {
+  return level ? adaptationLevelLabel(level) : "证据不足";
+}
+
+function confidenceLabel(confidence: CurrentLevel["confidence_band"]): string {
+  return { low: "低置信度", medium: "中等置信度", high: "高置信度" }[confidence];
 }
 
 function PreferencesPanel({

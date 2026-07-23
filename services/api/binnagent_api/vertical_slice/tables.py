@@ -140,6 +140,25 @@ difficulty_feedback_events = sa.Table(
     sa.Column("rating", sa.String(32), nullable=True),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
 )
+learner_level_assessments = sa.Table(
+    "learner_level_assessments",
+    metadata,
+    sa.Column("assessment_id", sa.String(128), primary_key=True),
+    sa.Column("learner_id", sa.String(128), nullable=False),
+    sa.Column("trigger_workflow_run_id", sa.String(128), nullable=False, unique=True),
+    sa.Column("status", sa.String(24), nullable=False),
+    sa.Column("evidence_summary", postgresql.JSONB(), nullable=False),
+    sa.Column("overall_level", sa.String(32), nullable=True),
+    sa.Column("dimensions", postgresql.JSONB(), nullable=False),
+    sa.Column("confidence_band", sa.String(16), nullable=True),
+    sa.Column("evidence_count", sa.Integer(), nullable=False),
+    sa.Column("reason_codes", postgresql.JSONB(), nullable=False),
+    sa.Column("attempt_count", sa.Integer(), nullable=False),
+    sa.Column("error_code", sa.String(128), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("completed_at", sa.DateTime(timezone=True), nullable=True),
+)
 next_task_placeholders = sa.Table(
     "next_task_placeholders",
     metadata,

@@ -2,6 +2,7 @@
 
 import { useDeferredValue, useMemo, useState } from "react";
 import {
+  ArrowsClockwise,
   Books,
   CheckCircle,
   CloudArrowUp,
@@ -60,6 +61,7 @@ interface LearningAssetsPanelProps {
   vaultStatus: KnowledgeVaultStatus | null;
   onRefreshVaultStatus: () => void;
   onRefreshAssets: () => void;
+  onOrganizeInbox: () => Promise<void>;
   pluginSyncStatus: ObsidianPluginSyncStatus | null;
   openVaultSetupInitially?: boolean;
   onVaultSetupClose?: () => void;
@@ -283,7 +285,7 @@ function ObsidianSetupDialog({
               </p>
               <a
                 className="quiet-button"
-                href="/downloads/BinnAgentX-Learning-Sync-v0.1.5.zip"
+                href="/downloads/BinnAgentX-Learning-Sync-v0.1.6.zip"
                 download
               >
                 下载 Obsidian 插件
@@ -317,6 +319,7 @@ export function LearningAssetsPanel({
   vaultStatus,
   onRefreshVaultStatus,
   onRefreshAssets,
+  onOrganizeInbox,
   pluginSyncStatus,
   openVaultSetupInitially = false,
   onVaultSetupClose,
@@ -327,6 +330,9 @@ export function LearningAssetsPanel({
   const [starredOnly, setStarredOnly] = useState(false);
   const [showAddForm, setShowAddForm] = useState(false);
   const [showVaultSetup, setShowVaultSetup] = useState(openVaultSetupInitially);
+  const [isOrganizingInbox, setIsOrganizingInbox] = useState(false);
+  const [organizerNotice, setOrganizerNotice] = useState<string | null>(null);
+  const [organizerQueued, setOrganizerQueued] = useState(false);
   const [obsidianVaultName, setObsidianVaultName] = useState(loadObsidianVaultName);
   const [draft, setDraft] = useState<LearningAssetInput>({
     kind: "vocabulary",
@@ -366,6 +372,26 @@ export function LearningAssetsPanel({
     }
   };
 
+  const organizeInbox = async () => {
+    if (!pluginSyncStatus?.paired) {
+      setOrganizerQueued(false);
+      setOrganizerNotice("请先完成 Obsidian 插件配对。");
+      setShowVaultSetup(true);
+      return;
+    }
+    setIsOrganizingInbox(true);
+    setOrganizerQueued(false);
+    setOrganizerNotice(null);
+    try {
+      await onOrganizeInbox();
+      setOrganizerQueued(true);
+    } catch {
+      // The parent surface displays the shared public API error.
+    } finally {
+      setIsOrganizingInbox(false);
+    }
+  };
+
   return (
     <main className="assets-shell">
       <header className="assets-heading" data-ui-anchor="workspace-header">
@@ -375,6 +401,15 @@ export function LearningAssetsPanel({
           <p>这里仅展示来源、证据和同步状态；详细知识内容由 Obsidian 管理。</p>
         </div>
         <div className="assets-heading-actions">
+          <button
+            type="button"
+            className="quiet-button"
+            disabled={isOrganizingInbox || pluginSyncStatus === null}
+            onClick={() => void organizeInbox()}
+          >
+            <ArrowsClockwise size={16} />
+            {isOrganizingInbox ? "正在提交…" : "整理 Obsidian 收件箱"}
+          </button>
           <button type="button" className="quiet-button" onClick={onRefreshAssets}>
             <CloudArrowUp size={16} /> 刷新同步状态
           </button>
@@ -386,6 +421,31 @@ export function LearningAssetsPanel({
           </button>
         </div>
       </header>
+      {organizerQueued ? (
+        <aside className="asset-organizer-guide" aria-live="polite">
+          <div>
+            <CheckCircle size={22} weight="fill" aria-hidden="true" />
+            <div>
+              <strong>整理任务已提交</strong>
+              <p>保持 Obsidian 打开，插件通常会在 60 秒内自动整理。</p>
+            </div>
+          </div>
+          <p>想立即完成：</p>
+          <ol>
+            <li>
+              在 Obsidian 中按 <kbd>⌘ P</kbd>（Windows/Linux 按 <kbd>Ctrl P</kbd>）。
+            </li>
+            <li>
+              搜索并运行 <code>Sync approved learning context</code>。
+            </li>
+          </ol>
+          <small>看到“整理 N 条 Inbox 笔记”即表示完成。</small>
+        </aside>
+      ) : organizerNotice ? (
+        <p className="asset-organizer-notice" role="status">
+          {organizerNotice}
+        </p>
+      ) : null}
 
       <section className="assets-summary" aria-label="学习资产总览" data-ui-anchor="summary">
         <article>

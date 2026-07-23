@@ -727,7 +727,7 @@ BinnAgentX
 
 1. 学习端资产页通过 PostgreSQL `learning_asset_index` 展示标题、分类、标签、来源、证据和同步状态，不返回 Obsidian 正文或同步摘录。
 2. 学习端新增资产、训练标注和个性化阅读标注都写入 `asset_export_requested` outbox；正文仅作为投递中的一次性载荷，插件回执后即替换为不含正文的交付回执。
-3. Obsidian 插件 v0.1.5 使用独立 Connection ID 和 Sync Secret 拉取待导出资产，在 `BinnAgentX/00-Inbox/` 创建带稳定 `binnagent_asset_id` 与 `inbox_status: unprocessed` 的笔记，并向服务端回执文件引用和内容哈希；它仍进入原有导出、回执和同步链路，没有新增旁路状态机。
+3. Obsidian 插件 v0.1.6 使用独立 Connection ID 和 Sync Secret 拉取待导出资产，在 `BinnAgentX/00-Inbox/` 创建带稳定 `binnagent_asset_id` 与 `inbox_status: unprocessed` 的笔记，并向服务端回执文件引用和内容哈希；它仍进入原有导出、回执和同步链路，没有新增旁路状态机。同步提示分别报告接收、上传、Inbox 检出、Agent 分类、实际移动和目标目录；Agent 未完整分类时整批不移动并保留任务重试。
 4. 插件首次加载初始化 `00-Inbox` 至 `06-Attachments`、使用指南、MOC / Dataview Dashboard、模板与入门示例，并把 Obsidian 模板和附件目录配置为 `05-Templates/`、`06-Attachments/`。总、词汇、语法地图固定为 `00-Dashboard.md`，升级时通过 Obsidian 文件管理器迁移旧 `Dashboard.md` 并自动更新链接。插件只扫描用户明确允许的文件夹或标签，排除模板、Dashboard 及带 `binnagent_sync: false` 的指南/示例；模板复制出的普通笔记没有资产 ID 时，服务端生成稳定资产 ID，并只把标题、标签、路径引用和同步状态写入资产索引。
 5. 有限摘录保存在 `obsidian_learning_context`，只用于个性化内容生成；`POST /v1/training-materials/personalized` 只创建异步请求。常驻 Worker 按学习目标、最新学习、到期复习、证据冲突和近期使用记录选取上下文；兼容的模型提供方可先调用 PydanticAI Prompted JSON 结构化抽取，再生成 3–6 段的新英文阅读及迁移重点。LongCat 当前不完成该抽取协议，因此明确跳过可选抽取并直接生成阅读；其他抽取失败也会记录降级原因并继续使用原始授权上下文，不阻断阅读生成。轨迹预算限制模型调用次数，生成失败最多自动尝试三次并指数退避，终态失败只接受用户显式重新生成；控制舱可查看每个阶段和失败点。
 6. 学习首页通过 `GET /v1/training-materials` 展示统一训练任务队列。系统任务与个性化材料同时可选，个性化材料生成阶段使用 `requested`、`generating`、`validating`、`ready` 或 `generation_failed`，进入既有训练后再使用 `in_progress`、`completed`；资产页不提供材料生成入口，也不展示阅读正文。模型通过 `source_titles` 逐字声明实际使用的输入笔记，服务端只把训练结果归因到可验证且归属当前学习者的来源资产；模型没有返回可靠映射时材料仍可进入训练，但本次不更新来源证据。微型表达结果不会批量污染所有输入笔记。
@@ -771,7 +771,7 @@ BinnAgentX
 
 ## 安装与排障
 
-* 发布包：`releases/BinnAgentX-Learning-Sync-v0.1.5.zip`；学习端下载副本位于 `apps/learner-web/public/downloads/`。
+* 发布包：`releases/BinnAgentX-Learning-Sync-v0.1.6.zip`；学习端下载副本位于 `apps/learner-web/public/downloads/`。
 * 插件最终目录必须是 `<Vault>/.obsidian/plugins/binnagentx-learning-sync/`。同一插件 ID 的重复目录会导致 Obsidian 不加载插件；本次验收已将旧的重复目录移到 `<Vault>/.obsidian/plugin-backups/`，可恢复但不再参与插件扫描。
 * 服务端连接显示“已配对”但没有最近同步时间时，先检查插件目录是否唯一，再查看插件设置页的“最近同步”。
 * 本次没有运行或重建 OpenWiki；本文和 README 是权威源文档，OpenWiki 仍由用户按既有流程手动维护。

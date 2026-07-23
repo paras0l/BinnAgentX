@@ -113,6 +113,66 @@ def test_container_restart_skips_build_only_when_source_fingerprint_matches(
     assert "跳过镜像构建" in restarted.stdout
 
 
+def test_container_build_retries_with_local_bases_when_registry_is_unavailable(
+    tmp_path: Path,
+) -> None:
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    docker_calls = tmp_path / "docker-calls"
+    up_attempts = tmp_path / "up-attempts"
+    _write_executable(
+        fake_bin / "docker",
+        "#!/usr/bin/env bash\n"
+        'printf \'%s|%s\\n\' "${BINNAGENT_PYTHON_BASE_IMAGE:-}" "$*" '
+        '>> "$FAKE_DOCKER_CALLS"\n'
+        'if [[ " $* " == *" up --detach "* ]]; then\n'
+        '  attempt=$(wc -l < "$FAKE_UP_ATTEMPTS" 2>/dev/null || printf 0)\n'
+        "  printf 'x\\n' >> \"$FAKE_UP_ATTEMPTS\"\n"
+        "  if (( attempt == 0 )); then\n"
+        "    printf '%s\\n' "
+        "'failed to resolve source metadata for docker.io/library/python:3.13-slim-bookworm'\n"
+        "    exit 1\n"
+        "  fi\n"
+        "fi\n"
+        "exit 0\n",
+    )
+    _write_executable(fake_bin / "curl", "#!/usr/bin/env bash\nexit 0\n")
+    _write_executable(fake_bin / "lsof", "#!/usr/bin/env bash\nexit 1\n")
+    env = {
+        **os.environ,
+        "PATH": f"{fake_bin}:{os.environ['PATH']}",
+        "FAKE_DOCKER_CALLS": str(docker_calls),
+        "FAKE_UP_ATTEMPTS": str(up_attempts),
+        "LOG_DIR": str(tmp_path / "logs"),
+        "DEPLOY_STATE_DIR": str(tmp_path / "state"),
+    }
+
+    result = subprocess.run(
+        [
+            "bash",
+            str(DEPLOY_SCRIPT),
+            "--no-worker",
+            "--no-learner",
+            "--no-control",
+        ],
+        cwd=PROJECT_ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "基础镜像仓库不可用" in result.stderr
+    calls = docker_calls.read_text(encoding="utf-8")
+    assert calls.count(" up --detach ") == 2
+    assert "binnagentx-app:latest|compose" in calls
+    assert "NODE_BASE_IMAGE=binnagentx-learner:latest" in (
+        tmp_path / "logs" / "compose.log"
+    ).read_text(encoding="utf-8")
+
+
 def test_host_worker_starts_without_requiring_or_invoking_docker(tmp_path: Path) -> None:
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()

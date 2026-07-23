@@ -219,7 +219,10 @@ async def generate_personalized_training_material(
     repeated = [memory for memory in candidates if memory.memory_id in recent_ids]
     memories = tuple((fresh + repeated)[:6])
     if not memories:
-        raise HTTPException(status_code=409, detail="obsidian_context_required")
+        raise DomainError(
+            PublicErrorCode.OBSIDIAN_CONTEXT_REQUIRED,
+            "obsidian_context_required",
+        )
 
     now = datetime.now(UTC)
     material_id = f"training_material_{uuid4().hex}"

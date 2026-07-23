@@ -111,6 +111,8 @@ class LearnerProfileSnapshot:
     evidence_count: int
     confidence_band: str
     created_at: datetime
+    current_level: str | None = None
+    level_assessment_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

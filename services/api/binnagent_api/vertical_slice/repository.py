@@ -542,6 +542,8 @@ def _profile_to_json(profile: LearnerProfileSnapshot) -> dict[str, Any]:
         },
         "evidence_count": profile.evidence_count,
         "confidence_band": profile.confidence_band,
+        "current_level": profile.current_level,
+        "level_assessment_id": profile.level_assessment_id,
         "created_at": profile.created_at.isoformat(),
     }
 
@@ -562,6 +564,8 @@ def _profile_from_json(value: dict[str, Any]) -> LearnerProfileSnapshot:
         evidence_count=value["evidence_count"],
         confidence_band=value["confidence_band"],
         created_at=datetime.fromisoformat(value["created_at"]),
+        current_level=value.get("current_level"),
+        level_assessment_id=value.get("level_assessment_id"),
     )
 
 

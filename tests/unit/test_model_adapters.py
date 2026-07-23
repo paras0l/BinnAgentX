@@ -6,6 +6,7 @@ import pytest
 from binnagent_agent import AnnotationAnalysisRequest, PriorityFeedbackRequest
 from binnagent_agent.prompts import RenderedPrompt
 from binnagent_api.model_adapters import (
+    PersonalizedReadingAdapter,
     RemoteAnnotationAnalysisAdapter,
     RemotePriorityFeedbackAdapter,
 )
@@ -35,6 +36,56 @@ class ManagedPromptRuntime:
             model_policy={"temperature": 0.33, "max_tokens": 260},
             source="database",
         )
+
+
+@pytest.mark.asyncio
+async def test_personalized_reading_adapter_sends_current_level_context() -> None:
+    seen: dict[str, object] = {}
+    content = json.dumps(
+        {
+            "title": "A New Context",
+            "paragraphs": ["First paragraph.", "Second paragraph.", "Third paragraph."],
+            "focus_points": ["迁移语法"],
+            "source_titles": ["Grammar note"],
+        }
+    )
+
+    async def handler(request: httpx2.Request) -> httpx2.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx2.Response(200, json={"choices": [{"message": {"content": content}}]})
+
+    adapter = PersonalizedReadingAdapter(
+        provider="deepseek",
+        base_url="https://models.example",
+        model="test-model",
+        api_key="test-key",
+        estimated_cost_usd=Decimal("0.02"),
+        max_tokens=1800,
+        timeout_seconds=2,
+        transport=httpx2.MockTransport(handler),
+    )
+    await adapter.generate(
+        (
+            {
+                "kind": "grammar",
+                "title": "Grammar note",
+                "excerpt": "A useful construction.",
+            },
+        ),
+        goal="巩固语法",
+        adaptation_profile={
+            "overall_level": "independent",
+            "dimensions": {"grammar": "developing"},
+            "confidence_band": "medium",
+        },
+    )
+
+    body = seen["body"]
+    assert isinstance(body, dict)
+    user_message = body["messages"][1]["content"]
+    assert "<adaptation_profile>" in user_message
+    assert '"overall_level": "independent"' in user_message
+    assert '"grammar": "developing"' in user_message
 
 
 @pytest.mark.asyncio
