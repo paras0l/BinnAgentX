@@ -89,9 +89,15 @@ async def test_tool_catalog_policy_and_versioned_prompt_governance() -> None:
                 "purpose": "验证项目隔离的新版个性化阅读模板。",
                 "template_text": (
                     "根据 {{contexts}} 和 {{generation_goal}} 生成新阅读，"
+                    "按 {{adaptation_profile}} 调整难度，"
                     "并严格返回 {{output_schema}}。"
                 ),
-                "variables": ["contexts", "generation_goal", "output_schema"],
+                "variables": [
+                    "contexts",
+                    "generation_goal",
+                    "adaptation_profile",
+                    "output_schema",
+                ],
                 "model_policy": {"temperature": 0.3, "max_tokens": 1600},
             },
         )
@@ -112,6 +118,7 @@ async def test_tool_catalog_policy_and_versioned_prompt_governance() -> None:
                 "variables": {
                     "contexts": "note",
                     "generation_goal": "grammar",
+                    "adaptation_profile": "developing",
                     "output_schema": "json",
                 }
             },
@@ -131,6 +138,7 @@ async def test_tool_catalog_policy_and_versioned_prompt_governance() -> None:
             {
                 "contexts": "memory",
                 "generation_goal": "grammar",
+                "adaptation_profile": "developing",
                 "output_schema": "json",
             },
         )

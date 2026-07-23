@@ -1,4 +1,4 @@
-import type { ThemeAssetSlot, ThemeDensity, ThemeMotion } from "./contracts";
+import type { ThemeAssetSlot, ThemeCollectorMode, ThemeDensity, ThemeMotion } from "./contracts";
 import { getThemeDefinition, normalizeThemeId, THEME_TIERS, type ThemeId } from "./registry";
 
 export const THEME_STORAGE_KEY = "binnagent:theme:v1";
@@ -7,13 +7,18 @@ export interface ThemeRuntimePreferences {
   theme: ThemeId;
   density: ThemeDensity;
   motion: ThemeMotion;
+  collectorMode: ThemeCollectorMode;
 }
 
 const ASSET_VARIABLES: Record<ThemeAssetSlot, string> = {
   ambient: "--theme-asset-ambient",
   hero: "--theme-asset-hero",
+  "hero-night": "--theme-asset-hero-night",
   "sidebar-ornament": "--theme-asset-sidebar-ornament",
   "hero-accent": "--theme-asset-hero-accent",
+  emblem: "--theme-asset-emblem",
+  "section-divider": "--theme-asset-section-divider",
+  "heading-crest": "--theme-asset-heading-crest",
   "history-easter-egg": "--theme-asset-history-easter-egg",
   "companion-atlas": "--theme-asset-companion-atlas",
   "ui-library": "--theme-asset-ui-library",
@@ -52,7 +57,7 @@ export function preloadThemeAssets(theme: ThemeId): void {
   });
 }
 
-function updateThemeRoot({ theme, density, motion }: ThemeRuntimePreferences): void {
+function updateThemeRoot({ theme, density, motion, collectorMode }: ThemeRuntimePreferences): void {
   const root = document.documentElement;
   const normalizedTheme = normalizeThemeId(theme);
   const definition = getThemeDefinition(normalizedTheme);
@@ -61,7 +66,9 @@ function updateThemeRoot({ theme, density, motion }: ThemeRuntimePreferences): v
   root.dataset.themeFeatures = definition.capabilities.join(" ");
   root.dataset.density = density;
   root.dataset.motion = motion;
-  root.style.colorScheme = definition.colorScheme;
+  root.dataset.collectorMode = collectorMode;
+  root.style.colorScheme =
+    definition.tier === "collector" && collectorMode === "night" ? "dark" : definition.colorScheme;
 
   Object.entries(ASSET_VARIABLES).forEach(([slot, variable]) => {
     const assetSlot = slot as ThemeAssetSlot;

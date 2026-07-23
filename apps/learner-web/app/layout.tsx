@@ -38,19 +38,28 @@ const themeInitializer = `(() => {
       ? saved.density
       : "comfortable";
     const motion = saved.motion === "reduced" ? "reduced" : "full";
+    const collectorMode = saved.collectorMode === "night" ? "night" : "day";
     const root = document.documentElement;
     root.dataset.theme = theme;
     root.dataset.themeTier = definition.tier;
     root.dataset.themeFeatures = definition.capabilities.join(" ");
     root.dataset.density = density;
     root.dataset.motion = motion;
-    root.style.colorScheme = definition.colorScheme;
+    root.dataset.collectorMode = collectorMode;
+    root.style.colorScheme =
+      definition.tier === "collector" && collectorMode === "night"
+        ? "dark"
+        : definition.colorScheme;
     root.style.setProperty("--theme-tier-rank", String(definition.rank));
     const assetVariables = {
       ambient: "--theme-asset-ambient",
       hero: "--theme-asset-hero",
+      "hero-night": "--theme-asset-hero-night",
       "sidebar-ornament": "--theme-asset-sidebar-ornament",
       "hero-accent": "--theme-asset-hero-accent",
+      emblem: "--theme-asset-emblem",
+      "section-divider": "--theme-asset-section-divider",
+      "heading-crest": "--theme-asset-heading-crest",
       "history-easter-egg": "--theme-asset-history-easter-egg",
       "companion-atlas": "--theme-asset-companion-atlas",
       "ui-library": "--theme-asset-ui-library",
@@ -89,6 +98,7 @@ export default function RootLayout({ children }: Readonly<{ children: ReactNode 
       data-theme-features="palette surfaces"
       data-density="comfortable"
       data-motion="full"
+      data-collector-mode="day"
       suppressHydrationWarning
     >
       <head>

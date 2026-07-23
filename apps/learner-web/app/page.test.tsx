@@ -89,6 +89,7 @@ describe("learner home", () => {
       reduced_motion: false,
       skin: "paper",
       navigation_collapsed: false,
+      collector_mode: "day",
     };
     let preferencesPersisted = false;
     vi.stubGlobal(
@@ -443,6 +444,68 @@ describe("learner home", () => {
     expect(screen.getByRole("img", { name: "海豹夏日乐园组件装饰资源" })).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "关闭皮肤图鉴" }));
     expect(screen.queryByRole("dialog", { name: "海豹夏日乐园" })).not.toBeInTheDocument();
+  });
+
+  it("switches the collector skin between complete day and night presentations", async () => {
+    saveExperienceProfile("learner_synthetic_local", {
+      exam_track: "english_1",
+      target_score: 70,
+      weekly_minutes: 420,
+      self_reported_level: "developing",
+      prior_exam_seen: false,
+      session_minutes: 45,
+      feedback_density: "minimal",
+      timed: false,
+      evidence_count: 0,
+      confidence_band: "low",
+    });
+
+    render(<LearnerHomePage />);
+    await screen.findByRole("heading", { name: "语境实验室 × 表达实验室" });
+    fireEvent.click(
+      within(screen.getByRole("navigation", { name: "学习功能导航" })).getByRole("button", {
+        name: "偏好设置",
+      }),
+    );
+    fireEvent.click(screen.getByRole("radio", { name: /海豹夏日乐园/ }));
+    fireEvent.click(screen.getByRole("button", { name: "保存偏好" }));
+    await waitFor(() =>
+      expect(JSON.parse(localStorage.getItem("binnagent:theme:v1") ?? "{}")).toMatchObject({
+        theme: "seal-summer",
+        collectorMode: "day",
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "学习首页" }));
+
+    const modeGroup = screen.getByRole("group", { name: "典藏昼夜模式" });
+    const dayComponentCount = document.querySelectorAll("button, input, select, textarea").length;
+    expect(within(modeGroup).queryByText("典藏昼夜")).not.toBeInTheDocument();
+    expect(within(modeGroup).getByRole("button", { name: "白昼" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: "查看学习画像" })).toBeVisible();
+    expect(
+      within(document.querySelector(".home-topbar-actions") as HTMLElement).getByRole("button", {
+        name: "偏好设置",
+      }),
+    ).toBeVisible();
+
+    fireEvent.click(within(modeGroup).getByRole("button", { name: "月夜" }));
+    expect(document.documentElement).toHaveAttribute("data-collector-mode", "night");
+    expect(within(modeGroup).getByRole("button", { name: "月夜" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(document.querySelectorAll("button, input, select, textarea")).toHaveLength(
+      dayComponentCount,
+    );
+
+    fireEvent.click(within(modeGroup).getByRole("button", { name: "白昼" }));
+    expect(document.documentElement).toHaveAttribute("data-collector-mode", "day");
+    expect(document.querySelectorAll("button, input, select, textarea")).toHaveLength(
+      dayComponentCount,
+    );
   });
 
   it("keeps authenticated navigation on the left and supports learning assets", async () => {

@@ -27,6 +27,7 @@ class LearnerPreferences(BaseModel):
     reduced_motion: bool = False
     skin: Literal["paper", "ragdoll", "ocean", "seal-summer"] = "paper"
     navigation_collapsed: bool = False
+    collector_mode: Literal["day", "night"] = "day"
 
 
 class LearnerPreferencesView(BaseModel):

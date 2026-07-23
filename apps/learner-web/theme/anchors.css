@@ -653,11 +653,62 @@
 
 .theme-artbook-grid {
   display: grid;
-  grid-template-columns: minmax(210px, 0.72fr) repeat(2, minmax(0, 1fr));
-  gap: 14px;
+  grid-template-columns: minmax(190px, 0.34fr) minmax(0, 1fr);
+  gap: 18px;
 }
 
-.theme-artbook-grid figure {
+.theme-artbook-chapters {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+}
+
+.theme-artbook-chapters button {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  border: 1px solid var(--theme-line);
+  border-radius: var(--theme-control-radius);
+  padding: 8px;
+  color: var(--theme-ink);
+  background: var(--theme-surface-raised);
+  text-align: left;
+}
+
+.theme-artbook-chapters button[aria-selected="true"] {
+  border-color: var(--theme-accent);
+  background: var(--theme-accent-soft);
+  box-shadow: inset 0 0 0 1px var(--theme-line-strong);
+}
+
+.theme-artbook-chapters button > span:first-child {
+  display: block;
+  width: 72px;
+  aspect-ratio: 4 / 3;
+  border-radius: calc(var(--theme-control-radius) - 5px);
+  background-color: var(--theme-surface-soft);
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
+}
+
+.theme-artbook-chapters button > span:last-child {
+  display: grid;
+  gap: 3px;
+}
+
+.theme-artbook-chapters strong {
+  font-size: 11px;
+}
+
+.theme-artbook-chapters small {
+  color: var(--theme-ink-muted);
+  font-size: 9px;
+  line-height: 1.35;
+}
+
+.theme-artbook-stage {
   min-width: 0;
   margin: 0;
   overflow: hidden;
@@ -666,52 +717,49 @@
   background: var(--theme-surface-raised);
 }
 
-.theme-artbook-grid figure span {
+.theme-artbook-stage > span {
   display: block;
-  aspect-ratio: 4 / 3;
+  min-height: 470px;
   background-color: var(--theme-surface-soft);
   background-position: center;
   background-repeat: no-repeat;
-  background-size: cover;
+  background-size: contain;
 }
 
-.theme-artbook-grid figcaption {
-  padding: 10px 12px;
+.theme-artbook-stage figcaption {
+  padding: 14px 16px 16px;
   color: var(--theme-ink-muted);
+}
+
+.theme-artbook-stage figcaption strong {
+  color: var(--theme-ink);
+  font-size: 13px;
+}
+
+.theme-artbook-stage figcaption p {
+  margin: 5px 0 0;
   font-size: 11px;
-  font-weight: 700;
+  line-height: 1.55;
 }
 
-.theme-artbook-guide {
-  grid-row: span 2;
-}
-
-.theme-artbook-grid .theme-artbook-guide span {
-  height: calc(100% - 36px);
-  aspect-ratio: auto;
+.theme-artbook-guide,
+.theme-artbook-guide > span {
   background-image: var(--theme-asset-usage-guide);
-  background-size: cover;
 }
 
-.theme-artbook-concept span {
+.theme-artbook-concept,
+.theme-artbook-concept > span {
   background-image: var(--theme-asset-concept-sheet);
 }
 
-.theme-artbook-characters span {
+.theme-artbook-characters,
+.theme-artbook-characters > span {
   background-image: var(--theme-asset-companion-atlas);
 }
 
-.theme-artbook-components span {
+.theme-artbook-components,
+.theme-artbook-components > span {
   background-image: var(--theme-asset-ui-library);
-}
-
-.theme-artbook-components {
-  grid-column: 2 / 4;
-}
-
-.theme-artbook-grid .theme-artbook-components span {
-  aspect-ratio: 8 / 3;
-  background-size: contain;
 }
 
 @media (max-width: 820px) {
@@ -728,22 +776,12 @@
     grid-template-columns: 1fr;
   }
 
-  .theme-artbook-guide {
-    grid-row: auto;
+  .theme-artbook-chapters {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .theme-artbook-components {
-    grid-column: auto;
-  }
-
-  .theme-artbook-grid .theme-artbook-guide span {
-    height: auto;
-    aspect-ratio: 4 / 3;
-    background-position: top center;
-  }
-
-  .theme-artbook-grid .theme-artbook-components span {
-    aspect-ratio: 4 / 3;
+  .theme-artbook-stage > span {
+    min-height: 360px;
   }
 }
 

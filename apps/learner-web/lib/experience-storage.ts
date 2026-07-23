@@ -1,5 +1,6 @@
 import type { LearnerProfileInput } from "./contracts";
 import type { ThemeId } from "../theme/registry";
+import type { ThemeCollectorMode } from "../theme/contracts";
 import { normalizeThemeId } from "../theme/registry";
 
 const EXPERIENCE_PREFIX = "binnagent:learner-experience:v1:";
@@ -16,6 +17,7 @@ export interface LearnerPreferences {
   reducedMotion: boolean;
   skin: ThemeId;
   navigationCollapsed: boolean;
+  collectorMode: ThemeCollectorMode;
 }
 
 export const DEFAULT_PREFERENCES: LearnerPreferences = {
@@ -28,6 +30,7 @@ export const DEFAULT_PREFERENCES: LearnerPreferences = {
   reducedMotion: false,
   skin: "paper",
   navigationCollapsed: false,
+  collectorMode: "day",
 };
 
 export function normalizeLearnerPreferences(value: unknown): LearnerPreferences {
@@ -37,6 +40,7 @@ export function normalizeLearnerPreferences(value: unknown): LearnerPreferences 
     ...DEFAULT_PREFERENCES,
     ...preferences,
     skin: normalizeThemeId(preferences.skin),
+    collectorMode: preferences.collectorMode === "night" ? "night" : "day",
   };
 }
 

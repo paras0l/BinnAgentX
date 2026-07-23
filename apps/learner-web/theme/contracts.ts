@@ -1,5 +1,6 @@
 export type ThemeDensity = "compact" | "comfortable" | "spacious";
 export type ThemeMotion = "full" | "reduced";
+export type ThemeCollectorMode = "day" | "night";
 export type ThemeColorScheme = "light" | "dark";
 export type ThemeTier = "standard" | "epic" | "legendary" | "collector";
 export type ThemeCapability =
@@ -14,6 +15,7 @@ export type ThemeCapability =
   | "component-skins"
   | "companion-scenes"
   | "artbook"
+  | "day-night-modes"
   | "particle-headings"
   | "pointer-trail"
   | "enhanced-motion";
@@ -21,8 +23,12 @@ export type ThemeCapability =
 export type ThemeAssetSlot =
   | "ambient"
   | "hero"
+  | "hero-night"
   | "sidebar-ornament"
   | "hero-accent"
+  | "emblem"
+  | "section-divider"
+  | "heading-crest"
   | "history-easter-egg"
   | "companion-atlas"
   | "ui-library"

@@ -256,6 +256,7 @@ async def test_learner_preferences_are_account_owned_and_persisted() -> None:
                 "reduced_motion": True,
                 "skin": "ragdoll",
                 "navigation_collapsed": True,
+                "collector_mode": "night",
             }
         )
         saved_response = await client.put("/learner/v1/preferences", json=preferences)

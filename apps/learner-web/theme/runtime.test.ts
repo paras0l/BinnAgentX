@@ -43,7 +43,12 @@ describe("theme runtime", () => {
   });
 
   it("applies the collector protocol and its complete asset catalog", () => {
-    applyThemePreferences({ theme: "seal-summer", density: "comfortable", motion: "full" });
+    applyThemePreferences({
+      theme: "seal-summer",
+      density: "comfortable",
+      motion: "full",
+      collectorMode: "day",
+    });
 
     expect(document.documentElement.dataset).toMatchObject({
       theme: "seal-summer",
@@ -52,7 +57,9 @@ describe("theme runtime", () => {
     expect(document.documentElement.dataset.themeFeatures).toContain("component-skins");
     expect(document.documentElement.dataset.themeFeatures).toContain("companion-scenes");
     expect(document.documentElement.dataset.themeFeatures).toContain("artbook");
+    expect(document.documentElement.dataset.themeFeatures).toContain("day-night-modes");
     expect(document.documentElement.dataset.themeFeatures).toContain("particle-headings");
+    expect(document.documentElement.dataset.collectorMode).toBe("day");
     expect(document.documentElement.dataset.themeFeatures).toContain("pointer-trail");
     expect(document.documentElement.style.getPropertyValue("--theme-asset-hero")).toContain(
       "/themes/seal-summer/hero.jpg",
@@ -66,11 +73,42 @@ describe("theme runtime", () => {
     expect(
       document.documentElement.style.getPropertyValue("--theme-asset-empty-state-illustration"),
     ).toContain("/themes/seal-summer/assets-empty-companion.png");
+    expect(document.documentElement.style.getPropertyValue("--theme-asset-hero-night")).toContain(
+      "/themes/seal-summer/hero-night-v2.png",
+    );
+    expect(
+      document.documentElement.style.getPropertyValue("--theme-asset-heading-crest"),
+    ).toContain("/themes/seal-summer/collector-heading-crest-v2.png");
     expect(document.head.querySelector('link[data-theme-asset="seal-summer:hero"]')).not.toBeNull();
   });
 
+  it("keeps the collector component contract while switching to the exclusive night mode", () => {
+    applyThemePreferences({
+      theme: "seal-summer",
+      density: "comfortable",
+      motion: "full",
+      collectorMode: "night",
+    });
+
+    expect(document.documentElement.dataset).toMatchObject({
+      theme: "seal-summer",
+      themeTier: "collector",
+      collectorMode: "night",
+    });
+    expect(document.documentElement.style.colorScheme).toBe("dark");
+    expect(JSON.parse(localStorage.getItem(THEME_STORAGE_KEY) ?? "{}")).toMatchObject({
+      theme: "seal-summer",
+      collectorMode: "night",
+    });
+  });
+
   it("applies and persists the root theme protocol", () => {
-    applyThemePreferences({ theme: "ragdoll", density: "spacious", motion: "reduced" });
+    applyThemePreferences({
+      theme: "ragdoll",
+      density: "spacious",
+      motion: "reduced",
+      collectorMode: "day",
+    });
 
     expect(document.documentElement.dataset).toMatchObject({
       theme: "ragdoll",
@@ -95,8 +133,18 @@ describe("theme runtime", () => {
   });
 
   it("previews a theme without overwriting the saved root protocol", () => {
-    applyThemePreferences({ theme: "paper", density: "comfortable", motion: "full" });
-    previewThemePreferences({ theme: "ragdoll", density: "spacious", motion: "reduced" });
+    applyThemePreferences({
+      theme: "paper",
+      density: "comfortable",
+      motion: "full",
+      collectorMode: "day",
+    });
+    previewThemePreferences({
+      theme: "ragdoll",
+      density: "spacious",
+      motion: "reduced",
+      collectorMode: "day",
+    });
 
     expect(document.documentElement.dataset).toMatchObject({
       theme: "ragdoll",

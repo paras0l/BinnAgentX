@@ -44,6 +44,7 @@ async def _clean() -> None:
         for table in (
             tables.difficulty_feedback_events,
             tables.next_task_placeholders,
+            tables.learner_level_assessments,
             tables.material_match_decisions,
             tables.run_task_completion_events,
             tables.run_task_refs,

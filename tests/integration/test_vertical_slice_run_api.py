@@ -143,6 +143,7 @@ async def _clean() -> None:
         tables.audit_events,
         tables.domain_events,
         tables.next_task_placeholders,
+        tables.learner_level_assessments,
         tables.difficulty_feedback_events,
         tables.material_match_decisions,
         tables.run_task_completion_events,

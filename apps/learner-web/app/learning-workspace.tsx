@@ -3,7 +3,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, useTransition } from "react";
 import type { KeyboardEvent } from "react";
 import { createPortal } from "react-dom";
-import { layout as layoutPretext, prepare as preparePretext } from "@chenglou/pretext";
+import { prepareWithSegments as preparePretext } from "@chenglou/pretext";
 import {
   ArrowLineUp,
   BookOpen,
@@ -80,6 +80,10 @@ import {
 } from "../lib/annotation-selection";
 import { locateContextMatches, type ContextMatch } from "../lib/context-locator";
 import { ExpressionLab, type LabTab } from "./expression-lab";
+import {
+  layoutKnuthPlassParagraph,
+  type KnuthPlassLine,
+} from "./knuth-plass-layout";
 import {
   defaultExpressionTabLayout,
   MovableWorkspaceTabs,
@@ -3246,11 +3250,9 @@ function ReadingPane({
       <aside className="material-feedback-card" aria-label="评价这篇文章">
         <div>
           <strong>{materialFeedback ? "反馈已记录，谢谢你" : "这篇文章对你有帮助吗？"}</strong>
-          <span>
-            {materialFeedback
-              ? "每篇文章只记录一次；它会影响后续选材，但不会被当作能力高低。"
-              : "阅读时即可评价一次，不必等到本次训练结束。"}
-          </span>
+          {materialFeedback ? (
+            <span>每篇文章只记录一次；它会影响后续选材，但不会被当作能力高低。</span>
+          ) : null}
         </div>
         <div className="material-feedback-actions">
           <button
@@ -3391,11 +3393,16 @@ interface AnnotatedParagraphProps {
   onToggleInlineAnnotation: (annotationId: string) => void;
 }
 
+interface MeasuredParagraphLayout {
+  sourceText: string;
+  measurementKey: string;
+  height: number;
+  lines: KnuthPlassLine[];
+}
+
 function PremeasuredAnnotatedParagraph(props: AnnotatedParagraphProps) {
   const paragraphRef = useRef<HTMLParagraphElement>(null);
-  const [predictedLayout, setPredictedLayout] = useState<{ height: number; lines: number } | null>(
-    null,
-  );
+  const [predictedLayout, setPredictedLayout] = useState<MeasuredParagraphLayout | null>(null);
   const preparedRef = useRef<{ key: string; value: ReturnType<typeof preparePretext> } | null>(
     null,
   );
@@ -3424,16 +3431,32 @@ function PremeasuredAnnotatedParagraph(props: AnnotatedParagraphProps) {
             }),
           };
         }
-        const result = layoutPretext(preparedRef.current.value, width, lineHeight);
+        const lines = layoutKnuthPlassParagraph(
+          props.text,
+          preparedRef.current.value,
+          width,
+        );
+        if (!lines) {
+          if (!disposed) setPredictedLayout(null);
+          return;
+        }
+        const measurementKey = `${key}\u0000${width.toFixed(3)}\u0000${lineHeight.toFixed(3)}`;
+        const height = lines.length * lineHeight;
         if (!disposed) {
           setPredictedLayout((current) =>
-            current?.height === result.height && current.lines === result.lineCount
+            current?.measurementKey === measurementKey
               ? current
-              : { height: result.height, lines: result.lineCount },
+              : {
+                  sourceText: props.text,
+                  measurementKey,
+                  height,
+                  lines,
+                },
           );
         }
       } catch {
         // Native browser layout remains the safe fallback when a font cannot be measured.
+        if (!disposed) setPredictedLayout(null);
       }
     };
 
@@ -3447,63 +3470,129 @@ function PremeasuredAnnotatedParagraph(props: AnnotatedParagraphProps) {
     };
   }, [props.text]);
 
+  const activeLayout = predictedLayout?.sourceText === props.text ? predictedLayout : null;
+
   return (
     <p
       ref={paragraphRef}
       data-paragraph-id={props.paragraphId}
-      data-pretext-lines={predictedLayout?.lines}
-      style={predictedLayout ? { minHeight: `${Math.ceil(predictedLayout.height)}px` } : undefined}
+      data-line-breaker={activeLayout ? "pretext-knuth-plass" : "native"}
+      data-pretext-lines={activeLayout?.lines.length}
+      style={activeLayout ? { minHeight: `${Math.ceil(activeLayout.height)}px` } : undefined}
     >
-      <AnnotatedParagraph {...props} />
+      {activeLayout ? (
+        <KnuthPlassAnnotatedParagraph {...props} lines={activeLayout.lines} />
+      ) : (
+        <AnnotatedParagraph {...props} />
+      )}
     </p>
   );
+}
+
+interface AnnotatedParagraphRangeProps extends AnnotatedParagraphProps {
+  segments: ParagraphSegment[];
+  start: number;
+  end: number;
+}
+
+function AnnotatedParagraphRange({
+  text,
+  segments,
+  start,
+  end,
+  onReviewAnnotation,
+  expandedAnnotationId,
+  onToggleInlineAnnotation,
+}: AnnotatedParagraphRangeProps) {
+  return segments
+    .filter((segment) => segment.start < end && segment.end > start)
+    .map((segment) => {
+      const valueStart = Math.max(start, segment.start);
+      const valueEnd = Math.min(end, segment.end);
+      const value = text.slice(valueStart, valueEnd);
+      const [primary] = segment.annotations;
+      if (!primary) {
+        return <span key={`${valueStart}-${valueEnd}`}>{value}</span>;
+      }
+      const labels = segment.annotations.map((annotation) => ANNOTATION_LABELS[annotation.kind]);
+      const expandsInline = primary.kind === "vocabulary";
+      const expanded = expandedAnnotationId === primary.annotation_id;
+      const showExpandedNote = expandsInline && expanded && valueEnd === segment.end;
+      return (
+        <span className="inline-annotation-wrap" key={`${valueStart}-${valueEnd}`}>
+          <button
+            type="button"
+            className={`inline-annotation annotation-kind-${primary.kind}`}
+            aria-label={`${labels.join("、")}标记：${value}`}
+            aria-expanded={expandsInline ? expanded : undefined}
+            title={`${labels.join("、")} · 点击查看你的解释`}
+            onClick={() =>
+              expandsInline
+                ? onToggleInlineAnnotation(primary.annotation_id)
+                : onReviewAnnotation(primary.annotation_id)
+            }
+          >
+            {value}
+          </button>
+          {showExpandedNote ? (
+            <span className="inline-anchor-note" role="note">
+              <strong>语境锚点</strong>
+              <span>{primary.user_explanation}</span>
+              <button type="button" onClick={() => onReviewAnnotation(primary.annotation_id)}>
+                查看完整记录
+              </button>
+            </span>
+          ) : null}
+        </span>
+      );
+    });
 }
 
 function AnnotatedParagraph({
   paragraphId,
   text,
   annotations,
-  onReviewAnnotation,
-  expandedAnnotationId,
-  onToggleInlineAnnotation,
+  ...rangeProps
 }: AnnotatedParagraphProps) {
-  return paragraphSegments(paragraphId, text, annotations).map((segment) => {
-    const value = text.slice(segment.start, segment.end);
-    const [primary] = segment.annotations;
-    if (!primary) {
-      return <span key={`${segment.start}-${segment.end}`}>{value}</span>;
-    }
-    const labels = segment.annotations.map((annotation) => ANNOTATION_LABELS[annotation.kind]);
-    const expandsInline = primary.kind === "vocabulary";
-    const expanded = expandedAnnotationId === primary.annotation_id;
-    return (
-      <span className="inline-annotation-wrap" key={`${segment.start}-${segment.end}`}>
-        <button
-          type="button"
-          className={`inline-annotation annotation-kind-${primary.kind}`}
-          aria-label={`${labels.join("、")}标记：${value}`}
-          aria-expanded={expandsInline ? expanded : undefined}
-          title={`${labels.join("、")} · 点击查看你的解释`}
-          onClick={() =>
-            expandsInline
-              ? onToggleInlineAnnotation(primary.annotation_id)
-              : onReviewAnnotation(primary.annotation_id)
-          }
-        >
-          {value}
-        </button>
-        {expandsInline && expanded ? (
-          <span className="inline-anchor-note" role="note">
-            <strong>语境锚点</strong>
-            <span>{primary.user_explanation}</span>
-            <button type="button" onClick={() => onReviewAnnotation(primary.annotation_id)}>
-              查看完整记录
-            </button>
-          </span>
-        ) : null}
-      </span>
-    );
-  });
+  return (
+    <AnnotatedParagraphRange
+      {...rangeProps}
+      paragraphId={paragraphId}
+      text={text}
+      annotations={annotations}
+      segments={paragraphSegments(paragraphId, text, annotations)}
+      start={0}
+      end={text.length}
+    />
+  );
+}
+
+function KnuthPlassAnnotatedParagraph({
+  lines,
+  paragraphId,
+  text,
+  annotations,
+  ...rangeProps
+}: AnnotatedParagraphProps & { lines: KnuthPlassLine[] }) {
+  const segments = paragraphSegments(paragraphId, text, annotations);
+  return lines.map((line) => (
+    <span
+      className="pretext-optimal-line"
+      data-adjustment-ratio={line.adjustmentRatio.toFixed(3)}
+      key={`${line.start}-${line.end}`}
+      style={line.isLast ? undefined : { wordSpacing: `${line.wordSpacing.toFixed(3)}px` }}
+    >
+      <AnnotatedParagraphRange
+        {...rangeProps}
+        paragraphId={paragraphId}
+        text={text}
+        annotations={annotations}
+        segments={segments}
+        start={line.start}
+        end={line.end}
+      />
+    </span>
+  ));
 }
 
 interface SavedAnnotationsProps {

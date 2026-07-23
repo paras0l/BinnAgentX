@@ -16,9 +16,11 @@ import {
   CaretDown,
   ChartLineUp,
   House,
+  MoonStars,
   SidebarSimple,
   SlidersHorizontal,
   Sparkle,
+  SunHorizon,
   SignOut,
   UserCircle,
 } from "@phosphor-icons/react";
@@ -75,6 +77,7 @@ import {
   preloadThemeAssets,
   previewThemePreferences,
 } from "../theme/runtime";
+import type { ThemeCollectorMode } from "../theme/contracts";
 import { ThemeProvider } from "../theme/theme-provider";
 import { Select } from "./select";
 
@@ -177,6 +180,8 @@ export function LearningExperience({
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
   const contentRef = useRef<HTMLDivElement>(null);
+  const collectorModeRequestRef = useRef(0);
+  const themeArtbookTriggerRef = useRef<HTMLButtonElement>(null);
 
   useLayoutEffect(() => {
     if (surface !== "training" && contentRef.current) {
@@ -444,6 +449,7 @@ export function LearningExperience({
             theme: record.preferences.skin,
             density: record.preferences.readingComfort,
             motion: record.preferences.reducedMotion ? "reduced" : "full",
+            collectorMode: record.preferences.collectorMode,
           });
           clearLegacyLearnerPreferences(identity.learner_id);
           setSurface("preferences");
@@ -551,7 +557,53 @@ export function LearningExperience({
       setError(errorMessage(reason));
     });
   }, [experience?.preferences, navCollapsed, standalonePreferences]);
-  const closeThemeArtbook = useCallback(() => setThemeArtbookOpen(false), []);
+  const changeCollectorMode = useCallback(
+    (collectorMode: ThemeCollectorMode) => {
+      const previousPreferences = experience?.preferences ?? standalonePreferences;
+      if (previousPreferences.skin !== "seal-summer") return;
+      const requestId = collectorModeRequestRef.current + 1;
+      collectorModeRequestRef.current = requestId;
+      const nextPreferences = { ...previousPreferences, collectorMode };
+      setError(null);
+      setStandalonePreferences(nextPreferences);
+      setExperience((current) =>
+        current ? { ...current, preferences: nextPreferences } : current,
+      );
+      applyThemePreferences({
+        theme: nextPreferences.skin,
+        density: nextPreferences.readingComfort,
+        motion: nextPreferences.reducedMotion ? "reduced" : "full",
+        collectorMode,
+      });
+      void putLearnerPreferences(nextPreferences)
+        .then((record) => {
+          if (collectorModeRequestRef.current !== requestId) return;
+          setStandalonePreferences(record.preferences);
+          setExperience((current) =>
+            current ? { ...current, preferences: record.preferences } : current,
+          );
+        })
+        .catch((reason: unknown) => {
+          if (collectorModeRequestRef.current !== requestId) return;
+          setStandalonePreferences(previousPreferences);
+          setExperience((current) =>
+            current ? { ...current, preferences: previousPreferences } : current,
+          );
+          applyThemePreferences({
+            theme: previousPreferences.skin,
+            density: previousPreferences.readingComfort,
+            motion: previousPreferences.reducedMotion ? "reduced" : "full",
+            collectorMode: previousPreferences.collectorMode,
+          });
+          setError(errorMessage(reason));
+        });
+    },
+    [experience?.preferences, standalonePreferences],
+  );
+  const closeThemeArtbook = useCallback(() => {
+    setThemeArtbookOpen(false);
+    requestAnimationFrame(() => themeArtbookTriggerRef.current?.focus());
+  }, []);
 
   if (!resumeChecked) {
     return (
@@ -691,6 +743,8 @@ export function LearningExperience({
         onOpenPreferences={() => {
           setSurface("preferences");
         }}
+        collectorMode={experience.preferences.collectorMode}
+        onCollectorModeChange={changeCollectorMode}
       />
     );
   } else {
@@ -741,6 +795,7 @@ export function LearningExperience({
       theme={activePreferences.skin}
       density={activePreferences.readingComfort}
       motion={activePreferences.reducedMotion ? "reduced" : "full"}
+      collectorMode={activePreferences.collectorMode}
     >
       <div
         className={`experience-frame${usesLeftRail ? " training-frame" : ""}${navCollapsed ? " nav-collapsed" : ""}`}
@@ -824,6 +879,7 @@ export function LearningExperience({
             <button
               type="button"
               className="theme-artbook-trigger"
+              ref={themeArtbookTriggerRef}
               data-ui-anchor="theme-artbook-trigger"
               aria-label={`打开${activeThemeDefinition.label}皮肤图鉴`}
               onClick={() => setThemeArtbookOpen(true)}
@@ -904,6 +960,35 @@ export function LearningExperience({
 }
 
 function ThemeArtbook({ label, onClose }: { label: string; onClose: () => void }) {
+  const chapters = [
+    {
+      id: "guide",
+      title: "主题序章",
+      caption: "使用指南",
+      description: "从色彩、留白到角色安全区，了解白昼与月夜共用的典藏规则。",
+    },
+    {
+      id: "concept",
+      title: "角色设定",
+      caption: "角色概念设定",
+      description: "查看海豹伙伴的造型、表情与世界观来源，理解每个陪伴场景的职责。",
+    },
+    {
+      id: "characters",
+      title: "陪伴场景",
+      caption: "角色动作与道具素材",
+      description: "按学习首页、训练、空状态与里程碑整理角色动作和主题道具。",
+    },
+    {
+      id: "components",
+      title: "组件工艺",
+      caption: "组件装饰资源",
+      description: "浏览徽记、按钮、分隔线和状态件，所有模式都保留同一组件语义。",
+    },
+  ] as const;
+  const [activeChapter, setActiveChapter] = useState<(typeof chapters)[number]["id"]>("guide");
+  const active = chapters.find((chapter) => chapter.id === activeChapter) ?? chapters[0];
+
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
@@ -930,21 +1015,38 @@ function ThemeArtbook({ label, onClose }: { label: string; onClose: () => void }
           </button>
         </header>
         <div className="theme-artbook-grid">
-          <figure className="theme-artbook-guide">
-            <span role="img" aria-label={`${label}使用指南`} />
-            <figcaption>使用指南</figcaption>
-          </figure>
-          <figure className="theme-artbook-concept">
-            <span role="img" aria-label={`${label}角色概念设定`} />
-            <figcaption>角色概念设定</figcaption>
-          </figure>
-          <figure className="theme-artbook-characters">
-            <span role="img" aria-label={`${label}角色动作与道具素材`} />
-            <figcaption>角色动作与夏日道具</figcaption>
-          </figure>
-          <figure className="theme-artbook-components">
-            <span role="img" aria-label={`${label}组件装饰资源`} />
-            <figcaption>组件与装饰资源</figcaption>
+          <div className="theme-artbook-chapters" role="tablist" aria-label="典藏图鉴章节">
+            {chapters.map((chapter) => (
+              <button
+                key={chapter.id}
+                type="button"
+                role="tab"
+                aria-selected={activeChapter === chapter.id}
+                aria-controls="theme-artbook-panel"
+                onClick={() => setActiveChapter(chapter.id)}
+              >
+                <span
+                  className={`theme-artbook-${chapter.id}`}
+                  role="img"
+                  aria-label={`${label}${chapter.caption}`}
+                />
+                <span>
+                  <strong>{chapter.title}</strong>
+                  <small>{chapter.caption}</small>
+                </span>
+              </button>
+            ))}
+          </div>
+          <figure
+            id="theme-artbook-panel"
+            className={`theme-artbook-stage theme-artbook-${active.id}`}
+            role="tabpanel"
+          >
+            <span role="img" aria-label={`${label}${active.caption}大图`} />
+            <figcaption>
+              <strong>{active.title}</strong>
+              <p>{active.description}</p>
+            </figcaption>
           </figure>
         </div>
       </section>
@@ -976,6 +1078,8 @@ interface LearningHomeProps {
   onOpenTrainingMaterial: (material: PersonalizedTrainingMaterial) => void;
   onOpenProfile: () => void;
   onOpenPreferences: () => void;
+  collectorMode: ThemeCollectorMode;
+  onCollectorModeChange: (mode: ThemeCollectorMode) => void;
 }
 
 function LearningHome({
@@ -1002,6 +1106,8 @@ function LearningHome({
   onOpenTrainingMaterial,
   onOpenProfile,
   onOpenPreferences,
+  collectorMode,
+  onCollectorModeChange,
 }: LearningHomeProps) {
   const { profile } = experience;
   const sessions = trainingHistory.items;
@@ -1027,6 +1133,7 @@ function LearningHome({
           <h1 className="learning-brand-title">语境实验室 × 表达实验室</h1>
         </div>
         <div className="home-topbar-actions">
+          <CollectorModeSwitch mode={collectorMode} onChange={onCollectorModeChange} />
           <button type="button" className="quiet-button" onClick={onOpenProfile}>
             查看学习画像
           </button>
@@ -1238,6 +1345,27 @@ function LearningHome({
         ) : null}
       </section>
     </main>
+  );
+}
+
+function CollectorModeSwitch({
+  mode,
+  onChange,
+}: {
+  mode: ThemeCollectorMode;
+  onChange: (mode: ThemeCollectorMode) => void;
+}) {
+  return (
+    <div className="collector-mode-switch" role="group" aria-label="典藏昼夜模式">
+      <button type="button" aria-pressed={mode === "day"} onClick={() => onChange("day")}>
+        <SunHorizon size={15} weight={mode === "day" ? "fill" : "regular"} />
+        白昼
+      </button>
+      <button type="button" aria-pressed={mode === "night"} onClick={() => onChange("night")}>
+        <MoonStars size={15} weight={mode === "night" ? "fill" : "regular"} />
+        月夜
+      </button>
+    </div>
   );
 }
 
@@ -1483,6 +1611,7 @@ function PreferencesPanel({
       theme: preferences.skin,
       density: preferences.readingComfort,
       motion: preferences.reducedMotion ? ("reduced" as const) : ("full" as const),
+      collectorMode: preferences.collectorMode,
     };
 
     previewThemePreferences(savedThemePreferences);
@@ -1491,7 +1620,13 @@ function PreferencesPanel({
       previewThemePreferences(savedThemePreferences);
       onThemePreview(null);
     };
-  }, [onThemePreview, preferences.readingComfort, preferences.reducedMotion, preferences.skin]);
+  }, [
+    onThemePreview,
+    preferences.collectorMode,
+    preferences.readingComfort,
+    preferences.reducedMotion,
+    preferences.skin,
+  ]);
 
   return (
     <main className="insight-shell preferences-shell">
@@ -1610,6 +1745,7 @@ function PreferencesPanel({
                   theme: draft.skin,
                   density: readingComfort,
                   motion: draft.reducedMotion ? "reduced" : "full",
+                  collectorMode: draft.collectorMode,
                 });
               }}
             >
@@ -1628,6 +1764,7 @@ function PreferencesPanel({
                 theme: draft.skin,
                 density: draft.readingComfort,
                 motion: checked ? "reduced" : "full",
+                collectorMode: draft.collectorMode,
               });
             }}
           />
@@ -1671,6 +1808,7 @@ function PreferencesPanel({
                         theme: theme.id,
                         density: draft.readingComfort,
                         motion: draft.reducedMotion ? "reduced" : "full",
+                        collectorMode: draft.collectorMode,
                       });
                     }}
                   />
@@ -1719,8 +1857,26 @@ function PreferencesPanel({
               );
             })}
           </div>
+          <div className="collector-mode-setting">
+            <span>
+              <strong>典藏昼夜</strong>
+              <small>典藏皮肤独享；所有组件、入口与学习状态保持完整。</small>
+            </span>
+            <CollectorModeSwitch
+              mode={draft.collectorMode}
+              onChange={(collectorMode) => {
+                setDraft({ ...draft, collectorMode });
+                previewThemePreferences({
+                  theme: draft.skin,
+                  density: draft.readingComfort,
+                  motion: draft.reducedMotion ? "reduced" : "full",
+                  collectorMode,
+                });
+              }}
+            />
+          </div>
           <p className="skin-boundary">
-            皮肤只改变颜色、层次与装饰，不改变训练规则、字号和学习证据。
+            皮肤只改变样式与位置，不缺省任何组件，也不改变训练规则、字号和学习证据。
           </p>
         </fieldset>
       </form>

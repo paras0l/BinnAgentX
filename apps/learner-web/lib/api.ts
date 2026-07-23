@@ -77,6 +77,7 @@ interface LearnerPreferencesApi {
     reduced_motion: boolean;
     skin: LearnerPreferences["skin"];
     navigation_collapsed: boolean;
+    collector_mode: LearnerPreferences["collectorMode"];
   };
   version: number;
   persisted: boolean;
@@ -95,6 +96,7 @@ function preferencesFromApi(result: LearnerPreferencesApi): LearnerPreferencesRe
       reducedMotion: result.preferences.reduced_motion,
       skin: result.preferences.skin,
       navigationCollapsed: result.preferences.navigation_collapsed,
+      collectorMode: result.preferences.collector_mode === "night" ? "night" : "day",
     },
     version: result.version,
     persisted: result.persisted,
@@ -121,6 +123,7 @@ export async function putLearnerPreferences(
       reduced_motion: preferences.reducedMotion,
       skin: preferences.skin,
       navigation_collapsed: preferences.navigationCollapsed,
+      collector_mode: preferences.collectorMode,
     }),
   });
   return preferencesFromApi(result);

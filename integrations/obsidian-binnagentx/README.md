@@ -43,14 +43,16 @@ Then enable **BinnAgentX Learning Sync** in Obsidian's Community plugins.
 
 1. On first load the plugin initializes `BinnAgentX/00-Inbox` through
    `BinnAgentX/06-Attachments`, creates `BinnAgentX/使用指南.md`, MOC / Dataview
-   dashboards, templates, and non-syncing examples. Existing files are never
-   overwritten. You can rerun **Initialize BinnAgentX learning library** at any time.
+   dashboards, templates, a `Spaced Repetition 使用指南.md`, and non-syncing
+   examples, including a ready-to-review flashcard deck. Existing files are
+   never overwritten. You can rerun **Initialize BinnAgentX learning library** at any time.
    Managed dashboards use the `00-Dashboard.md` filename so they remain the
    first note when Obsidian's file explorer is sorted by filename A–Z.
 2. The plugin configures Obsidian's Templates folder as
    `BinnAgentX/05-Templates` and its attachment folder as
-   `BinnAgentX/06-Attachments`. Enable the Templates core plugin and install the
-   optional Dataview community plugin to render automatic dashboard tables.
+   `BinnAgentX/06-Attachments`. Enable the Templates core plugin, install and
+   enable the Spaced Repetition community plugin for flashcard review, and
+   optionally install Dataview to render automatic dashboard tables.
 3. In plugin settings, choose `BinnAgentX/` or specific grammar/vocabulary
    folders and tags, then use **Preview learning context**.
 4. Paste the connection ID and sync secret issued by BinnAgentX.
