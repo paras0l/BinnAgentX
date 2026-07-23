@@ -239,6 +239,8 @@ class PersonalizedReadingAdapter(_RemoteModelAdapterBase):
                     "逐字复制文章实际使用的输入笔记 title；无法可靠判断时返回空数组。"
                     "adaptation_profile 是当前适配水平而非考试分数；用它同时约束词汇、句法、"
                     "篇章关系和支架强度，置信度低时最多只提高一个挑战维度。"
+                    "其中 recent_material_feedback 只评价材料是否有帮助，不能用于降低学习者"
+                    "能力判断；它只用于改善下一篇的目标相关性、语境自然度和可理解性。"
                     "只返回 JSON。\n" + rendered.text
                 ),
             },

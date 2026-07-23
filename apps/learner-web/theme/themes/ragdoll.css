@@ -88,6 +88,14 @@
   box-shadow: 0 5px 10px rgb(116 52 79 / 19%);
 }
 
+:root[data-theme="ragdoll"] [data-ui-anchor="settings-toolbar"] {
+  background: color-mix(in srgb, var(--theme-surface-raised) 90%, #f8e1ea);
+}
+
+:root[data-theme="ragdoll"] [data-ui-anchor="settings-section"] {
+  background-image: radial-gradient(circle at 96% 12%, rgb(180 104 136 / 7%), transparent 18%);
+}
+
 :root[data-theme="ragdoll"] [data-theme-slot="sidebar-ornament"] {
   display: grid;
   place-items: center;

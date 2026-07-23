@@ -15,6 +15,8 @@ import {
   PlusSquare,
   Target,
   TextT,
+  ThumbsDown,
+  ThumbsUp,
 } from "@phosphor-icons/react";
 
 import {
@@ -36,6 +38,7 @@ import {
   saveAnnotation,
   saveAttempt,
   saveRevision,
+  submitMaterialFeedback,
   verifyGrammarChallenge,
 } from "../lib/api";
 import type {
@@ -105,6 +108,18 @@ const SELECTION_SCALE_LABELS: Record<SelectionScale, string> = {
   sentence: "句子",
   paragraph: "段落",
 };
+
+export function preferenceAdjustedFeedback(
+  content: string,
+  preferences: Pick<LearnerPreferences, "correctionTone" | "feedbackDetail">,
+): string {
+  const normalized = content.trim();
+  const firstSentence = normalized.match(/^.*?[。！？.!?]/u)?.[0]?.trim();
+  const detail =
+    preferences.feedbackDetail === "concise" ? (firstSentence ?? normalized) : normalized;
+  const prefix = preferences.correctionTone === "direct" ? "需要修改：" : "先看这一处：";
+  return `${prefix}${detail}`;
+}
 
 const ANALYZABLE_ANNOTATION_KINDS = new Set<AnnotationKind>(["vocabulary", "grammar", "uncertain"]);
 
@@ -1509,6 +1524,7 @@ function ActiveTaskWorkspace({
             </section>
           ) : (
             <ReadingPane
+              taskId={task.task_id}
               material={material}
               materialRef={materialRef}
               annotations={savedAnnotations}
@@ -1517,6 +1533,7 @@ function ActiveTaskWorkspace({
               onPromptUncertain={promptUncertainSelection}
               onOpenTemporaryTask={addTemporaryTask}
               onReviewAnnotation={reviewAnnotation}
+              onError={onError}
             />
           )}
 
@@ -2572,7 +2589,12 @@ function AttemptTimeline({
               {isPriorityFeedback ? "已引用 V1，不提供替代段落" : "已引用 V1，不提供当前答案"}
             </span>
           </div>
-          <p>{latestIntervention.delivered_content}</p>
+          <p>{preferenceAdjustedFeedback(latestIntervention.delivered_content, preferences)}</p>
+          {preferences.feedbackDetail === "detailed" ? (
+            <p className="feedback-detail-next-step">
+              修改时保留原判断和措辞，只处理这一优先方向；提交 V2 后再与 V1 对照。
+            </p>
+          ) : null}
         </aside>
       ) : (
         <p className="no-hint-evidence">当前仍是 H0；不领取帮助可以直接完成本步。</p>
@@ -2934,6 +2956,7 @@ function TemporaryTaskList({
 }
 
 interface ReadingPaneProps {
+  taskId: string;
   material: ReadingMaterialView;
   materialRef: React.RefObject<HTMLElement | null>;
   annotations: AnnotationView[];
@@ -2942,9 +2965,11 @@ interface ReadingPaneProps {
   onPromptUncertain: () => void;
   onOpenTemporaryTask: () => void;
   onReviewAnnotation: (annotationId: string) => void;
+  onError: (message: string | null) => void;
 }
 
 function ReadingPane({
+  taskId,
   material,
   materialRef,
   annotations,
@@ -2953,6 +2978,7 @@ function ReadingPane({
   onPromptUncertain,
   onOpenTemporaryTask,
   onReviewAnnotation,
+  onError,
 }: ReadingPaneProps) {
   const [readingProgress, setReadingProgress] = useState(0);
   const [focusMode, setFocusMode] = useState(false);
@@ -2963,6 +2989,10 @@ function ReadingPane({
   const [locatorMatches, setLocatorMatches] = useState<ContextMatch[]>([]);
   const [locatorSearched, setLocatorSearched] = useState(false);
   const [expandedAnnotationId, setExpandedAnnotationId] = useState<string | null>(null);
+  const [materialFeedback, setMaterialFeedback] = useState<"good" | "bad" | null>(
+    material.material_feedback ?? null,
+  );
+  const [isFeedbackPending, startFeedbackTransition] = useTransition();
   const dockRef = useRef<HTMLDivElement>(null);
   const dockDragRef = useRef<
     | (DockPosition & {
@@ -3213,6 +3243,60 @@ function ReadingPane({
           </div>
         ))}
       </div>
+      <aside className="material-feedback-card" aria-label="评价这篇文章">
+        <div>
+          <strong>{materialFeedback ? "反馈已记录，谢谢你" : "这篇文章对你有帮助吗？"}</strong>
+          <span>
+            {materialFeedback
+              ? "每篇文章只记录一次；它会影响后续选材，但不会被当作能力高低。"
+              : "阅读时即可评价一次，不必等到本次训练结束。"}
+          </span>
+        </div>
+        <div className="material-feedback-actions">
+          <button
+            type="button"
+            className={materialFeedback === "good" ? "selected" : ""}
+            aria-label="这篇文章有帮助"
+            aria-pressed={materialFeedback === "good"}
+            disabled={materialFeedback !== null || isFeedbackPending}
+            onClick={() => {
+              onError(null);
+              startFeedbackTransition(async () => {
+                try {
+                  const result = await submitMaterialFeedback(taskId, "good");
+                  setMaterialFeedback(result.sentiment);
+                } catch (error) {
+                  onError(messageFor(error));
+                }
+              });
+            }}
+          >
+            <ThumbsUp size={18} />
+            有帮助
+          </button>
+          <button
+            type="button"
+            className={materialFeedback === "bad" ? "selected" : ""}
+            aria-label="这篇文章没帮助"
+            aria-pressed={materialFeedback === "bad"}
+            disabled={materialFeedback !== null || isFeedbackPending}
+            onClick={() => {
+              onError(null);
+              startFeedbackTransition(async () => {
+                try {
+                  const result = await submitMaterialFeedback(taskId, "bad");
+                  setMaterialFeedback(result.sentiment);
+                } catch (error) {
+                  onError(messageFor(error));
+                }
+              });
+            }}
+          >
+            <ThumbsDown size={18} />
+            没帮助
+          </button>
+        </div>
+      </aside>
       <div
         ref={dockRef}
         className={`reading-command-dock${dockPosition ? " floating" : ""}${dockLocked ? " locked" : " unlocked"}`}

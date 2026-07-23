@@ -137,6 +137,7 @@ async def clean_vertical_slice_tables() -> AsyncIterator[None]:
 async def _clean() -> None:
     ordered = [
         tables.learner_sessions,
+        tables.learner_preferences,
         tables.experience_code_redemptions,
         tables.email_verification_challenges,
         tables.audit_events,

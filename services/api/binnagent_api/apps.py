@@ -14,6 +14,8 @@ from binnagent_api.content_generation import content_generation_router
 from binnagent_api.database import get_engine
 from binnagent_api.experience_routes import experience_control_router
 from binnagent_api.learner_auth import resolve_request_identity
+from binnagent_api.learner_history_routes import learner_history_router
+from binnagent_api.learner_preference_routes import learner_preference_router
 from binnagent_api.learner_profile_routes import learner_profile_router
 from binnagent_api.learning_asset_routes import learning_asset_router, obsidian_sync_router
 from binnagent_api.settings import get_settings
@@ -69,6 +71,8 @@ def create_learner_app() -> FastAPI:
     learner.include_router(obsidian_sync_router)
     learner.include_router(training_material_router)
     learner.include_router(learner_profile_router)
+    learner.include_router(learner_history_router)
+    learner.include_router(learner_preference_router)
     _register_error_handlers(learner)
     return learner
 

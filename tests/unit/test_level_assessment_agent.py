@@ -43,3 +43,26 @@ def test_level_agent_is_conservative_when_evidence_is_sparse() -> None:
 
     assert output.overall_level == "foundation"
     assert output.confidence_band == "low"
+
+
+def test_material_feedback_is_a_bounded_level_signal() -> None:
+    evidence = LevelEvidenceSummary(
+        completed_tasks=6,
+        independent_tasks=4,
+        hinted_tasks=2,
+        revision_count=2,
+        annotation_count=3,
+        grammar_attempts=3,
+        grammar_resolved=2,
+        expression_attempts=2,
+        difficulty_too_easy=0,
+        difficulty_matched=1,
+        difficulty_too_hard=0,
+    )
+    helpful = LevelAssessmentAgent().assess(evidence.model_copy(update={"material_helpful": 2}))
+    unhelpful = LevelAssessmentAgent().assess(evidence.model_copy(update={"material_unhelpful": 2}))
+
+    assert helpful.evidence_count == unhelpful.evidence_count == 10
+    assert helpful.overall_level == unhelpful.overall_level
+    assert "material_feedback:2/0" in helpful.reason_codes
+    assert "material_feedback:0/2" in unhelpful.reason_codes

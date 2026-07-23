@@ -24,6 +24,8 @@ class LevelEvidenceSummary(BaseModel):
     difficulty_too_easy: int = Field(ge=0)
     difficulty_matched: int = Field(ge=0)
     difficulty_too_hard: int = Field(ge=0)
+    material_helpful: int = Field(default=0, ge=0)
+    material_unhelpful: int = Field(default=0, ge=0)
 
 
 class LevelDimensions(BaseModel):
@@ -61,6 +63,7 @@ class LevelAssessmentAgent:
             + evidence.difficulty_matched
             + evidence.difficulty_too_hard
         )
+        material_feedback_total = evidence.material_helpful + evidence.material_unhelpful
         load_adjustment = 0.0
         if feedback_total:
             load_adjustment = (
@@ -107,6 +110,10 @@ class LevelAssessmentAgent:
             reasons.append(f"revisions:{evidence.revision_count}")
         if evidence.annotation_count:
             reasons.append(f"annotations:{evidence.annotation_count}")
+        if material_feedback_total:
+            reasons.append(
+                f"material_feedback:{evidence.material_helpful}/{evidence.material_unhelpful}"
+            )
         return LevelAssessmentOutput(
             overall_level=_level(overall_score),
             dimensions=dimensions,

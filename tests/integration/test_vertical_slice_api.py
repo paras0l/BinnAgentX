@@ -1,5 +1,5 @@
 from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from typing import TypedDict
 from uuid import uuid4
@@ -9,6 +9,7 @@ import pytest
 import pytest_asyncio
 import sqlalchemy as sa
 from binnagent_api.database import dispose_engine, get_engine
+from binnagent_api.learner_auth import SYNTHETIC_LEARNER_ID
 from binnagent_api.main import create_app
 from binnagent_api.vertical_slice import tables
 from binnagent_api.vertical_slice.content_catalog import LocalContentCatalog
@@ -90,11 +91,14 @@ async def clean_vertical_slice_tables() -> AsyncIterator[None]:
 async def _clean() -> None:
     ordered = [
         tables.learner_sessions,
+        tables.learner_preferences,
         tables.experience_code_redemptions,
         tables.email_verification_challenges,
         tables.audit_events,
         tables.domain_events,
         tables.next_task_placeholders,
+        tables.learner_level_assessments,
+        tables.material_feedback_events,
         tables.difficulty_feedback_events,
         tables.material_match_decisions,
         tables.run_task_completion_events,
@@ -118,6 +122,155 @@ async def _clean() -> None:
     async with get_engine().begin() as connection:
         for table in ordered:
             await connection.execute(sa.delete(table))
+
+
+@pytest.mark.asyncio
+async def test_reading_material_feedback_is_one_shot_and_queues_level_assessment() -> None:
+    transport = httpx2.ASGITransport(app=create_app())
+    async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
+        task = await _seed_task(
+            TaskType.MATCHED_READING,
+            exam_track=ExamTrack.ENGLISH_1,
+            self_reported_level=SelfReportedLevel.DEVELOPING,
+        )
+        first = await client.post(
+            f"/learner/v1/tasks/{task['task_id']}/material-feedback",
+            json={"sentiment": "good"},
+        )
+        assert first.status_code == 200, first.text
+        assert first.json()["sentiment"] == "good"
+
+        second = await client.post(
+            f"/learner/v1/tasks/{task['task_id']}/material-feedback",
+            json={"sentiment": "bad"},
+        )
+        assert second.status_code == 200, second.text
+        assert second.json()["sentiment"] == "good"
+
+    async with get_engine().connect() as connection:
+        feedback_rows = (
+            (await connection.execute(sa.select(tables.material_feedback_events))).mappings().all()
+        )
+        assessment_rows = (
+            (await connection.execute(sa.select(tables.learner_level_assessments))).mappings().all()
+        )
+    assert len(feedback_rows) == 1
+    assert feedback_rows[0]["task_id"] == task["task_id"]
+    assert len(assessment_rows) == 1
+    assert assessment_rows[0]["trigger_kind"] == "material_feedback"
+
+
+@pytest.mark.asyncio
+async def test_training_history_is_account_scoped_paginated_and_summarized() -> None:
+    now = datetime.now(UTC)
+    seeded: list[SeededTask] = []
+    for _ in range(7):
+        seeded.append(
+            await _seed_task(
+                TaskType.MATCHED_READING,
+                exam_track=ExamTrack.ENGLISH_1,
+                self_reported_level=SelfReportedLevel.DEVELOPING,
+            )
+        )
+    async with get_engine().begin() as connection:
+        await connection.execute(
+            tables.learners.insert().values(
+                learner_id=SYNTHETIC_LEARNER_ID,
+                nickname="历史分页测试用户",
+                email="history-test@binnagent.invalid",
+                invite_code=f"HISTORY-{uuid4().hex[:8]}",
+                account_type="registered",
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        for index, task in enumerate(seeded):
+            workflow_run_id = str(
+                await connection.scalar(
+                    sa.select(tables.learning_tasks.c.workflow_run_id).where(
+                        tables.learning_tasks.c.task_id == task["task_id"]
+                    )
+                )
+            )
+            completed_at = now - timedelta(hours=index)
+            await connection.execute(
+                tables.workflow_runs.update()
+                .where(tables.workflow_runs.c.workflow_run_id == workflow_run_id)
+                .values(
+                    learner_id=SYNTHETIC_LEARNER_ID,
+                    run_kind="practice",
+                    state="completed",
+                    stage="completed",
+                    difficulty_feedback_status="submitted",
+                    difficulty_rating="matched",
+                    version=10 + index,
+                    updated_at=completed_at,
+                )
+            )
+            await connection.execute(
+                tables.run_task_completion_events.insert().values(
+                    completion_event_id=f"completion_{uuid4().hex}",
+                    workflow_run_id=workflow_run_id,
+                    task_id=task["task_id"],
+                    completed_at=completed_at,
+                    completed_task_version=task["version"],
+                    highest_hint_level=1 if index in {1, 5} else 0,
+                )
+            )
+
+    transport = httpx2.ASGITransport(app=create_app())
+    async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/learner/v1/training-history?page=2&page_size=3")
+
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["page"] == 2
+    assert payload["page_size"] == 3
+    assert payload["total_items"] == 7
+    assert payload["total_pages"] == 3
+    assert len(payload["items"]) == 3
+    assert payload["summary"] == {
+        "completed_sessions": 7,
+        "independent_sessions": 5,
+        "completed_tasks": 7,
+        "supported_tasks": 2,
+        "completed_last_7_days": 7,
+    }
+
+
+@pytest.mark.asyncio
+async def test_learner_preferences_are_account_owned_and_persisted() -> None:
+    transport = httpx2.ASGITransport(app=create_app())
+    async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
+        default_response = await client.get("/learner/v1/preferences")
+        assert default_response.status_code == 200
+        assert default_response.json()["persisted"] is False
+
+        preferences = default_response.json()["preferences"]
+        preferences.update(
+            {
+                "assistance_mode": "proactive",
+                "feedback_detail": "detailed",
+                "correction_tone": "direct",
+                "reading_comfort": "spacious",
+                "reduced_motion": True,
+                "skin": "ragdoll",
+                "navigation_collapsed": True,
+            }
+        )
+        saved_response = await client.put("/learner/v1/preferences", json=preferences)
+        assert saved_response.status_code == 200, saved_response.text
+        assert saved_response.json()["version"] == 1
+
+        reloaded_response = await client.get("/learner/v1/preferences")
+        assert reloaded_response.status_code == 200
+        assert reloaded_response.json()["preferences"] == preferences
+        assert reloaded_response.json()["persisted"] is True
+
+        preferences["skin"] = "ocean"
+        updated_response = await client.put("/learner/v1/preferences", json=preferences)
+        assert updated_response.status_code == 200
+        assert updated_response.json()["version"] == 2
 
 
 @pytest.mark.asyncio

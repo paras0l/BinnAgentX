@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import LearnerHomePage from "./page";
@@ -79,21 +79,47 @@ describe("learner home", () => {
 
   beforeEach(() => {
     localStorage.clear();
+    let serverPreferences = {
+      assistance_mode: "ask_first",
+      feedback_detail: "balanced",
+      correction_tone: "gentle",
+      show_decision_trace: true,
+      temporary_tasks_enabled: true,
+      reading_comfort: "comfortable",
+      reduced_motion: false,
+      skin: "paper",
+      navigation_collapsed: false,
+    };
+    let preferencesPersisted = false;
     vi.stubGlobal(
       "fetch",
-      vi.fn(
-        async () =>
-          new Response(
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).endsWith("/v1/preferences")) {
+          if (init?.method === "PUT") {
+            serverPreferences = JSON.parse(String(init.body)) as typeof serverPreferences;
+            preferencesPersisted = true;
+          }
+          return new Response(
             JSON.stringify({
-              learner_id: "learner_synthetic_local",
-              nickname: "本地学习者",
-              email: "local@binnagent.invalid",
-              invite_code: "BINN-LOCAL",
-              account_type: "registered",
+              preferences: serverPreferences,
+              version: preferencesPersisted ? 1 : 0,
+              persisted: preferencesPersisted,
+              updated_at: preferencesPersisted ? "2026-07-23T12:00:00Z" : null,
             }),
             { status: 200, headers: { "Content-Type": "application/json" } },
-          ),
-      ),
+          );
+        }
+        return new Response(
+          JSON.stringify({
+            learner_id: "learner_synthetic_local",
+            nickname: "本地学习者",
+            email: "local@binnagent.invalid",
+            invite_code: "BINN-LOCAL",
+            account_type: "registered",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }),
     );
   });
 
@@ -114,9 +140,15 @@ describe("learner home", () => {
         name: "偏好设置",
       }),
     );
+    expect(document.querySelector('[data-ui-anchor="settings-form"]')).toBeInTheDocument();
+    expect(document.querySelectorAll('[data-ui-anchor="settings-section"]')).toHaveLength(3);
+    expect(screen.getByRole("checkbox", { name: /展示判断依据/ }).parentElement).toHaveAttribute(
+      "data-ui-anchor",
+      "toggle-control",
+    );
     fireEvent.click(screen.getByRole("radio", { name: /布偶猫陪伴/ }));
     fireEvent.click(screen.getByRole("button", { name: "保存偏好" }));
-    expect(document.documentElement).toHaveAttribute("data-theme", "ragdoll");
+    await waitFor(() => expect(document.documentElement).toHaveAttribute("data-theme", "ragdoll"));
 
     firstRender.unmount();
     render(<LearnerHomePage />);
@@ -155,6 +187,74 @@ describe("learner home", () => {
     expect(screen.getByRole("button", { name: "开始独立校准" })).toBeEnabled();
   });
 
+  it("pages account-scoped training history from the server", async () => {
+    saveExperienceProfile("learner_synthetic_local", {
+      exam_track: "english_1",
+      target_score: 70,
+      weekly_minutes: 420,
+      self_reported_level: "developing",
+      prior_exam_seen: false,
+      session_minutes: 45,
+      feedback_density: "minimal",
+      timed: false,
+      evidence_count: 0,
+      confidence_band: "low",
+    });
+    const historyItems = Array.from({ length: 6 }, (_, index) => ({
+      workflow_run_id: `workflow_run_history_${index + 1}`,
+      run_version: 10 + index,
+      run_kind: index === 5 ? "first_experience" : "practice",
+      completed_at: `2026-07-${String(22 - index).padStart(2, "0")}T08:00:00Z`,
+      difficulty_rating: "matched",
+      completed_task_count: 2,
+      supported_task_count: index === 1 ? 1 : 0,
+      matched_content_version_id: `reading_${index + 1}`,
+    }));
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.endsWith("/session")) {
+          return Response.json({
+            learner_id: "learner_synthetic_local",
+            nickname: "本地学习者",
+            email: "local@binnagent.invalid",
+            invite_code: "BINN-LOCAL",
+            account_type: "registered",
+          });
+        }
+        if (url.includes("/training-history")) {
+          const page = Number(new URL(url, "http://test").searchParams.get("page") ?? "1");
+          return Response.json({
+            items: page === 1 ? historyItems.slice(0, 5) : historyItems.slice(5),
+            page,
+            page_size: 5,
+            total_items: 6,
+            total_pages: 2,
+            summary: {
+              completed_sessions: 6,
+              independent_sessions: 5,
+              completed_tasks: 12,
+              supported_tasks: 1,
+              completed_last_7_days: 6,
+            },
+          });
+        }
+        if (url.endsWith("/assets") || url.endsWith("/training-materials")) {
+          return Response.json([]);
+        }
+        return Response.json({});
+      }),
+    );
+
+    render(<LearnerHomePage />);
+
+    expect(await screen.findByText("第 1 / 2 页")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "下一页" }));
+    expect(await screen.findByText("第 2 / 2 页")).toBeVisible();
+    expect(screen.getByText("已保存到当前账号")).toBeVisible();
+  });
+
   it("keeps a resumable task on the home page and caches an immediate draft when leaving", async () => {
     saveExperienceProfile("learner_synthetic_local", {
       exam_track: "english_1",
@@ -185,6 +285,12 @@ describe("learner home", () => {
         if (url.endsWith("/resume-workspace")) {
           return Response.json({ available: true, workspace: resumableWorkspace });
         }
+        if (url.endsWith("/material-feedback")) {
+          return Response.json({
+            sentiment: "good",
+            created_at: "2026-07-23T12:00:00Z",
+          });
+        }
         return Response.json({ detail: "not_found" }, { status: 404 });
       }),
     );
@@ -196,6 +302,9 @@ describe("learner home", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "继续上次任务" }));
     expect(screen.getByRole("heading", { name: "Cached Passage" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "这篇文章有帮助" }));
+    expect(await screen.findByText("反馈已记录，谢谢你")).toBeVisible();
+    expect(screen.getByRole("button", { name: "这篇文章没帮助" })).toBeDisabled();
     fireEvent.change(screen.getByRole("textbox", { name: /我的解释 · V1/ }), {
       target: { value: "My cached explanation." },
     });
@@ -358,6 +467,9 @@ describe("learner home", () => {
     fireEvent.click(assetNavigation);
     expect(screen.getByRole("heading", { name: /把读过的痕迹/ })).toBeVisible();
     expect(frame).toHaveClass("training-frame");
+    const summary = screen.getByRole("region", { name: "学习资产总览" });
+    expect(within(summary).getByRole("group", { name: "资产统计" })).toBeVisible();
+    expect(within(summary).getByRole("group", { name: "同步连接" })).toBeVisible();
 
     fireEvent.click(screen.getByRole("button", { name: "收起左侧导航" }));
     expect(frame).toHaveClass("nav-collapsed");

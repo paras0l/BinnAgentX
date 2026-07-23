@@ -461,7 +461,7 @@
 :root[data-theme="seal-summer"] .insight-heading,
 :root[data-theme="seal-summer"] .profile-overview article,
 :root[data-theme="seal-summer"] .profile-dimension-card,
-:root[data-theme="seal-summer"] .assets-summary article,
+:root[data-theme="seal-summer"] .assets-summary-metrics article,
 :root[data-theme="seal-summer"] .asset-library,
 :root[data-theme="seal-summer"] .preferences-form fieldset,
 :root[data-theme="seal-summer"] .onboarding-intro,
@@ -496,8 +496,7 @@
 }
 
 :root[data-theme="seal-summer"] .login-card::after,
-:root[data-theme="seal-summer"] .profile-overview article::after,
-:root[data-theme="seal-summer"] .assets-summary article::after {
+:root[data-theme="seal-summer"] .profile-overview article::after {
   position: absolute;
   right: -9px;
   bottom: -16px;
@@ -519,7 +518,7 @@
   transform: rotate(12deg);
 }
 
-:root[data-theme="seal-summer"] .assets-summary article,
+:root[data-theme="seal-summer"] .assets-summary-metrics article,
 :root[data-theme="seal-summer"] .profile-overview article {
   overflow: hidden;
   background: rgb(255 254 249 / 86%);
@@ -587,19 +586,55 @@
 }
 
 :root[data-theme="seal-summer"] .preferences-form fieldset {
-  overflow: hidden;
+  overflow: visible;
 }
 
 :root[data-theme="seal-summer"] .preferences-form fieldset::after {
   position: absolute;
   right: 12px;
-  bottom: -22px;
+  bottom: 8px;
   width: 62px;
   height: 70px;
   background: var(--theme-asset-card-corner-decor) center / contain no-repeat;
   opacity: 0.08;
   pointer-events: none;
   content: "";
+}
+
+:root[data-theme-features~="component-skins"] [data-ui-anchor="settings-toolbar"] {
+  border-color: color-mix(in srgb, var(--theme-line-strong) 74%, #ff9db2);
+  background:
+    linear-gradient(110deg, rgb(255 254 249 / 94%), rgb(229 247 255 / 92%)),
+    var(--theme-surface-raised);
+  box-shadow:
+    0 16px 38px rgb(34 120 170 / 13%),
+    inset 0 1px 0 rgb(255 255 255 / 82%);
+}
+
+:root[data-theme-features~="component-skins"]
+  [data-ui-anchor="select-control"]
+  .app-select-trigger {
+  border-color: color-mix(in srgb, var(--theme-line-strong) 78%, #ff9db2);
+  background: linear-gradient(180deg, #fffef9, #edf8ff);
+  box-shadow:
+    0 3px 10px rgb(33 126 180 / 7%),
+    inset 0 1px 0 rgb(255 255 255 / 90%);
+}
+
+:root[data-theme-features~="component-skins"]
+  [data-ui-anchor="toggle-control"]
+  input:checked
+  + .preference-toggle-track {
+  border-color: #288fcf;
+  background: linear-gradient(135deg, #35a8eb, #74c9ef 58%, #ff9db2);
+  box-shadow: 0 5px 13px rgb(43 145 203 / 18%);
+}
+
+:root[data-theme-features~="component-skins"] [data-ui-anchor="theme-card"]:has(input:checked) {
+  border-color: #2999dd;
+  box-shadow:
+    0 0 0 2px rgb(79 180 235 / 17%),
+    0 10px 24px rgb(42 137 190 / 10%);
 }
 
 :root[data-theme="seal-summer"]
@@ -858,7 +893,6 @@
       .insight-heading,
       .profile-overview article,
       .profile-dimension-card,
-      .assets-summary article,
       .preferences-form fieldset,
       .onboarding-intro,
       .completion-next,
@@ -866,6 +900,10 @@
       .stage-rest-card,
       .wrapup-shell > header
     )::after {
+    display: none;
+  }
+
+  :root[data-theme="seal-summer"] .assets-summary-theme-decor {
     display: none;
   }
 }

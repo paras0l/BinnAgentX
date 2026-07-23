@@ -18,6 +18,7 @@ from binnagent_api.knowledge_extraction_service import enrich_review_contexts
 from binnagent_api.learner_level_service import (
     generation_level_context,
     latest_level_assessment,
+    recent_material_feedback_context,
 )
 from binnagent_api.model_adapters import PersonalizedReadingOutput, personalized_reading_adapter
 from binnagent_api.settings import get_settings
@@ -296,6 +297,9 @@ async def _generate_with_claim(row: dict[str, Any]) -> str:
         )
         adaptation_profile = generation_level_context(
             await latest_level_assessment(connection, str(row["learner_id"]))
+        )
+        adaptation_profile["recent_material_feedback"] = await recent_material_feedback_context(
+            connection, str(row["learner_id"])
         )
     contexts = tuple(
         {

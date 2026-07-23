@@ -28,6 +28,7 @@ import {
   type ObsidianPluginConnection,
   type ObsidianPluginSyncStatus,
 } from "../lib/api";
+import { Select } from "./select";
 
 const KIND_META: Record<
   LearningAssetKind,
@@ -448,50 +449,99 @@ export function LearningAssetsPanel({
       ) : null}
 
       <section className="assets-summary" aria-label="学习资产总览" data-ui-anchor="summary">
-        <article>
-          <Books size={20} />
-          <span>累计资产</span>
-          <strong>{state.items.length}</strong>
-          <small>只索引元数据</small>
-        </article>
-        <article>
-          <LinkSimple size={20} />
-          <span>独立可用</span>
-          <strong>{independentCount}</strong>
-          <small>来自真实训练证据</small>
-        </article>
-        <article>
-          <CloudArrowUp size={20} />
-          <span>待同步</span>
-          <strong>{syncAttentionCount}</strong>
-          <small>不会阻断训练记录</small>
-        </article>
-        <button
-          type="button"
-          className="asset-vault-status"
-          onClick={() => setShowVaultSetup(true)}
+        <div
+          className="assets-summary-group assets-summary-metrics"
+          role="group"
+          aria-label="资产统计"
         >
-          <LinkSimple size={20} />
-          <span>本机 Obsidian</span>
-          <strong>{obsidianVaultName ? "已选择" : "待选择"}</strong>
-          <small>{obsidianVaultName || "点击选择你的 Vault"}</small>
-        </button>
-        <article>
-          <CloudArrowUp size={20} />
-          <span>插件同步</span>
-          <strong>
-            {pluginSyncStatus?.last_synced_at
-              ? "已同步"
-              : pluginSyncStatus?.paired
-                ? "待同步"
-                : "未配对"}
-          </strong>
-          <small>
-            {pluginSyncStatus?.last_synced_at
-              ? `${pluginSyncStatus.synced_context_count} 条 · ${dateLabel(pluginSyncStatus.last_synced_at, "刚刚")}`
-              : "在 Obsidian 插件中执行 Sync"}
-          </small>
-        </article>
+          <article>
+            <Books size={20} />
+            <span>累计资产</span>
+            <strong>{state.items.length}</strong>
+            <small>只索引元数据</small>
+            <i
+              className="asset-summary-theme-decor"
+              data-theme-slot="card-corner-decor"
+              aria-hidden="true"
+            />
+          </article>
+          <article>
+            <CheckCircle size={20} />
+            <span>独立可用</span>
+            <strong>{independentCount}</strong>
+            <small>来自真实训练证据</small>
+            <i
+              className="asset-summary-theme-decor"
+              data-theme-slot="card-corner-decor"
+              aria-hidden="true"
+            />
+          </article>
+          <article>
+            <WarningCircle size={20} />
+            <span>待同步</span>
+            <strong>{syncAttentionCount}</strong>
+            <small>不会阻断训练记录</small>
+            <i
+              className="asset-summary-theme-decor"
+              data-theme-slot="card-corner-decor"
+              aria-hidden="true"
+            />
+          </article>
+        </div>
+        <div className="asset-sync-overview" role="group" aria-label="同步连接">
+          <header className="asset-sync-heading">
+            <span>
+              <ArrowsClockwise size={18} />
+              <span>
+                <strong>Obsidian 同步</strong>
+                <small>本机知识库连接</small>
+              </span>
+            </span>
+            <em data-state={pluginSyncStatus?.last_synced_at ? "ready" : "attention"}>
+              {pluginSyncStatus?.last_synced_at
+                ? "连接正常"
+                : pluginSyncStatus?.paired
+                  ? "等待同步"
+                  : "尚未配对"}
+            </em>
+          </header>
+          <div className="asset-sync-items">
+            <button
+              type="button"
+              className="asset-vault-status"
+              onClick={() => setShowVaultSetup(true)}
+            >
+              <LinkSimple size={16} />
+              <span>
+                <small>当前 Vault</small>
+                <strong>{obsidianVaultName || "点击选择"}</strong>
+              </span>
+            </button>
+            <article>
+              <CloudArrowUp size={16} />
+              <span>
+                <small>插件状态</small>
+                <strong>
+                  {pluginSyncStatus?.last_synced_at
+                    ? "已同步"
+                    : pluginSyncStatus?.paired
+                      ? "待同步"
+                      : "未配对"}
+                </strong>
+              </span>
+              <small>
+                {pluginSyncStatus?.last_synced_at
+                  ? `${pluginSyncStatus.synced_context_count} 条 · ${dateLabel(pluginSyncStatus.last_synced_at, "刚刚")}`
+                  : "请在插件中执行 Sync"}
+              </small>
+            </article>
+          </div>
+          <i
+            className="asset-summary-theme-decor"
+            data-theme-slot="card-corner-decor"
+            aria-hidden="true"
+          />
+        </div>
       </section>
 
       <div className="assets-layout">
@@ -584,9 +634,10 @@ export function LearningAssetsPanel({
                 </button>
               </header>
               <div className="asset-form-grid">
-                <label>
+                <div className="asset-form-field">
                   <span>分类</span>
-                  <select
+                  <Select
+                    aria-label="资产分类"
                     value={draft.kind}
                     onChange={(event) =>
                       setDraft((current) => ({
@@ -600,8 +651,8 @@ export function LearningAssetsPanel({
                         {KIND_META[value].label}
                       </option>
                     ))}
-                  </select>
-                </label>
+                  </Select>
+                </div>
                 <label>
                   <span>标题</span>
                   <input

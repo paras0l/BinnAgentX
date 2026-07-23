@@ -618,6 +618,8 @@ async def record_run_difficulty(
                 connection,
                 learner_id=saved.learner_id,
                 workflow_run_id=saved.workflow_run_id,
+                trigger_kind="difficulty_feedback",
+                trigger_key=f"difficulty_feedback:{saved.workflow_run_id}",
                 now=saved.updated_at,
             )
     return _run_view(saved, replayed=replayed)
@@ -910,6 +912,11 @@ async def _material_view(
             task.current_material.content_version_id,
             challenge.challenge_id,
         )
+        material_feedback = await connection.scalar(
+            sa.select(tables.material_feedback_events.c.sentiment).where(
+                tables.material_feedback_events.c.task_id == task.task_id
+            )
+        )
         return LearnerReadingMaterialView(
             content_type=(
                 "calibration_reading"
@@ -945,6 +952,7 @@ async def _material_view(
                 len(item["question_bank"]) if isinstance(item.get("question_bank"), list) else 1
             ),
             grammar_challenge=grammar_challenge_view(challenge, challenge_state),
+            material_feedback=str(material_feedback) if material_feedback is not None else None,
         )
     requirement = item.get("output_requirement")
     if not isinstance(requirement, dict):

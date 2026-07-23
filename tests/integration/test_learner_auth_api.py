@@ -30,6 +30,7 @@ async def session_auth(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[None]:
 async def _clean() -> None:
     ordered = [
         tables.learner_sessions,
+        tables.learner_preferences,
         tables.obsidian_organizer_runs,
         tables.agent_working_memory,
         tables.experience_code_redemptions,

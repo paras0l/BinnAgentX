@@ -117,6 +117,12 @@ export const THEME_REGISTRY = {
         height: 36,
         mimeType: "image/svg+xml",
       },
+      "card-corner-decor": {
+        src: "/themes/ragdoll/paw.svg",
+        width: 32,
+        height: 32,
+        mimeType: "image/svg+xml",
+      },
     },
   },
   ocean: {

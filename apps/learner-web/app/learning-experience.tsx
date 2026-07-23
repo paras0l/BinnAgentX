@@ -29,6 +29,8 @@ import {
   createRun,
   getResumeWorkspace,
   getCurrentLevel,
+  getLearnerPreferences,
+  getTrainingHistory,
   getWorkspace,
   getKnowledgeVaultStatus,
   getObsidianPluginSyncStatus,
@@ -38,6 +40,7 @@ import {
   listLearningAssets,
   listTrainingMaterials,
   openLearningAsset,
+  putLearnerPreferences,
   retryPersonalizedTrainingMaterial,
   startPersonalizedReading,
   starLearningAsset,
@@ -46,20 +49,20 @@ import {
   type CurrentLevel,
   type ObsidianPluginSyncStatus,
   type PersonalizedTrainingMaterial,
+  type TrainingHistoryPage,
 } from "../lib/api";
 import type { LearnerProfileInput, LearnerTaskView, LearnerWorkspaceView } from "../lib/contracts";
 import { clearResumeRunId, loadResumeRunId, saveResumeRunId } from "../lib/draft-storage";
 import {
   DEFAULT_PREFERENCES,
+  clearLegacyLearnerPreferences,
   type CompletedSessionRecord,
   type LearnerExperienceState,
   type LearnerPreferences,
   loadExperience,
   loadLearnerPreferences,
-  recordCompletedSession,
   recordTemporaryTask,
   saveExperienceProfile,
-  saveLearnerPreferences,
 } from "../lib/experience-storage";
 import type { LearnerIdentity } from "../lib/auth-api";
 import { EMPTY_LEARNING_ASSETS, type LearningAssetInput } from "../lib/learning-assets-storage";
@@ -73,6 +76,7 @@ import {
   previewThemePreferences,
 } from "../theme/runtime";
 import { ThemeProvider } from "../theme/theme-provider";
+import { Select } from "./select";
 
 const DEFAULT_PROFILE: LearnerProfileInput = {
   exam_track: "english_1",
@@ -85,6 +89,21 @@ const DEFAULT_PROFILE: LearnerProfileInput = {
   timed: false,
   evidence_count: 0,
   confidence_band: "low",
+};
+
+const EMPTY_TRAINING_HISTORY: TrainingHistoryPage = {
+  items: [],
+  page: 1,
+  pageSize: 5,
+  totalItems: 0,
+  totalPages: 0,
+  summary: {
+    completedSessions: 0,
+    independentSessions: 0,
+    completedTasks: 0,
+    supportedTasks: 0,
+    completedLast7Days: 0,
+  },
 };
 
 const TRAINING_STAGE_LABELS: Record<LearnerWorkspaceView["run"]["stage"], string> = {
@@ -136,19 +155,22 @@ export function LearningExperience({
   const [vaultStatus, setVaultStatus] = useState<KnowledgeVaultStatus | null>(null);
   const [pluginSyncStatus, setPluginSyncStatus] = useState<ObsidianPluginSyncStatus | null>(null);
   const [trainingMaterials, setTrainingMaterials] = useState<PersonalizedTrainingMaterial[]>([]);
+  const [trainingHistory, setTrainingHistory] =
+    useState<TrainingHistoryPage>(EMPTY_TRAINING_HISTORY);
+  const [latestCompletedSession, setLatestCompletedSession] =
+    useState<CompletedSessionRecord | null>(null);
+  const [isHistoryPending, setIsHistoryPending] = useState(true);
+  const [historyLoadFailed, setHistoryLoadFailed] = useState(false);
   const [currentLevel, setCurrentLevel] = useState<CurrentLevel | null>(null);
   const [isGeneratingMaterial, setIsGeneratingMaterial] = useState(false);
   const [configureObsidianRequested, setConfigureObsidianRequested] = useState(false);
   const [surface, setSurface] = useState<
     "home" | "training" | "profile" | "profile-edit" | "preferences" | "assets"
   >("home");
-  const [navCollapsed, setNavCollapsed] = useState(() => {
-    try {
-      return localStorage.getItem("binnagent:learner-nav-collapsed") === "true";
-    } catch {
-      return false;
-    }
-  });
+  const [navCollapsed, setNavCollapsed] = useState(
+    () => loadLearnerPreferences(identity.learner_id).navigationCollapsed,
+  );
+  const [preferencesReady, setPreferencesReady] = useState(false);
   const [themeArtbookOpen, setThemeArtbookOpen] = useState(false);
   const [previewTheme, setPreviewTheme] = useState<ThemeId | null>(null);
   const [resumeChecked, setResumeChecked] = useState(false);
@@ -161,6 +183,31 @@ export function LearningExperience({
       contentRef.current.scrollTop = 0;
     }
   }, [surface]);
+
+  useEffect(() => {
+    let active = true;
+    const legacyPreferences = loadLearnerPreferences(identity.learner_id);
+    void getLearnerPreferences()
+      .then((record) => (record.persisted ? record : putLearnerPreferences(legacyPreferences)))
+      .then((record) => {
+        if (!active) return;
+        setStandalonePreferences(record.preferences);
+        setNavCollapsed(record.preferences.navigationCollapsed);
+        setExperience((current) =>
+          current ? { ...current, preferences: record.preferences } : current,
+        );
+        clearLegacyLearnerPreferences(identity.learner_id);
+      })
+      .catch(() => {
+        // Keep the last in-memory/legacy projection available; saving still reports failures.
+      })
+      .finally(() => {
+        if (active) setPreferencesReady(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, [identity.learner_id]);
 
   useEffect(() => {
     let active = true;
@@ -224,6 +271,20 @@ export function LearningExperience({
       .catch((reason: unknown) => setError(errorMessage(reason)));
   }, []);
 
+  const refreshTrainingHistory = useCallback((page = 1) => {
+    setIsHistoryPending(true);
+    setHistoryLoadFailed(false);
+    void getTrainingHistory(page)
+      .then((history) => {
+        setTrainingHistory(history);
+        if (page === 1) setLatestCompletedSession(history.items[0] ?? null);
+      })
+      .catch(() => {
+        setHistoryLoadFailed(true);
+      })
+      .finally(() => setIsHistoryPending(false));
+  }, []);
+
   useEffect(() => {
     let active = true;
     void Promise.all([
@@ -241,6 +302,26 @@ export function LearningExperience({
       })
       .catch(() => {
         // The index is supplementary metadata and cannot block a learning session.
+      });
+    return () => {
+      active = false;
+    };
+  }, [identity.learner_id]);
+
+  useEffect(() => {
+    let active = true;
+    void getTrainingHistory(1)
+      .then((history) => {
+        if (!active) return;
+        setTrainingHistory(history);
+        setLatestCompletedSession(history.items[0] ?? null);
+        setHistoryLoadFailed(false);
+      })
+      .catch(() => {
+        if (active) setHistoryLoadFailed(true);
+      })
+      .finally(() => {
+        if (active) setIsHistoryPending(false);
       });
     return () => {
       active = false;
@@ -303,15 +384,13 @@ export function LearningExperience({
       setWorkspace(next);
       if (next.run.lifecycle === "completed") {
         clearResumeRunId(identity.learner_id);
-        if (experience?.profile) {
-          setExperience(recordCompletedSession(identity.learner_id, next.run, experience.profile));
-        }
+        refreshTrainingHistory(1);
         void listTrainingMaterials()
           .then(setTrainingMaterials)
           .catch(() => undefined);
       }
     },
-    [experience, identity.learner_id],
+    [identity.learner_id, refreshTrainingHistory],
   );
 
   const replaceTask = useCallback((task: LearnerTaskView) => {
@@ -352,17 +431,28 @@ export function LearningExperience({
 
   const savePreferences = useCallback(
     (preferences: LearnerPreferences) => {
-      setStandalonePreferences(preferences);
-      const persistedExperience = saveLearnerPreferences(identity.learner_id, preferences);
-      if (calibrationDeferred) {
-        setExperience((current) => (current ? { ...current, preferences } : current));
-        setSurface("preferences");
-        return;
-      }
-      setExperience(persistedExperience);
-      setSurface("preferences");
+      setError(null);
+      startTransition(async () => {
+        try {
+          const record = await putLearnerPreferences(preferences);
+          setStandalonePreferences(record.preferences);
+          setExperience((current) =>
+            current ? { ...current, preferences: record.preferences } : current,
+          );
+          setNavCollapsed(record.preferences.navigationCollapsed);
+          applyThemePreferences({
+            theme: record.preferences.skin,
+            density: record.preferences.readingComfort,
+            motion: record.preferences.reducedMotion ? "reduced" : "full",
+          });
+          clearLegacyLearnerPreferences(identity.learner_id);
+          setSurface("preferences");
+        } catch (reason) {
+          setError(errorMessage(reason));
+        }
+      });
     },
-    [calibrationDeferred, identity.learner_id],
+    [identity.learner_id],
   );
 
   const deferCalibration = useCallback(
@@ -446,16 +536,21 @@ export function LearningExperience({
   );
 
   const toggleNavigation = useCallback(() => {
-    setNavCollapsed((current) => {
-      const next = !current;
-      try {
-        localStorage.setItem("binnagent:learner-nav-collapsed", String(next));
-      } catch {
-        // The collapse preference can safely remain in memory.
-      }
-      return next;
+    const next = !navCollapsed;
+    const currentPreferences = experience?.preferences ?? standalonePreferences;
+    const preferences = { ...currentPreferences, navigationCollapsed: next };
+    setNavCollapsed(next);
+    setStandalonePreferences(preferences);
+    setExperience((current) => (current ? { ...current, preferences } : current));
+    void putLearnerPreferences(preferences).catch((reason: unknown) => {
+      setNavCollapsed(!next);
+      setStandalonePreferences(currentPreferences);
+      setExperience((current) =>
+        current ? { ...current, preferences: currentPreferences } : current,
+      );
+      setError(errorMessage(reason));
     });
-  }, []);
+  }, [experience?.preferences, navCollapsed, standalonePreferences]);
   const closeThemeArtbook = useCallback(() => setThemeArtbookOpen(false), []);
 
   if (!resumeChecked) {
@@ -517,6 +612,7 @@ export function LearningExperience({
       <LearnerProfilePanel
         experience={experience}
         currentLevel={currentLevel}
+        historySummary={trainingHistory.summary}
         onEdit={() => setSurface("profile-edit")}
       />
     );
@@ -526,6 +622,7 @@ export function LearningExperience({
         preferences={experience.preferences ?? DEFAULT_PREFERENCES}
         onSave={savePreferences}
         onThemePreview={setPreviewTheme}
+        isSaving={isPending || !preferencesReady}
       />
     );
   } else if (surface === "profile-edit" && experience) {
@@ -565,6 +662,11 @@ export function LearningExperience({
     content = (
       <LearningHome
         experience={experience}
+        trainingHistory={trainingHistory}
+        latestCompletedSession={latestCompletedSession}
+        isHistoryPending={isHistoryPending}
+        historyLoadFailed={historyLoadFailed}
+        onHistoryPageChange={refreshTrainingHistory}
         calibrationDeferred={calibrationDeferred}
         isPending={isPending}
         resumableWorkspace={workspace?.run.lifecycle === "completed" ? null : workspace}
@@ -852,6 +954,11 @@ function ThemeArtbook({ label, onClose }: { label: string; onClose: () => void }
 
 interface LearningHomeProps {
   experience: LearnerExperienceState;
+  trainingHistory: TrainingHistoryPage;
+  latestCompletedSession: CompletedSessionRecord | null;
+  isHistoryPending: boolean;
+  historyLoadFailed: boolean;
+  onHistoryPageChange: (page: number) => void;
   calibrationDeferred: boolean;
   isPending: boolean;
   resumableWorkspace: LearnerWorkspaceView | null;
@@ -873,6 +980,11 @@ interface LearningHomeProps {
 
 function LearningHome({
   experience,
+  trainingHistory,
+  latestCompletedSession,
+  isHistoryPending,
+  historyLoadFailed,
+  onHistoryPageChange,
   calibrationDeferred,
   isPending,
   resumableWorkspace,
@@ -891,19 +1003,15 @@ function LearningHome({
   onOpenProfile,
   onOpenPreferences,
 }: LearningHomeProps) {
-  const [renderedAt] = useState(() => Date.now());
-  const { profile, sessions } = experience;
-  const latest = sessions[0];
-  const sevenDaysAgo = renderedAt - 7 * 24 * 60 * 60 * 1000;
-  const recentSessions = sessions.filter(
-    (session) => new Date(session.completedAt).getTime() >= sevenDaysAgo,
-  );
-  const practicedMinutes = recentSessions.length * profile.session_minutes;
+  const { profile } = experience;
+  const sessions = trainingHistory.items;
+  const latest = latestCompletedSession;
+  const practicedMinutes = trainingHistory.summary.completedLast7Days * profile.session_minutes;
   const weeklyPercent = Math.min(
     100,
     Math.round((practicedMinutes / profile.weekly_minutes) * 100),
   );
-  const independentSessions = sessions.filter((session) => session.supportedTaskCount === 0).length;
+  const independentSessions = trainingHistory.summary.independentSessions;
   const hasResumableTask = Boolean(resumableWorkspace);
   const resumableStage = resumableWorkspace
     ? TRAINING_STAGE_LABELS[resumableWorkspace.run.stage]
@@ -1020,7 +1128,7 @@ function LearningHome({
       <section className="home-grid" data-ui-anchor="primary-actions">
         <article className="weekly-card">
           <CalendarDots className="home-card-icon" size={28} weight="duotone" aria-hidden="true" />
-          <p className="step-label">本机近 7 天</p>
+          <p className="step-label">账号近 7 天</p>
           <div className="weekly-heading">
             <h2>{practicedMinutes} 分钟</h2>
             <span>计划 {profile.weekly_minutes} 分钟</span>
@@ -1028,14 +1136,14 @@ function LearningHome({
           <div className="weekly-track" aria-label={`近 7 天计划完成 ${weeklyPercent}%`}>
             <span style={{ width: `${weeklyPercent}%` }} />
           </div>
-          <p>这里只汇总当前浏览器中已完成的训练，不把时长当作能力提升。</p>
+          <p>按账号已完成训练汇总，换电脑登录仍然保留；时长不代表能力提升。</p>
         </article>
         <article className="evidence-card">
           <ChartLineUp className="home-card-icon" size={28} weight="duotone" aria-hidden="true" />
           <p className="step-label">累计体验证据</p>
           <div className="evidence-numbers">
             <span>
-              <strong>{sessions.length}</strong>次完整闭环
+              <strong>{trainingHistory.summary.completedSessions}</strong>次完整闭环
             </span>
             <span>
               <strong>{independentSessions}</strong>次全程 H0
@@ -1065,14 +1173,18 @@ function LearningHome({
             <p className="step-label">最近训练</p>
             <h2 id="history-title">每次都保留帮助等级与材料变化</h2>
           </div>
-          <span>仅保存在此电脑</span>
+          <span>已保存到当前账号</span>
         </div>
         {sessions.length > 0 ? (
           <div className="history-list">
             {sessions.slice(0, 5).map((session, index) => (
               <article key={session.workflowRunId}>
                 <span className="history-index">
-                  {String(sessions.length - index).padStart(2, "0")}
+                  {String(
+                    trainingHistory.totalItems -
+                      (trainingHistory.page - 1) * trainingHistory.pageSize -
+                      index,
+                  ).padStart(2, "0")}
                 </span>
                 <div>
                   <h3>
@@ -1095,8 +1207,35 @@ function LearningHome({
             ))}
           </div>
         ) : (
-          <div className="empty-history">完成第一轮后，这里会出现可回看的训练证据。</div>
+          <div className="empty-history">
+            {isHistoryPending
+              ? "正在读取账号训练历史…"
+              : historyLoadFailed
+                ? "账号训练历史暂时无法读取，请稍后重试。"
+                : "完成第一轮后，这里会出现可回看的训练证据。"}
+          </div>
         )}
+        {trainingHistory.totalPages > 1 ? (
+          <nav className="history-pagination" aria-label="最近训练分页">
+            <button
+              type="button"
+              disabled={trainingHistory.page <= 1 || isHistoryPending}
+              onClick={() => onHistoryPageChange(trainingHistory.page - 1)}
+            >
+              上一页
+            </button>
+            <span>
+              第 {trainingHistory.page} / {trainingHistory.totalPages} 页
+            </span>
+            <button
+              type="button"
+              disabled={trainingHistory.page >= trainingHistory.totalPages || isHistoryPending}
+              onClick={() => onHistoryPageChange(trainingHistory.page + 1)}
+            >
+              下一页
+            </button>
+          </nav>
+        ) : null}
       </section>
     </main>
   );
@@ -1179,19 +1318,22 @@ function formatSessionDate(value: string): string {
 function LearnerProfilePanel({
   experience,
   currentLevel,
+  historySummary,
   onEdit,
 }: {
   experience: LearnerExperienceState;
   currentLevel: CurrentLevel | null;
+  historySummary: TrainingHistoryPage["summary"];
   onEdit: () => void;
 }) {
-  const { profile, sessions } = experience;
-  const completedTasks = sessions.reduce((sum, session) => sum + session.completedTaskCount, 0);
-  const supportedTasks = sessions.reduce((sum, session) => sum + session.supportedTaskCount, 0);
+  const { profile } = experience;
+  const completedTasks = historySummary.completedTasks;
+  const supportedTasks = historySummary.supportedTasks;
+  const sessionCount = historySummary.completedSessions;
   const independence =
     completedTasks > 0 ? Math.round(((completedTasks - supportedTasks) / completedTasks) * 100) : 0;
   const evidenceLevel =
-    sessions.length >= 6 ? "形成趋势" : sessions.length >= 2 ? "正在积累" : "证据不足";
+    sessionCount >= 6 ? "形成趋势" : sessionCount >= 2 ? "正在积累" : "证据不足";
   const levelLabel = currentLevel?.overall_level
     ? adaptationLevelLabel(currentLevel.overall_level)
     : "待积累";
@@ -1219,7 +1361,7 @@ function LearnerProfilePanel({
         <article>
           <span>证据状态</span>
           <strong>{evidenceLevel}</strong>
-          <p>{sessions.length} 次完整训练闭环</p>
+          <p>{sessionCount} 次完整训练闭环</p>
         </article>
         <article>
           <span>独立完成比例</span>
@@ -1284,7 +1426,7 @@ function LearnerProfilePanel({
         </article>
         <article className="profile-dimension-card next-focus-card">
           <p className="step-label">下一步最值得观察</p>
-          <h2>{sessions.length < 2 ? "先积累第二次新材料表现" : "检查无提示表现能否跨材料保持"}</h2>
+          <h2>{sessionCount < 2 ? "先积累第二次新材料表现" : "检查无提示表现能否跨材料保持"}</h2>
           <p>系统会优先寻找“新材料、低帮助、延迟后仍能完成”的组合证据，再更新画像。</p>
           <div className="trace-note">
             <span>画像更新规则</span>
@@ -1326,10 +1468,12 @@ function PreferencesPanel({
   preferences,
   onSave,
   onThemePreview,
+  isSaving,
 }: {
   preferences: LearnerPreferences;
   onSave: (preferences: LearnerPreferences) => void;
   onThemePreview: (theme: ThemeId | null) => void;
+  isSaving: boolean;
 }) {
   const [draft, setDraft] = useState(preferences);
   const [expandedTierTheme, setExpandedTierTheme] = useState<ThemeId | null>(null);
@@ -1360,24 +1504,27 @@ function PreferencesPanel({
       </header>
       <form
         className="preferences-form"
+        data-ui-anchor="settings-form"
         onSubmit={(event) => {
           event.preventDefault();
-          applyThemePreferences({
-            theme: draft.skin,
-            density: draft.readingComfort,
-            motion: draft.reducedMotion ? "reduced" : "full",
-          });
           onSave(draft);
         }}
       >
-        <fieldset>
+        <footer className="preferences-actions" data-ui-anchor="settings-toolbar">
+          <p>保存后会跟随当前学习账号，在其他浏览器和电脑上自动恢复。</p>
+          <button className="primary-button strong-action" type="submit" disabled={isSaving}>
+            {isSaving ? "正在保存到账号…" : "保存偏好"}
+          </button>
+        </footer>
+        <fieldset data-ui-anchor="settings-section">
           <legend>智能辅助</legend>
-          <label className="setting-row">
+          <div className="setting-row">
             <span>
               <strong>行内辅助出现方式</strong>
               <small>选中原文后，系统何时显示帮助入口</small>
             </span>
-            <select
+            <Select
+              aria-label="行内辅助出现方式"
               value={draft.assistanceMode}
               onChange={(event) =>
                 setDraft({
@@ -1389,14 +1536,15 @@ function PreferencesPanel({
               <option value="ask_first">由我点击后展开</option>
               <option value="proactive">主动展示一个建议</option>
               <option value="quiet">保持安静，只保留标记</option>
-            </select>
-          </label>
-          <label className="setting-row">
+            </Select>
+          </div>
+          <div className="setting-row">
             <span>
               <strong>反馈详细程度</strong>
               <small>控制纠偏卡片解释到什么深度</small>
             </span>
-            <select
+            <Select
+              aria-label="反馈详细程度"
               value={draft.feedbackDetail}
               onChange={(event) =>
                 setDraft({
@@ -1407,15 +1555,16 @@ function PreferencesPanel({
             >
               <option value="concise">一句话</option>
               <option value="balanced">关键依据 + 下一步</option>
-              <option value="detailed">完整依据轨迹</option>
-            </select>
-          </label>
-          <label className="setting-row">
+              <option value="detailed">完整反馈 + 修改步骤</option>
+            </Select>
+          </div>
+          <div className="setting-row">
             <span>
               <strong>纠偏语气</strong>
               <small>内容标准不变，只调整表达方式</small>
             </span>
-            <select
+            <Select
+              aria-label="纠偏语气"
               value={draft.correctionTone}
               onChange={(event) =>
                 setDraft({
@@ -1426,8 +1575,8 @@ function PreferencesPanel({
             >
               <option value="gentle">温和提示</option>
               <option value="direct">直接指出</option>
-            </select>
-          </label>
+            </Select>
+          </div>
           <PreferenceToggle
             label="展示判断依据"
             detail="显示观察、规则、建议和不确定性；不展示隐藏思维链"
@@ -1441,14 +1590,15 @@ function PreferencesPanel({
             onChange={(checked) => setDraft({ ...draft, temporaryTasksEnabled: checked })}
           />
         </fieldset>
-        <fieldset>
+        <fieldset data-ui-anchor="settings-section">
           <legend>阅读体验</legend>
-          <label className="setting-row">
+          <div className="setting-row">
             <span>
               <strong>页面留白</strong>
               <small>调整正文行距与信息密度</small>
             </span>
-            <select
+            <Select
+              aria-label="页面留白"
               value={draft.readingComfort}
               onChange={(event) => {
                 const readingComfort = event.target.value as LearnerPreferences["readingComfort"];
@@ -1466,8 +1616,8 @@ function PreferencesPanel({
               <option value="compact">紧凑</option>
               <option value="comfortable">舒适</option>
               <option value="spacious">宽松</option>
-            </select>
-          </label>
+            </Select>
+          </div>
           <PreferenceToggle
             label="减少动态效果"
             detail="关闭非必要的位移和过渡动画"
@@ -1482,7 +1632,7 @@ function PreferencesPanel({
             }}
           />
         </fieldset>
-        <fieldset>
+        <fieldset data-ui-anchor="settings-section">
           <legend>界面皮肤</legend>
           <p className="skin-tier-guide">
             皮肤等级表示表现层覆盖范围：基础替换色板，史诗增加材质与图标语言，传说包含专属布局、插画和装饰资产，典藏进一步替换组件并提供陪伴场景与皮肤图鉴。
@@ -1496,6 +1646,7 @@ function PreferencesPanel({
                 <div
                   key={theme.id}
                   className="skin-choice"
+                  data-ui-anchor="theme-card"
                   onPointerEnter={() => preloadThemeAssets(theme.id)}
                   onFocus={() => preloadThemeAssets(theme.id)}
                   style={
@@ -1572,12 +1723,6 @@ function PreferencesPanel({
             皮肤只改变颜色、层次与装饰，不改变训练规则、字号和学习证据。
           </p>
         </fieldset>
-        <footer className="preferences-actions">
-          <p>偏好只保存在当前浏览器的此账号下。</p>
-          <button className="primary-button strong-action" type="submit">
-            保存偏好
-          </button>
-        </footer>
       </form>
     </main>
   );
@@ -1600,11 +1745,17 @@ function PreferenceToggle({
         <strong>{label}</strong>
         <small>{detail}</small>
       </span>
-      <input
-        type="checkbox"
-        checked={checked}
-        onChange={(event) => onChange(event.target.checked)}
-      />
+      <span className="preference-toggle-control" data-ui-anchor="toggle-control">
+        <input
+          type="checkbox"
+          checked={checked}
+          aria-label={`${label} ${detail}`}
+          onChange={(event) => onChange(event.target.checked)}
+        />
+        <span className="preference-toggle-track" aria-hidden="true">
+          <i />
+        </span>
+      </span>
     </label>
   );
 }
@@ -1725,9 +1876,10 @@ function OnboardingPanel({
             </label>
           </fieldset>
 
-          <label className="select-field">
+          <div className="select-field">
             <span>你对当前阅读水平的判断</span>
-            <select
+            <Select
+              aria-label="你对当前阅读水平的判断"
               value={profile.self_reported_level}
               onChange={(event) =>
                 setProfile((current) => ({
@@ -1741,8 +1893,8 @@ function OnboardingPanel({
               <option value="developing">能读懂大意，但证据和逻辑不稳定</option>
               <option value="steady">大多能独立判断，并能解释证据</option>
               <option value="unknown">暂时说不清，让任务来判断</option>
-            </select>
-          </label>
+            </Select>
+          </div>
 
           <label className="check-field">
             <input

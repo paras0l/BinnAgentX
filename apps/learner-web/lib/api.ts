@@ -15,6 +15,8 @@ import type {
   LearnerWorkspaceView,
   TextSelection,
 } from "./contracts";
+import type { CompletedSessionRecord } from "./experience-storage";
+import type { LearnerPreferences } from "./experience-storage";
 import type {
   LearningAsset,
   LearningAssetInput,
@@ -38,6 +40,114 @@ export interface CurrentLevel {
   >;
   confidence_band: "low" | "medium" | "high";
   evidence_count: number;
+}
+
+export interface TrainingHistorySummary {
+  completedSessions: number;
+  independentSessions: number;
+  completedTasks: number;
+  supportedTasks: number;
+  completedLast7Days: number;
+}
+
+export interface TrainingHistoryPage {
+  items: CompletedSessionRecord[];
+  page: number;
+  pageSize: number;
+  totalItems: number;
+  totalPages: number;
+  summary: TrainingHistorySummary;
+}
+
+export interface LearnerPreferencesRecord {
+  preferences: LearnerPreferences;
+  version: number;
+  persisted: boolean;
+  updatedAt: string | null;
+}
+
+interface LearnerPreferencesApi {
+  preferences: {
+    assistance_mode: LearnerPreferences["assistanceMode"];
+    feedback_detail: LearnerPreferences["feedbackDetail"];
+    correction_tone: LearnerPreferences["correctionTone"];
+    show_decision_trace: boolean;
+    temporary_tasks_enabled: boolean;
+    reading_comfort: LearnerPreferences["readingComfort"];
+    reduced_motion: boolean;
+    skin: LearnerPreferences["skin"];
+    navigation_collapsed: boolean;
+  };
+  version: number;
+  persisted: boolean;
+  updated_at: string | null;
+}
+
+function preferencesFromApi(result: LearnerPreferencesApi): LearnerPreferencesRecord {
+  return {
+    preferences: {
+      assistanceMode: result.preferences.assistance_mode,
+      feedbackDetail: result.preferences.feedback_detail,
+      correctionTone: result.preferences.correction_tone,
+      showDecisionTrace: result.preferences.show_decision_trace,
+      temporaryTasksEnabled: result.preferences.temporary_tasks_enabled,
+      readingComfort: result.preferences.reading_comfort,
+      reducedMotion: result.preferences.reduced_motion,
+      skin: result.preferences.skin,
+      navigationCollapsed: result.preferences.navigation_collapsed,
+    },
+    version: result.version,
+    persisted: result.persisted,
+    updatedAt: result.updated_at,
+  };
+}
+
+export async function getLearnerPreferences(): Promise<LearnerPreferencesRecord> {
+  return preferencesFromApi(await request<LearnerPreferencesApi>("/v1/preferences"));
+}
+
+export async function putLearnerPreferences(
+  preferences: LearnerPreferences,
+): Promise<LearnerPreferencesRecord> {
+  const result = await request<LearnerPreferencesApi>("/v1/preferences", {
+    method: "PUT",
+    body: JSON.stringify({
+      assistance_mode: preferences.assistanceMode,
+      feedback_detail: preferences.feedbackDetail,
+      correction_tone: preferences.correctionTone,
+      show_decision_trace: preferences.showDecisionTrace,
+      temporary_tasks_enabled: preferences.temporaryTasksEnabled,
+      reading_comfort: preferences.readingComfort,
+      reduced_motion: preferences.reducedMotion,
+      skin: preferences.skin,
+      navigation_collapsed: preferences.navigationCollapsed,
+    }),
+  });
+  return preferencesFromApi(result);
+}
+
+interface TrainingHistoryPageApi {
+  items: Array<{
+    workflow_run_id: string;
+    run_version: number;
+    run_kind: "first_experience" | "practice";
+    completed_at: string;
+    difficulty_rating: string | null;
+    completed_task_count: number;
+    supported_task_count: number;
+    matched_content_version_id: string | null;
+  }>;
+  page: number;
+  page_size: number;
+  total_items: number;
+  total_pages: number;
+  summary: {
+    completed_sessions: number;
+    independent_sessions: number;
+    completed_tasks: number;
+    supported_tasks: number;
+    completed_last_7_days: number;
+  };
 }
 
 export class LearnerApiError extends Error {
@@ -146,6 +256,35 @@ export async function listLearningAssets(): Promise<LearningAssetsState> {
 
 export function getCurrentLevel(): Promise<CurrentLevel> {
   return request<CurrentLevel>("/v1/profile/current-level");
+}
+
+export async function getTrainingHistory(page = 1, pageSize = 5): Promise<TrainingHistoryPage> {
+  const result = await request<TrainingHistoryPageApi>(
+    `/v1/training-history?page=${page}&page_size=${pageSize}`,
+  );
+  return {
+    items: result.items.map((item) => ({
+      workflowRunId: item.workflow_run_id,
+      runVersion: item.run_version,
+      runKind: item.run_kind,
+      completedAt: item.completed_at,
+      difficultyRating: item.difficulty_rating,
+      completedTaskCount: item.completed_task_count,
+      supportedTaskCount: item.supported_task_count,
+      matchedContentVersionId: item.matched_content_version_id,
+    })),
+    page: result.page,
+    pageSize: result.page_size,
+    totalItems: result.total_items,
+    totalPages: result.total_pages,
+    summary: {
+      completedSessions: result.summary.completed_sessions,
+      independentSessions: result.summary.independent_sessions,
+      completedTasks: result.summary.completed_tasks,
+      supportedTasks: result.summary.supported_tasks,
+      completedLast7Days: result.summary.completed_last_7_days,
+    },
+  };
 }
 
 export interface KnowledgeVaultStatus {
@@ -483,6 +622,15 @@ export function recordDifficulty(
     expected_version: run.version,
     rating,
     skipped: rating === null,
+  });
+}
+
+export function submitMaterialFeedback(
+  taskId: string,
+  sentiment: "good" | "bad",
+): Promise<{ sentiment: "good" | "bad"; created_at: string }> {
+  return command(`/v1/tasks/${taskId}/material-feedback`, "material_feedback", {
+    sentiment,
   });
 }
 

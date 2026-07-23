@@ -69,6 +69,15 @@ learner_sessions = sa.Table(
     sa.Column("expires_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("revoked_at", sa.DateTime(timezone=True), nullable=True),
 )
+learner_preferences = sa.Table(
+    "learner_preferences",
+    metadata,
+    sa.Column("learner_id", sa.String(128), primary_key=True),
+    sa.Column("preferences", postgresql.JSONB(), nullable=False),
+    sa.Column("version", sa.Integer(), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+)
 learner_profile_snapshots = sa.Table(
     "learner_profile_snapshots",
     metadata,
@@ -140,12 +149,25 @@ difficulty_feedback_events = sa.Table(
     sa.Column("rating", sa.String(32), nullable=True),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
 )
+material_feedback_events = sa.Table(
+    "material_feedback_events",
+    metadata,
+    sa.Column("feedback_id", sa.String(128), primary_key=True),
+    sa.Column("learner_id", sa.String(128), nullable=False),
+    sa.Column("workflow_run_id", sa.String(128), nullable=False),
+    sa.Column("task_id", sa.String(128), nullable=False, unique=True),
+    sa.Column("content_version_id", sa.String(128), nullable=False),
+    sa.Column("sentiment", sa.String(16), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+)
 learner_level_assessments = sa.Table(
     "learner_level_assessments",
     metadata,
     sa.Column("assessment_id", sa.String(128), primary_key=True),
     sa.Column("learner_id", sa.String(128), nullable=False),
     sa.Column("trigger_workflow_run_id", sa.String(128), nullable=False, unique=True),
+    sa.Column("trigger_kind", sa.String(32), nullable=False),
+    sa.Column("trigger_key", sa.String(180), nullable=False, unique=True),
     sa.Column("status", sa.String(24), nullable=False),
     sa.Column("evidence_summary", postgresql.JSONB(), nullable=False),
     sa.Column("overall_level", sa.String(32), nullable=True),

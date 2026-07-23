@@ -25,6 +25,8 @@ async def enqueue_level_assessment(
     *,
     learner_id: str | None,
     workflow_run_id: str,
+    trigger_kind: str,
+    trigger_key: str,
     now: datetime,
 ) -> None:
     if learner_id is None:
@@ -35,6 +37,8 @@ async def enqueue_level_assessment(
             assessment_id=f"level_assessment_{uuid4().hex}",
             learner_id=learner_id,
             trigger_workflow_run_id=workflow_run_id,
+            trigger_kind=trigger_kind,
+            trigger_key=trigger_key,
             status="queued",
             evidence_summary={},
             dimensions={},
@@ -44,9 +48,7 @@ async def enqueue_level_assessment(
             created_at=now,
             updated_at=now,
         )
-        .on_conflict_do_nothing(
-            index_elements=[tables.learner_level_assessments.c.trigger_workflow_run_id]
-        )
+        .on_conflict_do_nothing(index_elements=[tables.learner_level_assessments.c.trigger_key])
     )
 
 
@@ -187,6 +189,17 @@ async def collect_level_evidence(
         .scalars()
         .all()
     )
+    material_sentiments = (
+        (
+            await connection.execute(
+                sa.select(tables.material_feedback_events.c.sentiment).where(
+                    tables.material_feedback_events.c.learner_id == learner_id
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
     return LevelEvidenceSummary(
         completed_tasks=len(completed_rows),
         independent_tasks=independent,
@@ -199,6 +212,8 @@ async def collect_level_evidence(
         difficulty_too_easy=sum(rating == "too_easy" for rating in ratings),
         difficulty_matched=sum(rating == "matched" for rating in ratings),
         difficulty_too_hard=sum(rating == "too_hard" for rating in ratings),
+        material_helpful=sum(value == "good" for value in material_sentiments),
+        material_unhelpful=sum(value == "bad" for value in material_sentiments),
     )
 
 
@@ -231,6 +246,29 @@ async def latest_level_assessment(
             "reason_codes": row["reason_codes"],
         }
     )
+
+
+async def recent_material_feedback_context(
+    connection: AsyncConnection, learner_id: str
+) -> dict[str, Any]:
+    recent = (
+        sa.select(tables.material_feedback_events.c.sentiment)
+        .where(tables.material_feedback_events.c.learner_id == learner_id)
+        .order_by(tables.material_feedback_events.c.created_at.desc())
+        .limit(20)
+        .subquery()
+    )
+    rows = (await connection.execute(sa.select(recent.c.sentiment))).scalars().all()
+    helpful = sum(value == "good" for value in rows)
+    unhelpful = sum(value == "bad" for value in rows)
+    return {
+        "helpful": helpful,
+        "unhelpful": unhelpful,
+        "instruction": (
+            "即时反馈只表示材料是否有帮助, 不代表能力高低。"
+            "没帮助反馈较多时优先改善目标相关性、语境自然度和可理解性, 不得据此降低能力档位。"
+        ),
+    }
 
 
 def generation_level_context(output: LevelAssessmentOutput | None) -> dict[str, Any]:

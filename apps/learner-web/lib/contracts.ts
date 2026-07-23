@@ -173,6 +173,7 @@ export interface ReadingMaterialView {
   };
   question_count?: number;
   grammar_challenge: GrammarChallengeView;
+  material_feedback?: "good" | "bad" | null;
 }
 
 export interface GrammarChallengeView {

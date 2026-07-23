@@ -128,6 +128,15 @@ class VersionedCommandRequest(BaseModel):
     expected_version: Annotated[int, Field(ge=1)]
 
 
+class MaterialFeedbackRequest(BaseModel):
+    sentiment: Literal["good", "bad"]
+
+
+class MaterialFeedbackView(BaseModel):
+    sentiment: Literal["good", "bad"]
+    created_at: datetime
+
+
 class ContinueRunRequest(VersionedCommandRequest):
     pass
 
@@ -351,6 +360,7 @@ class LearnerReadingMaterialView(BaseModel):
     question: LearnerReadingQuestionView
     question_count: int
     grammar_challenge: GrammarChallengeView
+    material_feedback: Literal["good", "bad"] | None
 
 
 class GrammarChallengeUpdateView(BaseModel):

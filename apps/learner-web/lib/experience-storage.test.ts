@@ -1,14 +1,13 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import type { LearnerProfileInput, LearnerRunView } from "./contracts";
+import type { LearnerProfileInput } from "./contracts";
 import {
   calibrationSummaryDismissed,
+  clearLegacyLearnerPreferences,
   dismissCalibrationSummary,
   loadExperience,
   loadLearnerPreferences,
-  recordCompletedSession,
   saveExperienceProfile,
-  saveLearnerPreferences,
 } from "./experience-storage";
 
 const profile: LearnerProfileInput = {
@@ -25,68 +24,30 @@ const profile: LearnerProfileInput = {
 };
 const learnerId = "learner_test_0001";
 
-const completedRun = {
-  workflow_run_id: "workflow_run_completed_0001",
-  run_kind: "first_experience",
-  predecessor_run_id: null,
-  lifecycle: "completed",
-  stage: "completed",
-  version: 10,
-  current_task_id: null,
-  task_refs: [
-    {
-      task_id: "task_matched_0001",
-      role: "matched_reading",
-      task_type: "matched_reading",
-      content_version_id: "matched_reading_01_v1",
-      completed: true,
-      completed_task_version: 4,
-      highest_hint_level: 1,
-    },
-  ],
-  match_decisions: [],
-  calibration_fallback_approved: false,
-  difficulty_feedback_status: "submitted",
-  difficulty_rating: "matched",
-  next_task_placeholder_id: "next_task_placeholder_0001",
-  completion_gaps: [],
-  created_at: "2026-07-16T10:00:00Z",
-  updated_at: "2026-07-16T10:30:00Z",
-  replayed: false,
-} satisfies LearnerRunView;
+const completedWorkflowRunId = "workflow_run_completed_0001";
 
 describe("learner experience storage", () => {
   beforeEach(() => localStorage.clear());
-
-  it("keeps the profile and an idempotent completed-session projection", () => {
-    saveExperienceProfile(learnerId, profile);
-    recordCompletedSession(learnerId, completedRun, profile);
-    recordCompletedSession(learnerId, completedRun, profile);
-
-    expect(loadExperience(learnerId)?.sessions).toHaveLength(1);
-    expect(loadExperience(learnerId)?.sessions[0]).toMatchObject({
-      supportedTaskCount: 1,
-      matchedContentVersionId: "matched_reading_01_v1",
-    });
-  });
 
   it("keeps browser projections separated by learner account", () => {
     saveExperienceProfile(learnerId, profile);
     expect(loadExperience("learner_other_0001")).toBeNull();
   });
 
-  it("persists account preferences before calibration creates a full experience record", () => {
-    const preferences = { ...loadLearnerPreferences(learnerId), skin: "ragdoll" as const };
-
-    expect(saveLearnerPreferences(learnerId, preferences)).toBeNull();
+  it("reads and clears a legacy browser preference during server migration", () => {
+    localStorage.setItem(
+      `binnagent:learner-preferences:v1:${learnerId}`,
+      JSON.stringify({ skin: "ragdoll" }),
+    );
     expect(loadLearnerPreferences(learnerId).skin).toBe("ragdoll");
-    expect(loadLearnerPreferences("learner_other_0001").skin).toBe("paper");
+    clearLegacyLearnerPreferences(learnerId);
+    expect(loadLearnerPreferences(learnerId).skin).toBe("paper");
   });
 
   it("remembers that the calibration summary was acknowledged", () => {
-    expect(calibrationSummaryDismissed(completedRun.workflow_run_id)).toBe(false);
-    dismissCalibrationSummary(completedRun.workflow_run_id);
-    expect(calibrationSummaryDismissed(completedRun.workflow_run_id)).toBe(true);
+    expect(calibrationSummaryDismissed(completedWorkflowRunId)).toBe(false);
+    dismissCalibrationSummary(completedWorkflowRunId);
+    expect(calibrationSummaryDismissed(completedWorkflowRunId)).toBe(true);
   });
 
   it("migrates preferences saved before account skins existed", () => {

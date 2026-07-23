@@ -1,11 +1,10 @@
-import type { LearnerProfileInput, LearnerRunView } from "./contracts";
+import type { LearnerProfileInput } from "./contracts";
 import type { ThemeId } from "../theme/registry";
 import { normalizeThemeId } from "../theme/registry";
 
 const EXPERIENCE_PREFIX = "binnagent:learner-experience:v1:";
-const PREFERENCES_PREFIX = "binnagent:learner-preferences:v1:";
+const LEGACY_PREFERENCES_PREFIX = "binnagent:learner-preferences:v1:";
 const SUMMARY_PREFIX = "binnagent:calibration-summary:v1:";
-const MAX_SESSION_RECORDS = 12;
 
 export interface LearnerPreferences {
   assistanceMode: "ask_first" | "proactive" | "quiet";
@@ -16,6 +15,7 @@ export interface LearnerPreferences {
   readingComfort: "compact" | "comfortable" | "spacious";
   reducedMotion: boolean;
   skin: ThemeId;
+  navigationCollapsed: boolean;
 }
 
 export const DEFAULT_PREFERENCES: LearnerPreferences = {
@@ -27,9 +27,10 @@ export const DEFAULT_PREFERENCES: LearnerPreferences = {
   readingComfort: "comfortable",
   reducedMotion: false,
   skin: "paper",
+  navigationCollapsed: false,
 };
 
-function normalizePreferences(value: unknown): LearnerPreferences {
+export function normalizeLearnerPreferences(value: unknown): LearnerPreferences {
   const preferences =
     value && typeof value === "object" ? (value as Partial<LearnerPreferences>) : {};
   return {
@@ -39,32 +40,32 @@ function normalizePreferences(value: unknown): LearnerPreferences {
   };
 }
 
-function loadStoredPreferences(learnerId: string): LearnerPreferences | null {
+export function loadLegacyLearnerPreferences(learnerId: string): LearnerPreferences | null {
   try {
-    const raw = localStorage.getItem(`${PREFERENCES_PREFIX}${learnerId}`);
-    return raw ? normalizePreferences(JSON.parse(raw)) : null;
+    const raw = localStorage.getItem(`${LEGACY_PREFERENCES_PREFIX}${learnerId}`);
+    return raw ? normalizeLearnerPreferences(JSON.parse(raw)) : null;
   } catch {
     return null;
   }
 }
 
-function persistPreferences(learnerId: string, preferences: LearnerPreferences): void {
+export function clearLegacyLearnerPreferences(learnerId: string): void {
   try {
-    localStorage.setItem(`${PREFERENCES_PREFIX}${learnerId}`, JSON.stringify(preferences));
+    localStorage.removeItem(`${LEGACY_PREFERENCES_PREFIX}${learnerId}`);
   } catch {
-    // A learner can keep using the in-memory preference state when storage is blocked.
+    // A stale browser projection is harmless once the account record exists.
   }
 }
 
 export function loadLearnerPreferences(learnerId: string): LearnerPreferences {
-  const standalone = loadStoredPreferences(learnerId);
+  const standalone = loadLegacyLearnerPreferences(learnerId);
   if (standalone) return standalone;
 
   try {
     const raw = localStorage.getItem(`${EXPERIENCE_PREFIX}${learnerId}`);
     if (!raw) return DEFAULT_PREFERENCES;
     const value = JSON.parse(raw) as Partial<LearnerExperienceState>;
-    return normalizePreferences(value.preferences);
+    return normalizeLearnerPreferences(value.preferences);
   } catch {
     return DEFAULT_PREFERENCES;
   }
@@ -117,10 +118,11 @@ export function loadExperience(learnerId: string): LearnerExperienceState | null
     return {
       schemaVersion: 1,
       profile: value.profile,
-      sessions: value.sessions as CompletedSessionRecord[],
+      // Completed runs are account-owned server facts. Ignore legacy browser projections.
+      sessions: [],
       preferences:
-        loadStoredPreferences(learnerId) ??
-        normalizePreferences((value as Partial<LearnerExperienceState>).preferences),
+        loadLegacyLearnerPreferences(learnerId) ??
+        normalizeLearnerPreferences((value as Partial<LearnerExperienceState>).preferences),
       temporaryTasksCompleted:
         (value as Partial<LearnerExperienceState>).temporaryTasksCompleted ?? 0,
     };
@@ -145,54 +147,10 @@ export function saveExperienceProfile(
   const state: LearnerExperienceState = {
     schemaVersion: 1,
     profile,
-    sessions: current?.sessions ?? [],
+    sessions: [],
     preferences: current?.preferences ?? loadLearnerPreferences(learnerId),
     temporaryTasksCompleted: current?.temporaryTasksCompleted ?? 0,
   };
-  persist(learnerId, state);
-  return state;
-}
-
-export function recordCompletedSession(
-  learnerId: string,
-  run: LearnerRunView,
-  profile: LearnerProfileInput,
-): LearnerExperienceState {
-  const current = loadExperience(learnerId);
-  const record: CompletedSessionRecord = {
-    workflowRunId: run.workflow_run_id,
-    runVersion: run.version,
-    runKind: run.run_kind ?? "first_experience",
-    completedAt: run.updated_at ?? new Date().toISOString(),
-    difficultyRating: run.difficulty_rating,
-    completedTaskCount: run.task_refs.filter((task) => task.completed).length,
-    supportedTaskCount: run.task_refs.filter((task) => (task.highest_hint_level ?? 0) > 0).length,
-    matchedContentVersionId:
-      run.task_refs.find((task) => task.role === "matched_reading")?.content_version_id ?? null,
-  };
-  const sessions = [
-    record,
-    ...(current?.sessions ?? []).filter((item) => item.workflowRunId !== record.workflowRunId),
-  ].slice(0, MAX_SESSION_RECORDS);
-  const state: LearnerExperienceState = {
-    schemaVersion: 1,
-    profile,
-    sessions,
-    preferences: current?.preferences ?? loadLearnerPreferences(learnerId),
-    temporaryTasksCompleted: current?.temporaryTasksCompleted ?? 0,
-  };
-  persist(learnerId, state);
-  return state;
-}
-
-export function saveLearnerPreferences(
-  learnerId: string,
-  preferences: LearnerPreferences,
-): LearnerExperienceState | null {
-  persistPreferences(learnerId, preferences);
-  const current = loadExperience(learnerId);
-  if (!current) return null;
-  const state = { ...current, preferences };
   persist(learnerId, state);
   return state;
 }

@@ -223,12 +223,12 @@
 }
 
 [data-ui-anchor="app-shell"] .assets-summary {
-  border-color: var(--theme-line);
-  background: var(--theme-line);
+  border: 0;
+  background: transparent;
 }
 
-[data-ui-anchor="app-shell"] .assets-summary article {
-  background: var(--theme-surface-soft);
+[data-ui-anchor="app-shell"] .assets-summary-metrics article {
+  background: color-mix(in srgb, var(--theme-surface-raised) 90%, transparent);
 }
 
 [data-ui-anchor="app-shell"] .asset-categories {
@@ -288,6 +288,34 @@
   border-color: var(--theme-accent);
   color: var(--theme-accent-strong);
   background: var(--theme-accent-soft);
+}
+
+[data-ui-anchor="settings-toolbar"] {
+  border-color: var(--theme-line-strong);
+  background: color-mix(in srgb, var(--theme-surface-raised) 92%, transparent);
+  box-shadow: var(--theme-shadow-md);
+}
+
+[data-ui-anchor="settings-section"],
+[data-ui-anchor="theme-card"] {
+  border-color: var(--theme-line);
+  background-color: var(--theme-surface-raised);
+}
+
+[data-ui-anchor="select-control"] .app-select-trigger {
+  border-color: var(--theme-line-strong);
+  color: var(--theme-ink);
+}
+
+[data-ui-anchor="select-control"] [data-ui-anchor="popover"] {
+  border-color: var(--theme-line-strong);
+  color: var(--theme-ink);
+  background: var(--theme-popover-background);
+  box-shadow: var(--theme-shadow-md);
+}
+
+[data-ui-anchor="toggle-control"] .preference-toggle-track {
+  border-color: var(--theme-line-strong);
 }
 
 [data-ui-anchor="app-shell"] [data-ui-anchor="hero"] {
@@ -412,7 +440,8 @@
     [data-theme-slot="sidebar-ornament"],
     [data-theme-slot="hero-trail"],
     [data-theme-slot="hero-sparkle"],
-    [data-theme-slot="history-easter-egg"]
+    [data-theme-slot="history-easter-egg"],
+    [data-theme-slot="card-corner-decor"]
   ) {
   display: block;
 }

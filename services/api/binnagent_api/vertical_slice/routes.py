@@ -63,6 +63,7 @@ from binnagent_api.agent_memory import obsidian_memory
 from binnagent_api.auth import ControlIdentity, require_control_identity
 from binnagent_api.database import get_engine
 from binnagent_api.learner_auth import LearnerIdentity
+from binnagent_api.learner_level_service import enqueue_level_assessment
 from binnagent_api.model_adapters import (
     annotation_analysis_adapter,
     expression_review_adapter,
@@ -121,6 +122,8 @@ from binnagent_api.vertical_slice.schemas import (
     InterventionView,
     LearnerParagraphView,
     LearnerTaskView,
+    MaterialFeedbackRequest,
+    MaterialFeedbackView,
     RevisionRequest,
     RevisionView,
     VersionedCommandRequest,
@@ -265,6 +268,65 @@ async def get_task(task_id: str) -> LearnerTaskView:
     async with get_engine().connect() as connection:
         task = await repository.load(connection, task_id)
     return learner_task_view(task)
+
+
+@learner_router.post(
+    "/tasks/{task_id}/material-feedback",
+    response_model=MaterialFeedbackView,
+)
+async def submit_material_feedback(
+    request: Request,
+    task_id: str,
+    body: MaterialFeedbackRequest,
+) -> MaterialFeedbackView:
+    identity: LearnerIdentity = request.state.learner_identity
+    now = datetime.now(UTC)
+    async with get_engine().begin() as connection:
+        task = await repository.load(connection, task_id)
+        if task.task_type not in {TaskType.CALIBRATION_READING, TaskType.MATCHED_READING}:
+            raise DomainError(
+                PublicErrorCode.SAVE_NOT_CONFIRMED,
+                "material_feedback_requires_reading_task",
+                task.version,
+            )
+        inserted = await connection.scalar(
+            pg_insert(tables.material_feedback_events)
+            .values(
+                feedback_id=_id("material_feedback"),
+                learner_id=identity.learner_id,
+                workflow_run_id=task.workflow_run_id,
+                task_id=task.task_id,
+                content_version_id=task.current_material.content_version_id,
+                sentiment=body.sentiment,
+                created_at=now,
+            )
+            .on_conflict_do_nothing(index_elements=[tables.material_feedback_events.c.task_id])
+            .returning(tables.material_feedback_events.c.feedback_id)
+        )
+        row = (
+            (
+                await connection.execute(
+                    sa.select(tables.material_feedback_events).where(
+                        tables.material_feedback_events.c.task_id == task.task_id
+                    )
+                )
+            )
+            .mappings()
+            .one()
+        )
+        if inserted is not None:
+            await enqueue_level_assessment(
+                connection,
+                learner_id=identity.learner_id,
+                workflow_run_id=task.workflow_run_id,
+                trigger_kind="material_feedback",
+                trigger_key=f"material_feedback:{task.task_id}",
+                now=now,
+            )
+    return MaterialFeedbackView(
+        sentiment=str(row["sentiment"]),
+        created_at=row["created_at"],
+    )
 
 
 @learner_router.post(

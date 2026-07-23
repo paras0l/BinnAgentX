@@ -370,10 +370,12 @@ test("known learner can inspect profile evidence and control assistance preferen
   await expect(page.getByText("证据不足", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "偏好设置" }).click();
   await expect(page.getByRole("heading", { name: "让辅助按你的节奏出现" })).toBeVisible();
-  await page.getByLabel(/行内辅助出现方式/).selectOption("proactive");
-  await page.getByLabel(/页面留白/).selectOption("spacious");
+  await page.getByLabel(/行内辅助出现方式/).click();
+  await page.getByRole("option", { name: "主动展示一个建议" }).click();
+  await page.getByLabel(/页面留白/).click();
+  await page.getByRole("option", { name: "宽松" }).click();
   await page.getByRole("button", { name: "保存偏好" }).click();
-  await expect(page.getByLabel(/行内辅助出现方式/)).toHaveValue("proactive");
+  await expect(page.getByLabel(/行内辅助出现方式/)).toContainText("主动展示一个建议");
 
   const results = await new AxeBuilder({ page }).analyze();
   expect(results.violations).toEqual([]);
