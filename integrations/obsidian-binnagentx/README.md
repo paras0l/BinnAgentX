@@ -52,7 +52,15 @@ Then enable **BinnAgentX Learning Sync** in Obsidian's Community plugins.
    `BinnAgentX/05-Templates` and its attachment folder as
    `BinnAgentX/06-Attachments`. Enable the Templates core plugin, install and
    enable the Spaced Repetition community plugin for flashcard review, and
-   optionally install Dataview to render automatic dashboard tables.
+   optionally install Dataview to render automatic dashboard tables. The
+   vocabulary template joins the `flashcards/binnagentx/vocabulary` deck and
+   creates a rich multi-line recall card that reuses the note's meaning,
+   pronunciation, collocations, example, and contrast sections. A managed CSS
+   snippet gives the review window a compact visual hierarchy without changing
+   normal note rendering. The template deliberately avoids a reverse card
+   because Spaced Repetition's default card context displays the source filename
+   and would reveal the word. On upgrade, only unchanged managed vocabulary
+   templates are migrated automatically; user-customized templates are preserved.
 3. In plugin settings, choose `BinnAgentX/` or specific grammar/vocabulary
    folders and tags, then use **Preview learning context**.
 4. Paste the connection ID and sync secret issued by BinnAgentX.

@@ -1413,6 +1413,78 @@
 
 :root[data-theme="seal-summer"][data-collector-mode="night"]
   .training-frame
+  .reading-copy
+  .inline-annotation {
+  color: #d5f4e4;
+  background: #183d2d;
+  box-shadow: inset 0 -2px #5fa681;
+  text-shadow: none;
+}
+
+:root[data-theme="seal-summer"][data-collector-mode="night"]
+  .training-frame
+  .reading-copy
+  .inline-annotation.annotation-kind-vocabulary {
+  color: #fff1ad;
+  background: #4a3b0f;
+  box-shadow: inset 0 -2px #d7b84f;
+}
+
+:root[data-theme="seal-summer"][data-collector-mode="night"]
+  .training-frame
+  .reading-copy
+  .inline-annotation.annotation-kind-grammar {
+  color: #ffd8d0;
+  background: #56302c;
+  box-shadow: inset 0 -2px #cf7766;
+}
+
+:root[data-theme="seal-summer"][data-collector-mode="night"]
+  .training-frame
+  .reading-copy
+  .inline-annotation.annotation-kind-claim {
+  color: #d5f4e4;
+  background: #183d2d;
+  box-shadow: inset 0 -2px #5fa681;
+}
+
+:root[data-theme="seal-summer"][data-collector-mode="night"]
+  .training-frame
+  .reading-copy
+  .inline-annotation.annotation-kind-logic {
+  color: #ebe4ff;
+  background: #352d54;
+  box-shadow: inset 0 -2px #8f80c4;
+}
+
+:root[data-theme="seal-summer"][data-collector-mode="night"]
+  .training-frame
+  .reading-copy
+  .inline-annotation.annotation-kind-uncertain {
+  color: #f0e7e3;
+  background: #3b3432;
+  box-shadow: inset 0 -2px #90807a;
+}
+
+:root[data-theme="seal-summer"][data-collector-mode="night"]
+  .training-frame
+  .reading-copy
+  .inline-annotation.annotation-kind-reusable_expression {
+  color: #d9f0ff;
+  background: #153f5b;
+  box-shadow: inset 0 -2px #5aa0cf;
+}
+
+:root[data-theme="seal-summer"][data-collector-mode="night"]
+  .training-frame
+  .reading-copy
+  .reading-paragraph-group
+  > p:is(:hover, :focus-within) {
+  background: rgb(23 65 76 / 78%);
+}
+
+:root[data-theme="seal-summer"][data-collector-mode="night"]
+  .training-frame
   :is(.material-heading p, .reading-breathing-marker, .context-locator-label) {
   color: #b2cece;
 }

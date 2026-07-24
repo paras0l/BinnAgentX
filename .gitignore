@@ -36,11 +36,10 @@ test-results/
 artifacts/
 openwiki/
 fixtures/content/v1/generated/
-
 # Logs and temporary files
 *.log
 *.tmp
 *.swp
 *~
 /design-qa.md
-logs/deploy.state
+logs/
