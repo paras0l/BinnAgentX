@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://binnagent.local/contracts/agent-quality/v1/gold-case.schema.json",
+  "title": "Agent quality gold case",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "case_id",
+    "category",
+    "input",
+    "expected"
+  ],
+  "properties": {
+    "case_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "category": {
+      "enum": [
+        "article",
+        "question",
+        "grammar",
+        "word_sense",
+        "lab_continuity"
+      ]
+    },
+    "input": {
+      "type": "object"
+    },
+    "expected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "result",
+        "issue_codes"
+      ],
+      "properties": {
+        "result": {
+          "enum": [
+            "pass",
+            "revise",
+            "reject",
+            "review_required"
+          ]
+        },
+        "issue_codes": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "ARTICLE_COHERENCE_FAILED",
+              "ARTICLE_TARGET_COVERAGE_FAILED",
+              "QUESTION_NOT_ANSWERABLE",
+              "MULTIPLE_VALID_OPTIONS",
+              "ANSWER_EVIDENCE_MISMATCH",
+              "DISTRACTOR_NOT_PLAUSIBLE",
+              "HINT_LEAKS_ANSWER",
+              "GRAMMAR_SPAN_INVALID",
+              "GRAMMAR_PARSE_LOW_CONFIDENCE",
+              "WORD_SENSE_UNRESOLVED",
+              "TRANSLATION_ALIGNMENT_FAILED",
+              "TRANSFER_TASK_UNRELATED",
+              "SOURCE_LINEAGE_MISSING",
+              "RIGHTS_STATUS_BLOCKED",
+              "SEMANTIC_REVIEW_NOT_RUN"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "review_notes": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

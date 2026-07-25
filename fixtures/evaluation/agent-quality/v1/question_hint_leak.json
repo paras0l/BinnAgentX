@@ -1,0 +1,16 @@
+{
+  "case_id": "question_hint_leak_001",
+  "category": "question",
+  "input": {
+    "stem": "What is the author's main claim?",
+    "answer": "Shared workspaces can improve collaboration.",
+    "hint": "Choose the option saying shared workspaces can improve collaboration."
+  },
+  "expected": {
+    "result": "revise",
+    "issue_codes": [
+      "HINT_LEAKS_ANSWER"
+    ],
+    "review_notes": "The hint repeats the complete correct answer."
+  }
+}

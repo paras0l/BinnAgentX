@@ -104,6 +104,7 @@ async def _clean() -> None:
         tables.run_task_completion_events,
         tables.run_task_refs,
         tables.revision_events,
+        tables.model_invocation_ledger,
         tables.model_invocations,
         tables.ai_interventions,
         tables.attempt_versions,
@@ -648,20 +649,21 @@ async def test_annotation_question_can_request_audited_ai_analysis_without_mutat
         paragraph_text = str(paragraph["text"])
         quote = "Useful effort can reveal exactly where understanding breaks down"
         start = paragraph_text.index(quote)
+        request_body = {
+            "expected_version": task["version"],
+            "span": {
+                "paragraph_id": paragraph["paragraph_id"],
+                "start": start,
+                "end": start + len(quote),
+                "text_quote": quote,
+                "text_hash": sha256(quote.encode()).hexdigest(),
+            },
+            "learner_question": "我还没理清这个长句的主干和修饰关系。",
+        }
 
         analysis = await client.post(
             f"/learner/v1/tasks/{task['task_id']}/annotations/analyze",
-            json={
-                "expected_version": task["version"],
-                "span": {
-                    "paragraph_id": paragraph["paragraph_id"],
-                    "start": start,
-                    "end": start + len(quote),
-                    "text_quote": quote,
-                    "text_hash": sha256(quote.encode()).hexdigest(),
-                },
-                "learner_question": "我还没理清这个长句的主干和修饰关系。",
-            },
+            json=request_body,
         )
 
         assert analysis.status_code == 200
@@ -672,8 +674,41 @@ async def test_annotation_question_can_request_audited_ai_analysis_without_mutat
         assert payload["vocabulary_note"] is None
         assert len(payload["grammar_structure"]) == 3
         assert payload["source"] == "local_fallback"
+        assert payload["analysis_status"] == "abstained"
+        assert payload["confidence"] is None
+        assert payload["provider_ref"] is None
         assert len(payload["breakdown"]) == 3
         assert "不回答题目" in payload["boundary_note"]
+
+        async with get_engine().begin() as connection:
+            ledger = (
+                (
+                    await connection.execute(
+                        sa.select(tables.model_invocation_ledger).where(
+                            tables.model_invocation_ledger.c.task_id == task["task_id"]
+                        )
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            legacy_payload = dict(ledger["response_payload"])
+            legacy_payload.pop("analysis_status")
+            legacy_payload.pop("confidence")
+            legacy_payload.pop("provider_ref")
+            await connection.execute(
+                tables.model_invocation_ledger.update()
+                .where(tables.model_invocation_ledger.c.invocation_key == ledger["invocation_key"])
+                .values(response_payload=legacy_payload)
+            )
+        replayed = await client.post(
+            f"/learner/v1/tasks/{task['task_id']}/annotations/analyze",
+            json=request_body,
+        )
+        assert replayed.status_code == 200, replayed.text
+        assert replayed.json()["analysis_status"] == "abstained"
+        assert replayed.json()["confidence"] is None
+        assert replayed.json()["provider_ref"] is None
 
         unchanged = await client.get(f"/learner/v1/tasks/{task['task_id']}")
         assert unchanged.json()["version"] == task["version"]

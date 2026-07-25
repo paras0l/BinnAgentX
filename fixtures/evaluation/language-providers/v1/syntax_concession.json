@@ -1,0 +1,30 @@
+{
+  "case_id": "syntax_concession_001",
+  "analysis_kind": "syntax",
+  "gold_status": "engineering_seed",
+  "request": {
+    "selected_text": "Although the office was small, the team collaborated well.",
+    "paragraph_context": "Although the office was small, the team collaborated well.",
+    "selection_start": 0,
+    "selection_end": 58
+  },
+  "expected": {
+    "acceptable_statuses": [
+      "resolved"
+    ],
+    "required_structures": [
+      {
+        "start": 0,
+        "end": 29,
+        "text_quote": "Although the office was small",
+        "label": "concession_clause"
+      },
+      {
+        "start": 31,
+        "end": 57,
+        "text_quote": "the team collaborated well",
+        "label": "main_clause"
+      }
+    ]
+  }
+}

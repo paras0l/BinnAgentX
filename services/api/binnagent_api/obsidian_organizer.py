@@ -14,6 +14,7 @@ from binnagent_agent.agents.obsidian_inbox_organizer import (
     InboxNote,
     ObsidianInboxOrganizerAgent,
 )
+from binnagent_agent.workflows import GRAPH_VERSION, stable_thread_id
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -102,6 +103,16 @@ async def _enqueue_organization(
             prompt_version=OBSIDIAN_INBOX_ORGANIZER_PROMPT_VERSION,
             plan=[],
             error_code=None,
+            knowledge_status="source_capture_required",
+            runtime_kind="langgraph",
+            graph_thread_id=stable_thread_id("knowledge-organization", run_id),
+            graph_version=GRAPH_VERSION,
+            knowledge_claimed_by=None,
+            knowledge_lease_expires_at=None,
+            knowledge_attempt_count=0,
+            source_record_ids=[],
+            candidate_ids=[],
+            proposal_ids=[],
             created_at=now,
             planned_at=None,
             completed_at=None,
@@ -137,12 +148,69 @@ async def plan_pending_organization(
         return None
     if run["status"] == "planned":
         actions = list(run["plan"])
+        action_source_keys = [str(action["source_key"]) for action in actions]
+        source_records = (
+            (
+                await connection.execute(
+                    sa.select(tables.knowledge_source_records)
+                    .where(
+                        tables.knowledge_source_records.c.learner_id == learner_id,
+                        tables.knowledge_source_records.c.connection_id == connection_id,
+                        tables.knowledge_source_records.c.source_key.in_(action_source_keys),
+                    )
+                    .order_by(tables.knowledge_source_records.c.captured_at.desc())
+                )
+            )
+            .mappings()
+            .all()
+            if action_source_keys
+            else []
+        )
+        planned_source_by_key: dict[str, str] = {}
+        for source_record in source_records:
+            planned_source_by_key.setdefault(
+                str(source_record["source_key"]),
+                str(source_record["source_record_id"]),
+            )
+        captured_source_keys = set(planned_source_by_key)
+        knowledge_status = str(run["knowledge_status"])
+        if knowledge_status in {
+            "source_capture_required",
+            "needs_more_context",
+            "extracting",
+        }:
+            knowledge_status = (
+                "extracting"
+                if actions and len(captured_source_keys) == len(set(action_source_keys))
+                else "needs_more_context"
+            )
+            await connection.execute(
+                tables.obsidian_organizer_runs.update()
+                .where(tables.obsidian_organizer_runs.c.run_id == run["run_id"])
+                .values(
+                    knowledge_status=knowledge_status,
+                    source_record_ids=list(planned_source_by_key.values()),
+                    knowledge_claimed_by=None,
+                    knowledge_lease_expires_at=None,
+                    error_code=None,
+                )
+            )
+        requested_source_keys = [
+            str(action["source_key"])
+            for action in actions
+            if str(action["source_key"]) not in captured_source_keys
+        ]
+        archival_ready = (
+            knowledge_status in {"validation_scheduled", "rejected"} and not requested_source_keys
+        )
         return {
             "run_id": str(run["run_id"]),
-            "status": "planned",
+            "status": "planned" if archival_ready else "queued",
             "inbox_count": len(actions),
             "classified_count": len(actions),
-            "actions": actions,
+            "actions": actions if archival_ready else [],
+            "knowledge_status": knowledge_status,
+            "needs_full_content_source_keys": requested_source_keys,
         }
     rows = (
         (
@@ -207,6 +275,39 @@ async def plan_pending_organization(
     classification_complete = len(actions) == len(rows)
     status = "planned" if actions and classification_complete else "queued" if rows else "noop"
     persisted_actions = actions if status == "planned" else []
+    source_records = (
+        (
+            await connection.execute(
+                sa.select(tables.knowledge_source_records)
+                .where(
+                    tables.knowledge_source_records.c.learner_id == learner_id,
+                    tables.knowledge_source_records.c.connection_id == connection_id,
+                    tables.knowledge_source_records.c.source_key.in_(
+                        [str(row["source_key"]) for row in rows]
+                    ),
+                )
+                .order_by(tables.knowledge_source_records.c.captured_at.desc())
+            )
+        )
+        .mappings()
+        .all()
+        if rows
+        else []
+    )
+    latest_source_by_key: dict[str, str] = {}
+    for source_record in source_records:
+        latest_source_by_key.setdefault(
+            str(source_record["source_key"]),
+            str(source_record["source_record_id"]),
+        )
+    source_record_ids = list(latest_source_by_key.values())
+    knowledge_status = (
+        "extracting"
+        if rows and len(source_record_ids) == len(rows)
+        else "needs_more_context"
+        if rows
+        else "classified_legacy"
+    )
     await connection.execute(
         tables.obsidian_organizer_runs.update()
         .where(tables.obsidian_organizer_runs.c.run_id == run["run_id"])
@@ -214,16 +315,32 @@ async def plan_pending_organization(
             status=status,
             prompt_version=decision.prompt_version or str(run["prompt_version"]),
             plan=persisted_actions,
+            knowledge_status=knowledge_status,
+            source_record_ids=source_record_ids,
             planned_at=now if status in {"planned", "noop"} else None,
             completed_at=now if status == "noop" else None,
         )
     )
+    requested_source_keys = [
+        str(row["source_key"]) for row in rows if str(row["source_key"]) not in latest_source_by_key
+    ]
+    archival_ready = (
+        knowledge_status in {"validation_scheduled", "rejected"} and not requested_source_keys
+    )
     return {
         "run_id": str(run["run_id"]),
-        "status": status,
+        "status": (
+            "planned"
+            if status == "planned" and archival_ready
+            else status
+            if status == "noop"
+            else "queued"
+        ),
         "inbox_count": len(rows),
         "classified_count": len(actions),
-        "actions": persisted_actions,
+        "actions": persisted_actions if archival_ready else [],
+        "knowledge_status": knowledge_status,
+        "needs_full_content_source_keys": requested_source_keys,
     }
 
 
@@ -233,6 +350,7 @@ async def complete_organization(
     learner_id: str,
     run_id: str,
     completed_action_ids: set[str],
+    completed_source_keys: dict[str, str] | None = None,
 ) -> bool:
     row = (
         (
@@ -251,6 +369,39 @@ async def complete_organization(
     expected = {str(item["action_id"]) for item in row["plan"]}
     if completed_action_ids != expected:
         return False
+    target_by_action = {str(item["action_id"]): str(item["target_folder"]) for item in row["plan"]}
+    source_by_action = {str(item["action_id"]): str(item["source_key"]) for item in row["plan"]}
+    completed_paths = completed_source_keys or {}
+    if completed_paths and set(completed_paths) != expected:
+        return False
+    for action_id, target_path in completed_paths.items():
+        if not target_path.startswith(f"{target_by_action[action_id]}/"):
+            return False
+        context = (
+            (
+                await connection.execute(
+                    sa.select(tables.obsidian_learning_context).where(
+                        tables.obsidian_learning_context.c.learner_id == learner_id,
+                        tables.obsidian_learning_context.c.source_key
+                        == source_by_action[action_id],
+                    )
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if context is None:
+            return False
+        await connection.execute(
+            tables.obsidian_learning_context.update()
+            .where(tables.obsidian_learning_context.c.context_id == context["context_id"])
+            .values(source_key=target_path)
+        )
+        await connection.execute(
+            tables.learning_asset_index.update()
+            .where(tables.learning_asset_index.c.asset_id == context["asset_id"])
+            .values(relative_path=target_path, updated_at=datetime.now(UTC))
+        )
     await connection.execute(
         tables.obsidian_organizer_runs.update()
         .where(tables.obsidian_organizer_runs.c.run_id == run_id)

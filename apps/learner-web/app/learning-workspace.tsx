@@ -80,10 +80,7 @@ import {
 } from "../lib/annotation-selection";
 import { locateContextMatches, type ContextMatch } from "../lib/context-locator";
 import { ExpressionLab, type LabTab } from "./expression-lab";
-import {
-  layoutKnuthPlassParagraph,
-  type KnuthPlassLine,
-} from "./knuth-plass-layout";
+import { layoutKnuthPlassParagraph, type KnuthPlassLine } from "./knuth-plass-layout";
 import {
   defaultExpressionTabLayout,
   MovableWorkspaceTabs,
@@ -1797,7 +1794,13 @@ function ActiveTaskWorkspace({
                               <article className="annotation-analysis-result" aria-live="polite">
                                 <header>
                                   <span>{ANALYSIS_FOCUS_LABELS[annotationAnalysis.focus]}</span>
-                                  <small>当前选区分析</small>
+                                  <small>
+                                    {annotationAnalysis.analysis_status === "resolved"
+                                      ? "已验证分析"
+                                      : annotationAnalysis.analysis_status === "review_required"
+                                        ? "待验证建议"
+                                        : "分析指引（已拒答）"}
+                                  </small>
                                 </header>
                                 {annotationAnalysis.vocabulary_note ? (
                                   <div className="annotation-primary-help vocabulary-help">
@@ -1813,7 +1816,11 @@ function ActiveTaskWorkspace({
                                 ) : null}
                                 {annotationAnalysis.grammar_structure.length > 0 ? (
                                   <div className="annotation-grammar-structure">
-                                    <strong>语法结构</strong>
+                                    <strong>
+                                      {annotationAnalysis.analysis_status === "resolved"
+                                        ? "语法结构"
+                                        : "候选结构 / 自查步骤"}
+                                    </strong>
                                     <ol>
                                       {annotationAnalysis.grammar_structure.map((item) => (
                                         <li key={item}>{item}</li>
@@ -3431,11 +3438,7 @@ function PremeasuredAnnotatedParagraph(props: AnnotatedParagraphProps) {
             }),
           };
         }
-        const lines = layoutKnuthPlassParagraph(
-          props.text,
-          preparedRef.current.value,
-          width,
-        );
+        const lines = layoutKnuthPlassParagraph(props.text, preparedRef.current.value, width);
         if (!lines) {
           if (!disposed) setPredictedLayout(null);
           return;

@@ -708,6 +708,7 @@ describe("learner home", () => {
       source_context_count: 2,
       training_eligible: true,
       start_block_reason: null,
+      quality_status: "semantic_reviewed",
       status: "ready",
       started_at: null,
       completed_at: null,

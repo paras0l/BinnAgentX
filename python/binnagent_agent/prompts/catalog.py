@@ -25,6 +25,19 @@ DEFAULT_PROMPT_REGISTRY = PromptRegistry(
             model_policy={"temperature": 0.45, "max_tokens": 1800},
         ),
         PromptDefinition(
+            prompt_id="personalized_reading.assess",
+            prompt_version="v1",
+            owner="learning_content",
+            purpose="基于已生成文章和冻结目标包生成分层题目、语法候选与迁移任务。",
+            template_text=(
+                "基于 {{article}} 和冻结的 {{objective_bundle}}，逐项生成可定位证据的分层题目、"
+                "语法候选和同目标新语境表达任务。不得更改目标，不得让提示泄露答案，只输出 "
+                "{{output_schema}}。"
+            ),
+            variables=("article", "objective_bundle", "output_schema"),
+            model_policy={"temperature": 0.2, "max_tokens": 2600},
+        ),
+        PromptDefinition(
             prompt_id="reading.selection_analysis",
             prompt_version="v2",
             owner="reading_lab",

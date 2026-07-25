@@ -552,6 +552,12 @@ async def analyze_annotation(
             request_hash=request_digest,
         )
         if cached_response is not None:
+            cached_response.setdefault(
+                "analysis_status",
+                "review_required" if cached_response.get("source") == "model" else "abstained",
+            )
+            cached_response.setdefault("confidence", None)
+            cached_response.setdefault("provider_ref", None)
             return AnnotationAnalysisView.model_validate(cached_response)
         tool_result = await tool_executor.execute(tool_name, tool_context, invoke_annotation_model)
         result = _require_tool_success(tool_result)
@@ -592,6 +598,17 @@ async def analyze_annotation(
 
         response = AnnotationAnalysisView(
             analysis_id=_id("annotation_analysis"),
+            analysis_status=(
+                "review_required"
+                if result.outcome is GatewayOutcome.VALIDATED_MODEL
+                else "abstained"
+            ),
+            confidence=None,
+            provider_ref=(
+                f"model:{result.adapter}:{result.prompt_version}"
+                if result.outcome is GatewayOutcome.VALIDATED_MODEL
+                else None
+            ),
             focus=result.focus,
             selection_scope=result.selection_scope,
             translation=result.translation,
@@ -604,7 +621,12 @@ async def analyze_annotation(
                 "model" if result.outcome is GatewayOutcome.VALIDATED_MODEL else "local_fallback"
             ),
             reason_code=result.reason_code,
-            boundary_note="只解释当前选区，不回答题目；整句翻译不会扩展为全文代读。",
+            boundary_note=(
+                "当前结果尚未经过已冻结词典或句法 Provider 验证, 只能作为分析建议；"
+                "低置信度结果不会写成已确认知识。"
+                if result.outcome is GatewayOutcome.VALIDATED_MODEL
+                else "当前仅提供分析步骤, 未完成可靠词义或句法解析；不回答题目、不代读全文。"
+            ),
         )
         await _complete_model_invocation(
             connection,

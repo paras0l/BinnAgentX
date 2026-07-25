@@ -336,7 +336,19 @@ export interface PersonalizedTrainingMaterial {
   focus_points: string[];
   source_context_count: number;
   training_eligible: boolean;
-  start_block_reason: "calibration_required" | "active_training" | "material_not_ready" | null;
+  start_block_reason:
+    | "calibration_required"
+    | "active_training"
+    | "material_not_ready"
+    | "quality_review_required"
+    | null;
+  quality_status:
+    | "not_evaluated"
+    | "structurally_validated"
+    | "semantic_review_required"
+    | "semantic_reviewed"
+    | "rejected"
+    | "unverified_legacy";
   status:
     | "requested"
     | "generating"

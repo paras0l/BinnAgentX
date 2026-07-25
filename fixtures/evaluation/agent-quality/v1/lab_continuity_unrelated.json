@@ -1,0 +1,23 @@
+{
+  "case_id": "lab_continuity_unrelated_001",
+  "category": "lab_continuity",
+  "input": {
+    "objective_bundle_id": "objective_concession_001",
+    "required_transfer_targets": [
+      "concession"
+    ],
+    "expression_required_target_ids": [
+      "passive_voice"
+    ],
+    "reading_evidence_refs": [
+      "question_001"
+    ]
+  },
+  "expected": {
+    "result": "reject",
+    "issue_codes": [
+      "TRANSFER_TASK_UNRELATED"
+    ],
+    "review_notes": "The expression task does not exercise any required reading transfer target."
+  }
+}

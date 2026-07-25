@@ -27,7 +27,7 @@ async def enrich_review_contexts(
         # but does not complete PydanticAI's prompted-output run. Extraction is
         # optional, so avoid adding a guaranteed timeout before reading generation.
         return contexts, False, "provider_output_protocol_unsupported:longcat"
-    model = _model_from_settings(settings)
+    model = model_from_settings(settings)
     if model is None or not contexts:
         return contexts, False, None
     source = "\n\n".join(
@@ -64,7 +64,7 @@ async def enrich_review_contexts(
     return enriched, True, None
 
 
-def _model_from_settings(settings: Settings) -> Model | None:
+def model_from_settings(settings: Settings) -> Model | None:
     if not settings.enable_remote_model_calls or settings.model_adapter == "deterministic_fixture":
         return None
     api_key: str | None

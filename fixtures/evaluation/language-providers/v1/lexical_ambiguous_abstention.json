@@ -1,0 +1,18 @@
+{
+  "case_id": "lexical_bank_ambiguous_001",
+  "analysis_kind": "lexical",
+  "gold_status": "engineering_seed",
+  "request": {
+    "lemma": "bank",
+    "selected_text": "bank",
+    "paragraph_context": "They reached the bank shortly before it closed."
+  },
+  "expected": {
+    "acceptable_statuses": [
+      "review_required",
+      "abstained"
+    ],
+    "accepted_sense_ids": [],
+    "required_part_of_speech": "noun"
+  }
+}

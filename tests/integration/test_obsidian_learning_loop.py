@@ -1,6 +1,7 @@
-from collections.abc import AsyncIterator
-from datetime import UTC, datetime
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
+from typing import cast
 
 import httpx2
 import pytest
@@ -11,8 +12,11 @@ from binnagent_agent.agents.obsidian_inbox_organizer import (
     InboxClassificationOutput,
     InboxNote,
 )
-from binnagent_api import obsidian_organizer
+from binnagent_api import knowledge_organization_service, obsidian_organizer
 from binnagent_api.database import dispose_engine, get_engine
+from binnagent_api.knowledge_organization_service import (
+    process_next_knowledge_organization,
+)
 from binnagent_api.main import create_app
 from binnagent_api.model_adapters import PersonalizedReadingOutput
 from binnagent_api.obsidian_organizer import enqueue_login_organization
@@ -22,6 +26,12 @@ from binnagent_api.personalized_material_service import (
 )
 from binnagent_api.settings import get_settings
 from binnagent_api.vertical_slice import tables
+from binnagent_domain.learning.content_quality import QualityReport, SourceSpan
+from binnagent_domain.learning.knowledge_organization import (
+    AtomicKnowledgeCandidate,
+    CandidateValidationStatus,
+    KnowledgeKind,
+)
 
 pytestmark = pytest.mark.integration
 
@@ -55,13 +65,21 @@ async def _clean() -> None:
             tables.task_annotations,
             tables.task_material_assignments,
             tables.learning_tasks,
+            tables.reading_evidence_snapshots,
+            tables.personalized_material_events,
             tables.personalized_training_materials,
+            tables.model_invocation_ledger,
             tables.workflow_runs,
             tables.learner_profile_snapshots,
             tables.idempotency_records,
             tables.agent_memory_events,
             tables.learning_evidence,
             tables.agent_working_memory,
+            tables.knowledge_relations,
+            tables.knowledge_change_proposals,
+            tables.atomic_knowledge_candidates,
+            tables.knowledge_source_payloads,
+            tables.knowledge_source_records,
             tables.obsidian_organizer_runs,
             tables.obsidian_learning_context,
             tables.obsidian_sync_connections,
@@ -69,6 +87,149 @@ async def _clean() -> None:
             tables.learning_asset_index,
         ):
             await connection.execute(sa.delete(table))
+
+
+def _reviewed_package_values(
+    material_id: str,
+    paragraphs: list[str],
+) -> dict[str, object]:
+    objective_bundle_id = f"objective_{material_id}"
+    reading_artifact_id = f"article_{material_id}"
+    transfer_contract_id = f"transfer_{material_id}"
+    return {
+        "quality_status": "semantic_reviewed",
+        "quality_reports": [
+            {
+                "report_id": f"review_{material_id}",
+                "artifact_id": reading_artifact_id,
+                "validator_id": "integration_human_reviewer",
+                "validator_version": "v1",
+                "result": "pass",
+                "issue_code": None,
+                "severity": "info",
+                "evidence_refs": [],
+                "repair_scope": [],
+                "confidence": 1.0,
+            }
+        ],
+        "objective_bundle": {
+            "objective_bundle_id": objective_bundle_id,
+            "learner_id": "learner_local_default",
+            "source_asset_ids": ["asset_fixture"],
+            "target_discourse_moves": ["concession"],
+            "reading_skill_targets": ["main_idea"],
+            "difficulty_constraints": {
+                "lexical_band": "developing",
+                "syntax_band": "developing",
+                "discourse_band": "developing",
+                "estimated_minutes": 12,
+            },
+            "required_evidence": [
+                {
+                    "target_id": "concession",
+                    "evidence_kind": "discourse",
+                    "minimum_occurrences": 1,
+                }
+            ],
+            "version": 1,
+        },
+        "question_bank": [
+            {
+                "question_id": f"{material_id}_main_idea",
+                "question_type": "main_idea",
+                "difficulty_tier": "standard",
+                "prompt": "Which statement best captures how the passage treats prior knowledge?",
+                "options": [
+                    {
+                        "option_id": "option_a",
+                        "text": "It recommends discarding every earlier rule.",
+                        "error_mechanism": "reverses_the_article_claim",
+                    },
+                    {
+                        "option_id": "option_b",
+                        "text": "It argues for testing familiar knowledge in a new context.",
+                    },
+                    {
+                        "option_id": "option_c",
+                        "text": "It describes a personal timetable without making a claim.",
+                        "error_mechanism": "introduces_an_unmentioned_topic",
+                    },
+                    {
+                        "option_id": "option_d",
+                        "text": "It says that isolated memorization always guarantees transfer.",
+                        "error_mechanism": "overstates_the_rejected_view",
+                    },
+                ],
+                "answer_option_id": "option_b",
+                "answer_evidence": [
+                    {
+                        "paragraph_id": "personalized_p_03",
+                        "start": 0,
+                        "end": min(80, len(paragraphs[2])),
+                        "text_quote": paragraphs[2][:80],
+                    }
+                ],
+                "solver_trace_ref": f"human_solver_{material_id}",
+                "hints": {
+                    "h1": "先概括每一段的作用, 再寻找能覆盖全文的选项。",
+                    "h2": "比较文章对 remembered rule 和 new situation 的关系。",
+                    "h3": "排除与原文方向相反或引入无关主题的选项。",
+                    "h4": "回到末段, 确认作者如何描述 transfer。",
+                },
+            }
+        ],
+        "grammar_annotations": [
+            {
+                "challenge_id": f"{material_id}_concession",
+                "paragraph_id": "personalized_p_02",
+                "correct_text": "Although",
+                "incorrect_text": "Whenever",
+                "error_type": "让步连接词与主从句逻辑",
+                "hint": "确认前半句是承认既有情况, 还是表示每当某事发生。",
+                "provider_ref": "integration_human_review",
+                "confidence": 1.0,
+            }
+        ],
+        "transfer_contract": {
+            "transfer_contract_id": transfer_contract_id,
+            "objective_bundle_id": objective_bundle_id,
+            "source_reading_artifact_id": reading_artifact_id,
+            "required_transfer_targets": ["concession"],
+            "reading_evidence_refs": [f"{material_id}_main_idea"],
+            "novel_context_constraints": ["Use a study-planning context."],
+            "success_criteria": ["Use a concession before a distinct main claim."],
+            "delayed_validation_plan": "Retest in an unfamiliar context after seven days.",
+            "version": 1,
+        },
+        "expression_task": {
+            "content_type": "micro_expression",
+            "objective_bundle_id": objective_bundle_id,
+            "transfer_contract_id": transfer_contract_id,
+            "title": "Transfer the concession into a study decision",
+            "situation": (
+                "A study group has a familiar plan, but new evidence suggests one limitation. "
+                "State a decision that acknowledges the old plan before making a new claim."
+            ),
+            "audience": "Your study group",
+            "purpose": "Make a qualified recommendation",
+            "target_argument_move": "concession",
+            "optional_active_resource": "Although ..., the main claim ...",
+            "forbidden_mechanical_use": ["Do not copy a sentence from the reading."],
+            "output_requirement": {
+                "sentence_min": 2,
+                "sentence_max": 3,
+                "word_min": 25,
+                "word_max": 70,
+                "language": "English",
+            },
+            "v1_minimum": [
+                "Acknowledge the earlier plan.",
+                "Make a distinct recommendation in the main clause.",
+            ],
+            "required_target_ids": ["concession"],
+            "reading_evidence_refs": [f"{material_id}_main_idea"],
+        },
+    }
 
 
 @pytest.mark.asyncio
@@ -80,6 +241,496 @@ async def test_personalized_material_requires_matching_obsidian_context() -> Non
     assert response.status_code == 409
     assert response.json()["code"] == "OBSIDIAN_CONTEXT_REQUIRED"
     assert response.json()["reason"] == "obsidian_context_required"
+
+
+@pytest.mark.asyncio
+async def test_organizer_captures_atomic_source_and_requires_review_before_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transport = httpx2.ASGITransport(app=create_app())
+    content = "Although introduces a concession. The main clause carries the writer's claim."
+    content_hash = sha256(content.encode()).hexdigest()
+    async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
+        paired = await client.post("/learner/v1/assets/obsidian-plugin-connections")
+        connection_id = paired.json()["connection_id"]
+        plugin_headers = {"Authorization": f"Bearer {paired.json()['sync_secret']}"}
+        queued = await client.post("/learner/v1/assets/obsidian-organizer-runs")
+        assert queued.status_code == 202, queued.text
+
+        imported = await client.post(
+            f"/learner/v1/obsidian-sync/{connection_id}/import",
+            headers=plugin_headers,
+            json={
+                "schema_version": "learning-context/v1",
+                "vault_name": "bin01",
+                "entries": [
+                    {
+                        "source_key": "BinnAgentX/00-Inbox/concession.md",
+                        "title": "Concession note",
+                        "kind": "grammar",
+                        "tags": ["grammar"],
+                        "excerpt": "Although introduces a concession.",
+                        "modified_at": datetime.now(UTC).isoformat(),
+                        "authorized_content": {
+                            "scope_prefix": "BinnAgentX/00-Inbox/",
+                            "content": content,
+                            "content_hash": content_hash,
+                        },
+                    }
+                ],
+            },
+        )
+        assert imported.status_code == 200, imported.text
+        assert imported.json()["organization"]["knowledge_status"] == "extracting"
+        organizer_run_id = imported.json()["organization"]["run_id"]
+
+        async def extract_fixture(
+            source_rows: list[sa.RowMapping],
+        ) -> tuple[AtomicKnowledgeCandidate, ...]:
+            source = source_rows[0]
+            return (
+                AtomicKnowledgeCandidate(
+                    candidate_id="knowledge_candidate_fixture_001",
+                    source_record_id=str(source["source_record_id"]),
+                    knowledge_kind=KnowledgeKind.GRAMMAR,
+                    canonical_key="grammar:concession:although",
+                    title="Although concession",
+                    claim="Although introduces a concession before the main claim.",
+                    source_spans=(
+                        SourceSpan(
+                            source_id=str(source["source_record_id"]),
+                            source_version=content_hash,
+                            start=0,
+                            end=34,
+                            text_quote="Although introduces a concession.",
+                        ),
+                    ),
+                    confidence=0.96,
+                    validation_status=CandidateValidationStatus.CANDIDATE,
+                    extractor_version="integration-fixture-v1",
+                ),
+                AtomicKnowledgeCandidate(
+                    candidate_id="knowledge_candidate_fixture_002",
+                    source_record_id=str(source["source_record_id"]),
+                    knowledge_kind=KnowledgeKind.READING_SKILL,
+                    canonical_key="reading:main-clause:claim",
+                    title="Locate the main claim",
+                    claim="The main clause carries the writer's claim.",
+                    source_spans=(
+                        SourceSpan(
+                            source_id=str(source["source_record_id"]),
+                            source_version=content_hash,
+                            start=35,
+                            end=78,
+                            text_quote="The main clause carries the writer's claim.",
+                        ),
+                    ),
+                    confidence=0.94,
+                    validation_status=CandidateValidationStatus.CANDIDATE,
+                    extractor_version="integration-fixture-v1",
+                ),
+            )
+
+        monkeypatch.setattr(
+            knowledge_organization_service,
+            "_extract_sources",
+            extract_fixture,
+        )
+        async with get_engine().begin() as connection:
+            await connection.execute(
+                tables.obsidian_organizer_runs.update()
+                .where(tables.obsidian_organizer_runs.c.run_id == organizer_run_id)
+                .values(
+                    knowledge_status="matching",
+                    knowledge_claimed_by="terminated-worker",
+                    knowledge_lease_expires_at=datetime.now(UTC) - timedelta(seconds=1),
+                )
+            )
+        assert await process_next_knowledge_organization() is True
+
+        control_headers = {"X-BinnAgent-Control-Role": "developer_reviewer"}
+        proposals = await client.get(
+            "/control/v1/knowledge-organization/proposals",
+            headers=control_headers,
+        )
+        assert proposals.status_code == 200, proposals.text
+        assert len(proposals.json()) == 2
+        proposal = next(
+            item
+            for item in proposals.json()
+            if item["canonical_key"] == "grammar:concession:although"
+        )
+        second_proposal = next(
+            item
+            for item in proposals.json()
+            if item["canonical_key"] == "reading:main-clause:claim"
+        )
+        assert proposal["action"] == "CREATE"
+        assert proposal["canonical_key"] == "grammar:concession:although"
+
+        reviewed = await client.post(
+            f"/control/v1/knowledge-organization/proposals/{proposal['proposal_id']}/review",
+            headers=control_headers,
+            json={"action": "approve"},
+        )
+        assert reviewed.status_code == 200, reviewed.text
+        assert reviewed.json()["status"] == "approved"
+        async with get_engine().connect() as connection:
+            assert (
+                await connection.scalar(
+                    sa.select(tables.obsidian_organizer_runs.c.knowledge_status).where(
+                        tables.obsidian_organizer_runs.c.run_id == organizer_run_id
+                    )
+                )
+                == "awaiting_review"
+            )
+        rejected = await client.post(
+            f"/control/v1/knowledge-organization/proposals/{second_proposal['proposal_id']}/review",
+            headers=control_headers,
+            json={"action": "reject"},
+        )
+        assert rejected.status_code == 200, rejected.text
+        assert rejected.json()["status"] == "rejected"
+        async with get_engine().connect() as connection:
+            run_state = (
+                (
+                    await connection.execute(
+                        sa.select(tables.obsidian_organizer_runs).where(
+                            tables.obsidian_organizer_runs.c.run_id == organizer_run_id
+                        )
+                    )
+                )
+                .mappings()
+                .one()
+            )
+        assert run_state["knowledge_status"] == "validation_scheduled"
+        assert run_state["knowledge_claimed_by"] is None
+        assert run_state["knowledge_lease_expires_at"] is None
+
+        assets = await client.get("/learner/v1/assets")
+        created = next(item for item in assets.json() if item["title"] == "Although concession")
+        assert created["sync_status"] == "pending_export"
+        pending_exports = await client.get(
+            f"/learner/v1/obsidian-sync/{connection_id}/exports",
+            headers=plugin_headers,
+        )
+        exported = next(
+            item for item in pending_exports.json() if item["asset_id"] == created["asset_id"]
+        )
+        assert "source_record:" in exported["initial_content"]
+
+        async with get_engine().connect() as connection:
+            assert (
+                await connection.scalar(
+                    sa.select(sa.func.count()).select_from(tables.knowledge_source_records)
+                )
+                == 1
+            )
+            relation = (
+                (await connection.execute(sa.select(tables.knowledge_relations))).mappings().one()
+            )
+        assert relation["relation_type"] == "DERIVED_FROM"
+
+
+@pytest.mark.asyncio
+async def test_knowledge_organizer_real_graph_create_merge_and_replay() -> None:
+    """Acceptance path uses real Postgres checkpoints and the offline model adapter."""
+
+    transport = httpx2.ASGITransport(app=create_app())
+    first_content = (
+        "Although this clause marks a concession before independent evidence appears clearly."
+    )
+    second_content = (
+        "Although this clause marks a concession before independent evidence changes unexpectedly."
+    )
+    control_headers = {"X-BinnAgent-Control-Role": "developer_reviewer"}
+    async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
+        paired = await client.post("/learner/v1/assets/obsidian-plugin-connections")
+        connection_id = paired.json()["connection_id"]
+        plugin_headers = {"Authorization": f"Bearer {paired.json()['sync_secret']}"}
+
+        async def organize(source_key: str, content: str) -> dict[str, object]:
+            queued = await client.post("/learner/v1/assets/obsidian-organizer-runs")
+            assert queued.status_code == 202, queued.text
+            import_body = {
+                "schema_version": "learning-context/v1",
+                "vault_name": "bin01",
+                "entries": [
+                    {
+                        "source_key": source_key,
+                        "title": "Grammar concession evidence",
+                        "kind": "grammar",
+                        "tags": ["grammar"],
+                        "excerpt": content,
+                        "modified_at": datetime.now(UTC).isoformat(),
+                        "authorized_content": {
+                            "scope_prefix": "BinnAgentX/00-Inbox/",
+                            "content": content,
+                            "content_hash": sha256(content.encode()).hexdigest(),
+                        },
+                    }
+                ],
+            }
+            imported = await client.post(
+                f"/learner/v1/obsidian-sync/{connection_id}/import",
+                headers=plugin_headers,
+                json=import_body,
+            )
+            assert imported.status_code == 200, imported.text
+            assert imported.json()["organization"]["status"] == "queued"
+            run_id = imported.json()["organization"]["run_id"]
+            assert await process_next_knowledge_organization() is True
+            proposals = await client.get(
+                "/control/v1/knowledge-organization/proposals",
+                headers=control_headers,
+            )
+            assert proposals.status_code == 200, proposals.text
+            assert len(proposals.json()) == 1
+            proposal = proposals.json()[0]
+            reviewed = await client.post(
+                f"/control/v1/knowledge-organization/proposals/{proposal['proposal_id']}/review",
+                headers=control_headers,
+                json={"action": "approve"},
+            )
+            assert reviewed.status_code == 200, reviewed.text
+            assert reviewed.json()["status"] == "committed"
+            archive_plan_response = await client.post(
+                f"/learner/v1/obsidian-sync/{connection_id}/import",
+                headers=plugin_headers,
+                json=import_body,
+            )
+            assert archive_plan_response.status_code == 200
+            plan = archive_plan_response.json()["organization"]
+            assert plan["run_id"] == run_id
+            assert plan["status"] == "planned", plan
+            completed_source_keys = {
+                item["action_id"]: (
+                    f"{item['target_folder']}/{source_key.rsplit('/', maxsplit=1)[-1]}"
+                )
+                for item in plan["actions"]
+            }
+            acknowledged = await client.post(
+                f"/learner/v1/obsidian-sync/{connection_id}/organizer-runs/{run_id}/ack",
+                headers=plugin_headers,
+                json={
+                    "completed_action_ids": list(completed_source_keys),
+                    "completed_source_keys": completed_source_keys,
+                },
+            )
+            assert acknowledged.status_code == 200, acknowledged.text
+            return cast(dict[str, object], proposal)
+
+        created_proposal = await organize(
+            "BinnAgentX/00-Inbox/concession-create.md",
+            first_content,
+        )
+        assert created_proposal["action"] == "CREATE"
+        exports = await client.get(
+            f"/learner/v1/obsidian-sync/{connection_id}/exports",
+            headers=plugin_headers,
+        )
+        create_export = exports.json()[0]
+        assert create_export["operation"] == "CREATE"
+        asset_id = create_export["asset_id"]
+        acknowledged_export = await client.post(
+            f"/learner/v1/obsidian-sync/{connection_id}/exports/{asset_id}/ack",
+            headers=plugin_headers,
+            json={
+                "export_id": create_export["export_id"],
+                "source_key": "BinnAgentX/02-Grammar/concession.md",
+                "content_hash": "a" * 64,
+                "modified_at": datetime.now(UTC).isoformat(),
+                "vault_name": "bin01",
+            },
+        )
+        assert acknowledged_export.status_code == 200, acknowledged_export.text
+
+        merged_proposal = await organize(
+            "BinnAgentX/00-Inbox/concession-merge.md",
+            second_content,
+        )
+        assert merged_proposal["action"] == "MERGE"
+        patch_exports = await client.get(
+            f"/learner/v1/obsidian-sync/{connection_id}/exports",
+            headers=plugin_headers,
+        )
+        assert len(patch_exports.json()) == 1
+        patch = patch_exports.json()[0]
+        assert patch["operation"] == "APPEND_PATCH"
+        assert patch["expected_content_hash"] == "a" * 64
+        assert patch["source_key"] == "BinnAgentX/02-Grammar/concession.md"
+        assert merged_proposal["proposal_id"] in patch["patch_content"]
+
+        repeated = await client.post(
+            f"/control/v1/knowledge-organization/proposals/{merged_proposal['proposal_id']}/review",
+            headers=control_headers,
+            json={"action": "approve"},
+        )
+        assert repeated.status_code == 200, repeated.text
+        assert repeated.json()["status"] == "committed"
+        async with get_engine().connect() as connection:
+            assert (
+                await connection.scalar(
+                    sa.select(sa.func.count())
+                    .select_from(tables.outbox_messages)
+                    .where(tables.outbox_messages.c.aggregate_id == asset_id)
+                )
+                == 2
+            )
+            assert (
+                await connection.scalar(
+                    sa.select(sa.func.count()).select_from(tables.model_invocation_ledger)
+                )
+                == 2
+            )
+
+
+@pytest.mark.asyncio
+async def test_knowledge_organizer_retries_same_checkpoint_after_worker_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    transport = httpx2.ASGITransport(app=create_app())
+    content = "Although introduces a concession before independent evidence."
+    digest = sha256(content.encode()).hexdigest()
+    async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
+        paired = await client.post("/learner/v1/assets/obsidian-plugin-connections")
+        connection_id = paired.json()["connection_id"]
+        headers = {"Authorization": f"Bearer {paired.json()['sync_secret']}"}
+        await client.post("/learner/v1/assets/obsidian-organizer-runs")
+        imported = await client.post(
+            f"/learner/v1/obsidian-sync/{connection_id}/import",
+            headers=headers,
+            json={
+                "schema_version": "learning-context/v1",
+                "vault_name": "bin01",
+                "entries": [
+                    {
+                        "source_key": "BinnAgentX/00-Inbox/retry.md",
+                        "title": "Grammar retry",
+                        "kind": "grammar",
+                        "tags": ["grammar"],
+                        "excerpt": content,
+                        "modified_at": datetime.now(UTC).isoformat(),
+                        "authorized_content": {
+                            "scope_prefix": "BinnAgentX/00-Inbox/",
+                            "content": content,
+                            "content_hash": digest,
+                        },
+                    }
+                ],
+            },
+        )
+        run_id = imported.json()["organization"]["run_id"]
+        original_extract = cast(
+            Callable[
+                [Sequence[sa.RowMapping]],
+                Awaitable[tuple[AtomicKnowledgeCandidate, ...]],
+            ],
+            knowledge_organization_service._extract_sources,
+        )
+        failed = False
+
+        async def fail_once(
+            source_rows: list[sa.RowMapping],
+        ) -> tuple[AtomicKnowledgeCandidate, ...]:
+            nonlocal failed
+            if not failed:
+                failed = True
+                raise RuntimeError("injected_worker_exit")
+            return await original_extract(source_rows)
+
+        monkeypatch.setattr(
+            knowledge_organization_service,
+            "_extract_sources",
+            fail_once,
+        )
+        assert await process_next_knowledge_organization() is True
+        async with get_engine().connect() as connection:
+            first_attempt = (
+                (
+                    await connection.execute(
+                        sa.select(tables.obsidian_organizer_runs).where(
+                            tables.obsidian_organizer_runs.c.run_id == run_id
+                        )
+                    )
+                )
+                .mappings()
+                .one()
+            )
+        assert first_attempt["knowledge_status"] == "extracting"
+        assert first_attempt["knowledge_attempt_count"] == 1
+        assert await process_next_knowledge_organization() is True
+        async with get_engine().connect() as connection:
+            recovered = (
+                (
+                    await connection.execute(
+                        sa.select(tables.obsidian_organizer_runs).where(
+                            tables.obsidian_organizer_runs.c.run_id == run_id
+                        )
+                    )
+                )
+                .mappings()
+                .one()
+            )
+        assert recovered["knowledge_status"] == "awaiting_review"
+        assert recovered["knowledge_attempt_count"] == 2
+        assert len(recovered["proposal_ids"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_knowledge_organizer_empty_extraction_requests_more_context() -> None:
+    transport = httpx2.ASGITransport(app=create_app())
+    content = "Note."
+    async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
+        paired = await client.post("/learner/v1/assets/obsidian-plugin-connections")
+        connection_id = paired.json()["connection_id"]
+        headers = {"Authorization": f"Bearer {paired.json()['sync_secret']}"}
+        await client.post("/learner/v1/assets/obsidian-organizer-runs")
+        imported = await client.post(
+            f"/learner/v1/obsidian-sync/{connection_id}/import",
+            headers=headers,
+            json={
+                "schema_version": "learning-context/v1",
+                "vault_name": "bin01",
+                "entries": [
+                    {
+                        "source_key": "BinnAgentX/00-Inbox/insufficient.md",
+                        "title": "Insufficient grammar note",
+                        "kind": "grammar",
+                        "tags": ["grammar"],
+                        "excerpt": content,
+                        "modified_at": datetime.now(UTC).isoformat(),
+                        "authorized_content": {
+                            "scope_prefix": "BinnAgentX/00-Inbox/",
+                            "content": content,
+                            "content_hash": sha256(content.encode()).hexdigest(),
+                        },
+                    }
+                ],
+            },
+        )
+        run_id = imported.json()["organization"]["run_id"]
+        assert await process_next_knowledge_organization() is True
+        async with get_engine().connect() as connection:
+            run = (
+                (
+                    await connection.execute(
+                        sa.select(tables.obsidian_organizer_runs).where(
+                            tables.obsidian_organizer_runs.c.run_id == run_id
+                        )
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            proposal_count = await connection.scalar(
+                sa.select(sa.func.count())
+                .select_from(tables.knowledge_change_proposals)
+                .where(tables.knowledge_change_proposals.c.run_id == run_id)
+            )
+        assert run["knowledge_status"] == "needs_more_context"
+        assert run["error_code"] == "atomic_extractor_returned_no_supported_claims"
+        assert proposal_count == 0
 
 
 @pytest.mark.asyncio
@@ -173,7 +824,10 @@ async def test_bidirectional_sync_personalized_reading_and_annotation_export(
         )
         assert len(reading_payload["paragraphs"]) >= 3
         assert "Contrast and concession" in " ".join(reading_payload["focus_points"])
-        assert reading_payload["status"] == "ready"
+        assert reading_payload["status"] == "awaiting_review"
+        assert reading_payload["quality_status"] == "semantic_review_required"
+        assert reading_payload["training_eligible"] is False
+        assert reading_payload["start_block_reason"] == "quality_review_required"
         reading = httpx2.Response(200, json=reading_payload)
         async with get_engine().connect() as connection:
             memory_event = (
@@ -236,6 +890,77 @@ async def test_bidirectional_sync_personalized_reading_and_annotation_export(
                 .values(state="completed", stage="completed", updated_at=datetime.now(UTC))
             )
 
+        quality_blocked = await client.post(
+            f"/learner/v1/runs/personalized/{reading.json()['material_id']}",
+            headers={"Idempotency-Key": "start-unreviewed-personalized-reading"},
+            json={},
+        )
+        assert quality_blocked.status_code == 422, quality_blocked.text
+        assert quality_blocked.json()["code"] == "CONTENT_NOT_ELIGIBLE"
+        assert (
+            quality_blocked.json()["reason"]
+            == "personalized_training_material_quality_review_required"
+        )
+        control_headers = {"X-BinnAgent-Control-Role": "developer_reviewer"}
+        review_queue = await client.get(
+            "/control/v1/personalized-content/reviews",
+            headers=control_headers,
+        )
+        assert review_queue.status_code == 200, review_queue.text
+        candidate = next(
+            item
+            for item in review_queue.json()
+            if item["material_id"] == reading.json()["material_id"]
+        )
+        assert [item["correct_answer"] for item in candidate["question_bank"]] == [
+            "B",
+            "C",
+            "A",
+        ]
+        for question in candidate["question_bank"]:
+            evidence = question["minimum_evidence"]
+            paragraph_index = int(evidence["paragraph_id"].removeprefix("personalized_p_")) - 1
+            paragraph = candidate["paragraphs"][paragraph_index]
+            assert paragraph[evidence["start"] : evidence["end"]] == evidence["text_quote"]
+            assert all(
+                option.get("error_mechanism")
+                for option in question["options"]
+                if option["option_id"] != question["correct_answer"]
+            )
+        assert candidate["grammar_annotations"][0]["analysis"]["status"] == "review_required"
+        assert candidate["grammar_annotations"][0]["analysis"]["parser_id"] == (
+            "model_candidate_unverified"
+        )
+        assert (
+            candidate["transfer_contract"]["objective_bundle_id"]
+            == (candidate["objective_bundle"]["objective_bundle_id"])
+        )
+        reviewed = await client.post(
+            f"/control/v1/personalized-content/reviews/{reading.json()['material_id']}",
+            headers=control_headers,
+            json={
+                "action": "approve",
+                "reason": (
+                    "人工复核通过: 三道题答案唯一且证据逐字命中, 干扰项机制明确; "
+                    "让步结构候选与原文一致; 表达任务保持同一目标并切换到新语境。"
+                ),
+            },
+        )
+        assert reviewed.status_code == 200, reviewed.text
+        assert reviewed.json()["status"] == "ready"
+        assert reviewed.json()["quality_status"] == "semantic_reviewed"
+        assert reviewed.json()["grammar_annotations"][0]["analysis"]["status"] == "resolved"
+        assert reviewed.json()["grammar_annotations"][0]["review"]["reviewer_id"] == (
+            "developer_reviewer"
+        )
+        reviewed_queue = await client.get("/learner/v1/training-materials")
+        reading_payload = next(
+            item
+            for item in reviewed_queue.json()
+            if item["material_id"] == reading.json()["material_id"]
+        )
+        reading = httpx2.Response(200, json=reading_payload)
+
         started = await client.post(
             f"/learner/v1/runs/personalized/{reading.json()['material_id']}",
             headers={"Idempotency-Key": "start-personalized-reading"},
@@ -247,12 +972,28 @@ async def test_bidirectional_sync_personalized_reading_and_annotation_export(
         assert workspace["run"]["stage"] == "matched_reading"
         assert workspace["task"]["task_type"] == "matched_reading"
         assert workspace["material"]["title"] == reading.json()["title"]
-        assert workspace["material"]["question"]["question_type"] == "main_idea"
+        assert workspace["material"]["question"]["question_type"] == "detail_comprehension"
+        assert workspace["material"]["question"]["options"][1]["option_id"] == "B"
         assert '"hints"' not in started.text
 
         blocked_reading = await client.post("/learner/v1/training-materials/personalized")
         assert blocked_reading.status_code == 202, blocked_reading.text
         await process_personalized_material(blocked_reading.json()["material_id"])
+        blocked_queue = await client.get("/learner/v1/training-materials")
+        blocked_payload = next(
+            item
+            for item in blocked_queue.json()
+            if item["material_id"] == blocked_reading.json()["material_id"]
+        )
+        blocked_reviewed = await client.post(
+            f"/control/v1/personalized-content/reviews/{blocked_reading.json()['material_id']}",
+            headers=control_headers,
+            json={
+                "action": "approve",
+                "reason": "人工复核通过: 证据、答案、语法候选和迁移任务均满足审核清单。",
+            },
+        )
+        assert blocked_reviewed.status_code == 200, blocked_reviewed.text
         blocked_queue = await client.get("/learner/v1/training-materials")
         blocked_payload = next(
             item
@@ -299,7 +1040,7 @@ async def test_bidirectional_sync_personalized_reading_and_annotation_export(
             headers={"Idempotency-Key": "personalized-reading-v1"},
             json={
                 "expected_version": task_annotation.json()["version"],
-                "text": "Option A. The passage transfers familiar knowledge into a new context.",
+                "text": "Option B. The passage transfers familiar knowledge into a new context.",
                 "independence": "independent",
             },
         )
@@ -330,6 +1071,57 @@ async def test_bidirectional_sync_personalized_reading_and_annotation_export(
 
         expression_workspace = await client.get(
             f"/learner/v1/runs/{workspace['run']['workflow_run_id']}/workspace"
+        )
+        assert expression_workspace.json()["material"]["target_argument_move"] == "concession"
+        expression_content_version = expression_workspace.json()["material"]["content_version_id"]
+        assert "__expression_v1__reading_evidence_" in expression_content_version
+        async with get_engine().connect() as connection:
+            snapshot = (
+                (
+                    await connection.execute(
+                        sa.select(tables.reading_evidence_snapshots).where(
+                            tables.reading_evidence_snapshots.c.task_id == task["task_id"]
+                        )
+                    )
+                )
+                .mappings()
+                .one()
+            )
+        assert snapshot["objective_bundle_id"] == (f"objective_{reading.json()['material_id']}")
+        assert (
+            task_annotation.json()["annotations"][0]["annotation_id"]
+            in (snapshot["payload"]["difficulty_target_ids"])
+        )
+        assert snapshot["payload"]["expression_task"]["reading_evidence_snapshot_id"] == str(
+            snapshot["snapshot_id"]
+        )
+        async with get_engine().begin() as connection:
+            stored_expression = await connection.scalar(
+                sa.select(tables.personalized_training_materials.c.expression_task).where(
+                    tables.personalized_training_materials.c.material_id
+                    == reading.json()["material_id"]
+                )
+            )
+            assert isinstance(stored_expression, dict)
+            assert "reading_evidence_snapshot_id" not in stored_expression
+            await connection.execute(
+                tables.personalized_training_materials.update()
+                .where(
+                    tables.personalized_training_materials.c.material_id
+                    == reading.json()["material_id"]
+                )
+                .values(expression_task={**stored_expression, "title": "A later run's title"})
+            )
+        replayed_expression_workspace = await client.get(
+            f"/learner/v1/runs/{workspace['run']['workflow_run_id']}/workspace"
+        )
+        assert (
+            replayed_expression_workspace.json()["material"]["title"]
+            == expression_workspace.json()["material"]["title"]
+        )
+        assert (
+            replayed_expression_workspace.json()["material"]["content_version_id"]
+            == expression_content_version
         )
         expression_task = expression_workspace.json()["task"]
         expression_attempt = await client.post(
@@ -489,7 +1281,18 @@ async def test_bidirectional_sync_personalized_reading_and_annotation_export(
             "binnagent_api.personalized_material_service.generate_personalized_reading",
             generate_without_source_mapping,
         )
-        assert await process_personalized_material(due_material_id) == "ready"
+        assert await process_personalized_material(due_material_id) == "awaiting_review"
+        due_reviewed = await client.post(
+            f"/control/v1/personalized-content/reviews/{due_material_id}",
+            headers=control_headers,
+            json={
+                "action": "approve",
+                "reason": (
+                    "人工复核通过: 来源资产由目标包绑定, 题目证据和语法替换均通过确定性校验。"
+                ),
+            },
+        )
+        assert due_reviewed.status_code == 200, due_reviewed.text
         async with get_engine().connect() as connection:
             ready_row = (
                 (
@@ -512,8 +1315,10 @@ async def test_bidirectional_sync_personalized_reading_and_annotation_export(
                 ).scalars()
             )
         assert ready_row["status"] == "ready"
-        assert ready_row["evidence_target_asset_ids"] == []
-        assert "evidence_mapping_skipped" in event_types
+        assert ready_row["evidence_target_asset_ids"] == [projected["asset_id"]]
+        assert all(QualityReport.model_validate(report) for report in ready_row["quality_reports"])
+        assert "semantic_review_requested" in event_types
+        assert "semantic_review_approved" in event_types
 
 
 @pytest.mark.asyncio
@@ -573,10 +1378,11 @@ async def test_login_triggered_inbox_organization_is_planned_and_acknowledged(
         )
         assert imported.status_code == 200, imported.text
         plan = imported.json()["organization"]
-        assert plan["status"] == "planned"
+        assert plan["status"] == "queued"
         assert plan["inbox_count"] == 1
         assert plan["classified_count"] == 1
-        assert plan["actions"][0]["target_folder"] == "BinnAgentX/02-Grammar"
+        assert plan["actions"] == []
+        assert plan["needs_full_content_source_keys"] == ["BinnAgentX/00-Inbox/although.md"]
         repeated = await client.post(
             f"/learner/v1/obsidian-sync/{connection_id}/import",
             headers=headers,
@@ -597,10 +1403,65 @@ async def test_login_triggered_inbox_organization_is_planned_and_acknowledged(
         )
         assert repeated.status_code == 200, repeated.text
         assert repeated.json()["organization"] == plan
+        content = "Although introduces a concession before the main claim."
+        content_hash = sha256(content.encode()).hexdigest()
+        captured_body = {
+            "schema_version": "learning-context/v1",
+            "vault_name": "bin01",
+            "entries": [
+                {
+                    "source_key": "BinnAgentX/00-Inbox/although.md",
+                    "title": "Although",
+                    "kind": "grammar",
+                    "tags": ["grammar"],
+                    "excerpt": content,
+                    "modified_at": datetime.now(UTC).isoformat(),
+                    "authorized_content": {
+                        "scope_prefix": "BinnAgentX/00-Inbox/",
+                        "content": content,
+                        "content_hash": content_hash,
+                    },
+                }
+            ],
+        }
+        captured = await client.post(
+            f"/learner/v1/obsidian-sync/{connection_id}/import",
+            headers=headers,
+            json=captured_body,
+        )
+        assert captured.status_code == 200, captured.text
+        assert captured.json()["organization"]["knowledge_status"] == "extracting"
+        assert captured.json()["organization"]["needs_full_content_source_keys"] == []
+        assert captured.json()["organization"]["actions"] == []
+        assert await process_next_knowledge_organization() is True
+        proposals = await client.get(
+            "/control/v1/knowledge-organization/proposals",
+            headers={"X-BinnAgent-Control-Role": "developer_reviewer"},
+        )
+        approved = await client.post(
+            f"/control/v1/knowledge-organization/proposals/"
+            f"{proposals.json()[0]['proposal_id']}/review",
+            headers={"X-BinnAgent-Control-Role": "developer_reviewer"},
+            json={"action": "approve"},
+        )
+        assert approved.status_code == 200, approved.text
+        archival = await client.post(
+            f"/learner/v1/obsidian-sync/{connection_id}/import",
+            headers=headers,
+            json=captured_body,
+        )
+        archive_plan = archival.json()["organization"]
+        assert archive_plan["status"] == "planned"
+        assert archive_plan["actions"][0]["target_folder"] == "BinnAgentX/02-Grammar"
         acknowledged = await client.post(
             f"/learner/v1/obsidian-sync/{connection_id}/organizer-runs/{plan['run_id']}/ack",
             headers=headers,
-            json={"completed_action_ids": [plan["actions"][0]["action_id"]]},
+            json={
+                "completed_action_ids": [archive_plan["actions"][0]["action_id"]],
+                "completed_source_keys": {
+                    archive_plan["actions"][0]["action_id"]: ("BinnAgentX/02-Grammar/although.md")
+                },
+            },
         )
         assert acknowledged.status_code == 200, acknowledged.text
         async with get_engine().connect() as connection:

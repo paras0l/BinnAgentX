@@ -13,11 +13,17 @@ from binnagent_api.auth_routes import auth_router
 from binnagent_api.content_generation import content_generation_router
 from binnagent_api.database import get_engine
 from binnagent_api.experience_routes import experience_control_router
+from binnagent_api.knowledge_organization_routes import (
+    knowledge_organization_control_router,
+)
 from binnagent_api.learner_auth import resolve_request_identity
 from binnagent_api.learner_history_routes import learner_history_router
 from binnagent_api.learner_preference_routes import learner_preference_router
 from binnagent_api.learner_profile_routes import learner_profile_router
 from binnagent_api.learning_asset_routes import learning_asset_router, obsidian_sync_router
+from binnagent_api.personalized_content_review_routes import (
+    personalized_content_review_router,
+)
 from binnagent_api.settings import get_settings
 from binnagent_api.training_material_routes import training_material_router
 from binnagent_api.user_management_routes import user_management_router
@@ -152,6 +158,8 @@ def create_control_app() -> FastAPI:
     control.include_router(experience_control_router)
     control.include_router(user_management_router)
     control.include_router(agent_configuration_router)
+    control.include_router(knowledge_organization_control_router)
+    control.include_router(personalized_content_review_router)
     _register_error_handlers(control)
     return control
 

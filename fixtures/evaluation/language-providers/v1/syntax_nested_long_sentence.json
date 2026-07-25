@@ -1,0 +1,42 @@
+{
+  "case_id": "syntax_nested_long_sentence_001",
+  "analysis_kind": "syntax",
+  "gold_status": "engineering_seed",
+  "request": {
+    "selected_text": "Although the proposal, which the committee had revised twice, appeared costly, the board approved it because the expected savings outweighed the initial expense.",
+    "paragraph_context": "Although the proposal, which the committee had revised twice, appeared costly, the board approved it because the expected savings outweighed the initial expense.",
+    "selection_start": 0,
+    "selection_end": 161
+  },
+  "expected": {
+    "acceptable_statuses": [
+      "resolved"
+    ],
+    "required_structures": [
+      {
+        "start": 0,
+        "end": 77,
+        "text_quote": "Although the proposal, which the committee had revised twice, appeared costly",
+        "label": "concession_clause"
+      },
+      {
+        "start": 23,
+        "end": 60,
+        "text_quote": "which the committee had revised twice",
+        "label": "relative_clause"
+      },
+      {
+        "start": 79,
+        "end": 100,
+        "text_quote": "the board approved it",
+        "label": "main_clause"
+      },
+      {
+        "start": 101,
+        "end": 160,
+        "text_quote": "because the expected savings outweighed the initial expense",
+        "label": "reason_clause"
+      }
+    ]
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "version": "v1",
+  "contract": "contracts/agent-quality/v1/language-provider-case.schema.json",
+  "status": "engineering_seed_pending_expert_freeze",
+  "cases": [
+    "lexical_bank_river.json",
+    "lexical_bank_finance.json",
+    "lexical_ambiguous_abstention.json",
+    "syntax_concession.json",
+    "syntax_nested_long_sentence.json"
+  ]
+}

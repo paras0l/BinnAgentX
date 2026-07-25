@@ -56,6 +56,9 @@ class AnnotationAnalysisRequest(BaseModel):
 
 class AnnotationAnalysisView(BaseModel):
     analysis_id: str
+    analysis_status: Literal["resolved", "abstained", "review_required"]
+    confidence: Annotated[float, Field(ge=0, le=1)] | None
+    provider_ref: str | None
     focus: Literal["vocabulary", "syntax", "reference", "logic", "context", "mixed"]
     selection_scope: Literal["word_or_phrase", "sentence_or_paragraph"]
     translation: str | None

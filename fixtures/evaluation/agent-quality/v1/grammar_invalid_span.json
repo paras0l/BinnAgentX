@@ -1,0 +1,20 @@
+{
+  "case_id": "grammar_invalid_span_001",
+  "category": "grammar",
+  "input": {
+    "source_text": "Although the office was small, the team collaborated well.",
+    "span": {
+      "start": 9,
+      "end": 19,
+      "text_quote": "the offices"
+    },
+    "structure_key": "concession_clause"
+  },
+  "expected": {
+    "result": "reject",
+    "issue_codes": [
+      "GRAMMAR_SPAN_INVALID"
+    ],
+    "review_notes": "The quoted text does not match the half-open source offsets."
+  }
+}

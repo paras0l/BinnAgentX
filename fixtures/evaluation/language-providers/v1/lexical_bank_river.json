@@ -1,0 +1,19 @@
+{
+  "case_id": "lexical_bank_river_001",
+  "analysis_kind": "lexical",
+  "gold_status": "engineering_seed",
+  "request": {
+    "lemma": "bank",
+    "selected_text": "bank",
+    "paragraph_context": "After the storm, they sat on the bank and watched the river subside."
+  },
+  "expected": {
+    "acceptable_statuses": [
+      "resolved"
+    ],
+    "accepted_sense_ids": [
+      "bank%1:17:01::"
+    ],
+    "required_part_of_speech": "noun"
+  }
+}

@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://binnagent.local/contracts/agent-quality/v1/language-provider-result.schema.json",
+  "title": "Normalized language provider benchmark result",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "provider_id",
+    "provider_version",
+    "cases"
+  ],
+  "properties": {
+    "provider_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "provider_version": {
+      "type": "string",
+      "minLength": 1
+    },
+    "cases": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/caseResult"
+      }
+    }
+  },
+  "$defs": {
+    "caseResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "case_id",
+        "latency_ms",
+        "status"
+      ],
+      "properties": {
+        "case_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "latency_ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "status": {
+          "enum": [
+            "resolved",
+            "review_required",
+            "abstained"
+          ]
+        },
+        "selected_sense_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "part_of_speech": {
+          "type": "string",
+          "minLength": 1
+        },
+        "structures": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/structure"
+          }
+        }
+      }
+    },
+    "structure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "start",
+        "end",
+        "text_quote",
+        "label"
+      ],
+      "properties": {
+        "start": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "end": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "text_quote": {
+          "type": "string",
+          "minLength": 1
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

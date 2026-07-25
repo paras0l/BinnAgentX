@@ -8,6 +8,7 @@ from uuid import uuid4
 
 import sqlalchemy as sa
 from binnagent_agent.memory import MemoryAccessContext, MemoryQuery
+from binnagent_agent.workflows import GRAPH_VERSION, stable_thread_id
 from binnagent_domain.public_errors import PublicErrorCode
 from binnagent_domain.vertical_slice.errors import DomainError
 from fastapi import APIRouter, HTTPException, Request, status
@@ -31,9 +32,16 @@ class PersonalizedTrainingMaterialView(BaseModel):
     source_context_count: int
     training_eligible: bool
     start_block_reason: (
-        Literal["calibration_required", "active_training", "material_not_ready"] | None
+        Literal[
+            "calibration_required",
+            "active_training",
+            "material_not_ready",
+            "quality_review_required",
+        ]
+        | None
     )
     status: str
+    quality_status: str
     started_at: datetime | None
     completed_at: datetime | None
     created_at: datetime
@@ -78,14 +86,37 @@ def _material_view(
         and str(row["active_workflow_run_id"] or "") == active_workflow_run_id
     )
     material_ready = str(row["status"]) in {"ready", "in_progress", "completed"}
+    quality_reviewed = (
+        str(row["quality_status"]) == "semantic_reviewed"
+        and bool(row["question_bank"])
+        and bool(row["grammar_annotations"])
+        and row["transfer_contract"] is not None
+        and row["expression_task"] is not None
+    )
     training_eligible = (
-        material_ready and has_completed_run and (active_workflow_run_id is None or owns_active_run)
+        material_ready
+        and quality_reviewed
+        and has_completed_run
+        and (active_workflow_run_id is None or owns_active_run)
     )
     start_block_reason: (
-        Literal["calibration_required", "active_training", "material_not_ready"] | None
+        Literal[
+            "calibration_required",
+            "active_training",
+            "material_not_ready",
+            "quality_review_required",
+        ]
+        | None
     ) = None
-    if not material_ready:
+    if (
+        str(row["status"]) == "awaiting_review"
+        or str(row["quality_status"]) == "semantic_review_required"
+    ):
+        start_block_reason = "quality_review_required"
+    elif not material_ready:
         start_block_reason = "material_not_ready"
+    elif not quality_reviewed:
+        start_block_reason = "quality_review_required"
     elif not has_completed_run:
         start_block_reason = "calibration_required"
     elif not training_eligible:
@@ -99,6 +130,7 @@ def _material_view(
         training_eligible=training_eligible,
         start_block_reason=start_block_reason,
         status=str(row["status"]),
+        quality_status=str(row["quality_status"]),
         started_at=row["started_at"],
         completed_at=row["completed_at"],
         created_at=row["created_at"],
@@ -244,6 +276,19 @@ async def generate_personalized_training_material(
                 requested_goal=generation.goal,
                 requested_kinds=generation.kinds,
                 evidence_target_asset_ids=[],
+                quality_status="not_evaluated",
+                quality_reports=[],
+                objective_bundle={},
+                question_bank=[],
+                grammar_annotations=[],
+                transfer_contract=None,
+                expression_task=None,
+                runtime_kind="langgraph",
+                graph_thread_id=stable_thread_id(
+                    "personalized-content",
+                    material_id,
+                ),
+                graph_version=GRAPH_VERSION,
                 started_at=None,
                 completed_at=None,
                 active_workflow_run_id=None,

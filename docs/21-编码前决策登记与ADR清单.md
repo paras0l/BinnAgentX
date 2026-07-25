@@ -1,7 +1,7 @@
 # 编码前决策登记与 ADR 清单
 
-> 状态：Sprint 0 决策台账 v0.1
-> 日期：2026-07-15
+> 状态：Sprint 0 与 Agent 升级决策台账 v0.3
+> 日期：2026-07-25
 > 目的：区分已冻结、仅供 Spike、必须通过 Spike 决定和正式产品前仍待输入的事项。
 
 ## 1. 状态定义
@@ -29,7 +29,7 @@
 | D-008 | PostgreSQL 是首版单一事实源，模块化单体，API/Worker 分进程 | `spike_baseline` | 架构选型 |
 | D-009 | Next.js 用户端/控制舱 + FastAPI/Python 后端 | `spike_baseline` | 架构选型 |
 | D-010 | Tiptap/ProseMirror 作为编辑器候选 | `experiment` | 验证 IME、选区、mark、diff 和迁移 |
-| D-011 | 显式 Python 状态机是业务基线；LangGraph 做同契约对照 | `experiment` | 验证恢复、幂等、回放与运维成本 |
+| D-011 | 显式领域状态机继续定义业务真相；LangGraph 作为动态 Agent 工作流首选运行时进入同契约受控 Spike | `spike_baseline` | ADR-0006；验证恢复、幂等、回放与运维成本 |
 | D-012 | 模型必须经过统一网关，不允许领域模块直连供应商 SDK | `frozen` | 供应商替换与数据治理 |
 | D-013 | IRT/CAT 不参与日常训练推荐和用户可见能力值 | `shadow_only` | 缺少真实标定数据 |
 | D-014 | 自动作文/翻译总分和阶段切换不进入用户高影响决策 | `shadow_only` | 缺少教师一致性与跨题稳定性 |
@@ -37,6 +37,7 @@
 | D-016 | 截图/OCR、语音、手写、移动端和跨终端不建设 | `deferred` | 产品硬边界，实际为排除项 |
 | D-017 | 正式认证、部署云厂商和后台队列实现 | `experiment` | Spike 后 ADR 冻结 |
 | D-018 | 真实内容难度、自动反馈效度和学习者模型选择收益 | `blocked_for_product` | 需要真人与教师证据 |
+| D-019 | PostgreSQL 业务表是唯一业务事实源；现有 Worker/Outbox 负责投递领取；LangGraph checkpoint 只负责执行恢复 | `spike_baseline` | ADR-0009；通过故障窗口和对账测试后转正式接受 |
 
 ## 3. 必须产出的 ADR
 
@@ -49,11 +50,12 @@ ADR 使用“背景—决策—替代方案—后果—验证证据—回滚方�
 | ADR-0003 | 双前端、双 API client 与权限隔离 | 开工前 |
 | ADR-0004 | PostgreSQL 单一事实源、不可变证据和 Outbox | 开工前 |
 | ADR-0005 | 编辑器文档协议与迁移策略 | 编辑器 Spike 后 |
-| ADR-0006 | 框架无关状态机与 LangGraph 对照结论 | 工作流 Spike 后 |
+| ADR-0006 | 框架无关状态机与 LangGraph 对照结论 | 已形成 `accepted-for-spike`；工作流 Spike 后决定是否转 `accepted` |
 | ADR-0007 | 模型网关、供应商数据政策和预算控制 | 模型网关 Spike 后 |
 | ADR-0008 | 开发身份、正式认证边界与控制舱 MFA | Spike 结束前 |
-| ADR-0009 | 后台执行队列与重试语义 | 故障注入后 |
+| ADR-0009 | 后台执行队列与重试语义 | 已形成 `accepted-for-spike`；故障注入后决定是否转 `accepted` |
 | ADR-0010 | 部署地区、运行平台和数据删除边界 | 任何真人数据进入前 |
+| ADR-0011 | 词义与句法 Provider 候选及离线基准 | 已形成 `proposed`；权利核验、同机基准和专家金标后决定是否转 `accepted` |
 
 ## 4. Spike 前临时回答
 

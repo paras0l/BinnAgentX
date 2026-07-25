@@ -1,0 +1,17 @@
+{
+  "case_id": "word_sense_unresolved_001",
+  "category": "word_sense",
+  "input": {
+    "selection": "bank",
+    "context": "They sat by the bank after the storm.",
+    "provider_candidates": [],
+    "provider_version": "fixture-v1"
+  },
+  "expected": {
+    "result": "review_required",
+    "issue_codes": [
+      "WORD_SENSE_UNRESOLVED"
+    ],
+    "review_notes": "No licensed provider sense is available; the system must abstain."
+  }
+}

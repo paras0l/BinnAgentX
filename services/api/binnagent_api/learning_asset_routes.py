@@ -11,9 +11,9 @@ import hashlib
 import hmac
 import secrets
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import quote
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import sqlalchemy as sa
 from binnagent_domain.public_errors import PublicErrorCode
@@ -170,12 +170,43 @@ class ObsidianContextEntry(BaseModel):
     tags: list[str] = Field(default_factory=list, max_length=24)
     excerpt: str = Field(min_length=1, max_length=1200)
     modified_at: datetime
+    authorized_content: AuthorizedNoteContent | None = None
 
     @field_validator("kind")
     @classmethod
     def valid_context_kind(cls, value: str) -> str:
         if value not in _ASSET_KINDS:
             raise ValueError("asset_kind_invalid")
+        return value
+
+    @field_validator("authorized_content")
+    @classmethod
+    def content_scope_contains_source(
+        cls,
+        value: AuthorizedNoteContent | None,
+        info: Any,
+    ) -> AuthorizedNoteContent | None:
+        source_key = info.data.get("source_key")
+        if value is not None and (
+            not isinstance(source_key, str) or not source_key.startswith(value.scope_prefix)
+        ):
+            raise ValueError("authorized_content_scope_mismatch")
+        return value
+
+
+class AuthorizedNoteContent(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    scope_prefix: str = Field(min_length=1, max_length=500)
+    content: str = Field(min_length=1, max_length=50_000)
+    content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @field_validator("content_hash")
+    @classmethod
+    def hash_matches_content(cls, value: str, info: Any) -> str:
+        content = info.data.get("content")
+        if isinstance(content, str) and hashlib.sha256(content.encode()).hexdigest() != value:
+            raise ValueError("authorized_content_hash_mismatch")
         return value
 
 
@@ -189,9 +220,11 @@ class ObsidianContextImportRequest(BaseModel):
 class ObsidianOrganizationAck(BaseModel):
     model_config = ConfigDict(extra="forbid")
     completed_action_ids: list[str] = Field(max_length=80)
+    completed_source_keys: dict[str, str] = Field(default_factory=dict, max_length=80)
 
 
 class ObsidianAssetExportView(BaseModel):
+    export_id: str
     asset_id: str
     kind: str
     title: str
@@ -199,6 +232,11 @@ class ObsidianAssetExportView(BaseModel):
     source_type: str
     source_task_id: str | None
     initial_content: str | None
+    operation: Literal["CREATE", "APPEND_PATCH"]
+    source_key: str | None = None
+    expected_content_hash: str | None = None
+    patch_content: str | None = None
+    knowledge_proposal_id: str | None = None
 
 
 class ObsidianAssetExportAck(BaseModel):
@@ -207,6 +245,7 @@ class ObsidianAssetExportAck(BaseModel):
     content_hash: str = Field(min_length=64, max_length=64)
     modified_at: datetime
     vault_name: str = Field(min_length=1, max_length=128)
+    export_id: UUID | None = None
 
 
 def _asset_view(row: sa.RowMapping) -> LearningAssetView:
@@ -411,7 +450,11 @@ async def import_obsidian_context(
         row = await _require_obsidian_connection(connection, connection_id, authorization)
         for entry in body.entries:
             context_id = hashlib.sha256(f"{connection_id}:{entry.source_key}".encode()).hexdigest()
-            content_hash = hashlib.sha256(entry.excerpt.encode()).hexdigest()
+            content_hash = (
+                entry.authorized_content.content_hash
+                if entry.authorized_content is not None
+                else hashlib.sha256(entry.excerpt.encode()).hexdigest()
+            )
             asset_id = entry.asset_id or f"asset_obs_{context_id[:24]}"
             values = {
                 "context_id": context_id,
@@ -432,6 +475,61 @@ async def import_obsidian_context(
                 index_elements=[tables.obsidian_learning_context.c.context_id], set_=values
             )
             await connection.execute(statement)
+            if entry.authorized_content is not None:
+                source_record_id = (
+                    "knowledge_source_"
+                    + hashlib.sha256(
+                        (
+                            f"{row['learner_id']}:{connection_id}:{entry.source_key}:"
+                            f"{entry.authorized_content.content_hash}"
+                        ).encode()
+                    ).hexdigest()[:40]
+                )
+                previous_source_record_id = await connection.scalar(
+                    sa.select(tables.knowledge_source_records.c.source_record_id)
+                    .where(
+                        tables.knowledge_source_records.c.learner_id == row["learner_id"],
+                        tables.knowledge_source_records.c.connection_id == connection_id,
+                        tables.knowledge_source_records.c.source_key == entry.source_key,
+                        tables.knowledge_source_records.c.content_hash
+                        != entry.authorized_content.content_hash,
+                    )
+                    .order_by(tables.knowledge_source_records.c.captured_at.desc())
+                    .limit(1)
+                )
+                await connection.execute(
+                    pg_insert(tables.knowledge_source_records)
+                    .values(
+                        source_record_id=source_record_id,
+                        learner_id=row["learner_id"],
+                        provider="obsidian_plugin",
+                        connection_id=connection_id,
+                        source_key=entry.source_key,
+                        content_hash=entry.authorized_content.content_hash,
+                        source_modified_at=entry.modified_at,
+                        authorized_scope=[entry.authorized_content.scope_prefix],
+                        captured_content_ref=f"db://knowledge_source_payloads/{source_record_id}",
+                        supersedes_source_record_id=previous_source_record_id,
+                        captured_at=now,
+                    )
+                    .on_conflict_do_nothing(
+                        index_elements=[
+                            "learner_id",
+                            "connection_id",
+                            "source_key",
+                            "content_hash",
+                        ]
+                    )
+                )
+                await connection.execute(
+                    pg_insert(tables.knowledge_source_payloads)
+                    .values(
+                        source_record_id=source_record_id,
+                        content=entry.authorized_content.content,
+                        created_at=now,
+                    )
+                    .on_conflict_do_nothing(index_elements=["source_record_id"])
+                )
             existing_asset = (
                 (
                     await connection.execute(
@@ -528,6 +626,7 @@ async def acknowledge_obsidian_organization(
             learner_id=str(connection_row["learner_id"]),
             run_id=run_id,
             completed_action_ids=set(body.completed_action_ids),
+            completed_source_keys=body.completed_source_keys,
         )
         if not completed:
             raise HTTPException(status_code=409, detail="obsidian_organization_ack_mismatch")
@@ -551,7 +650,11 @@ async def list_obsidian_asset_exports(
         rows = (
             (
                 await connection.execute(
-                    sa.select(tables.learning_asset_index, tables.outbox_messages.c.payload)
+                    sa.select(
+                        tables.learning_asset_index,
+                        tables.outbox_messages.c.message_id,
+                        tables.outbox_messages.c.payload,
+                    )
                     .join(
                         tables.outbox_messages,
                         sa.and_(
@@ -571,6 +674,7 @@ async def list_obsidian_asset_exports(
         )
     return [
         ObsidianAssetExportView(
+            export_id=str(row["message_id"]),
             asset_id=str(row["asset_id"]),
             kind=str(row["asset_kind"]),
             title=str(row["display_title"]),
@@ -578,6 +682,11 @@ async def list_obsidian_asset_exports(
             source_type=str(row["source_type"]),
             source_task_id=row["source_task_id"],
             initial_content=(row["payload"] or {}).get("initial_content"),
+            operation=(row["payload"] or {}).get("operation", "CREATE"),
+            source_key=(row["payload"] or {}).get("source_key"),
+            expected_content_hash=(row["payload"] or {}).get("expected_content_hash"),
+            patch_content=(row["payload"] or {}).get("patch_content"),
+            knowledge_proposal_id=(row["payload"] or {}).get("knowledge_proposal_id"),
         )
         for row in rows
     ]
@@ -596,6 +705,28 @@ async def acknowledge_obsidian_asset_export(
             connection, connection_id, authorization
         )
         asset = await _owned_asset(connection, str(connection_row["learner_id"]), asset_id)
+        pending_exports = list(
+            (
+                await connection.scalars(
+                    sa.select(tables.outbox_messages.c.message_id)
+                    .where(
+                        tables.outbox_messages.c.topic == "asset_export_requested",
+                        tables.outbox_messages.c.aggregate_id == asset_id,
+                        tables.outbox_messages.c.status == "pending",
+                        *(
+                            [tables.outbox_messages.c.message_id == body.export_id]
+                            if body.export_id is not None
+                            else []
+                        ),
+                    )
+                    .with_for_update()
+                )
+            ).all()
+        )
+        if not pending_exports:
+            raise HTTPException(status_code=409, detail="obsidian_export_not_pending")
+        if body.export_id is None and len(pending_exports) != 1:
+            raise HTTPException(status_code=409, detail="obsidian_export_id_required")
         await connection.execute(
             tables.learning_asset_index.update()
             .where(tables.learning_asset_index.c.asset_id == asset_id)
@@ -620,6 +751,11 @@ async def acknowledge_obsidian_asset_export(
                 tables.outbox_messages.c.topic == "asset_export_requested",
                 tables.outbox_messages.c.aggregate_id == asset_id,
                 tables.outbox_messages.c.status == "pending",
+                *(
+                    [tables.outbox_messages.c.message_id == body.export_id]
+                    if body.export_id is not None
+                    else []
+                ),
             )
             .values(
                 status="processed",

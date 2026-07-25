@@ -40,6 +40,9 @@ export interface AnnotationView {
 
 export interface AnnotationAnalysisView {
   analysis_id: string;
+  analysis_status: "resolved" | "abstained" | "review_required";
+  confidence: number | null;
+  provider_ref: string | null;
   focus: "vocabulary" | "syntax" | "reference" | "logic" | "context" | "mixed";
   selection_scope: "word_or_phrase" | "sentence_or_paragraph";
   translation: string | null;

@@ -47,6 +47,7 @@ from binnagent_domain.vertical_slice.run import (
 )
 from fastapi import APIRouter, Depends, Header, Request
 from pydantic import BaseModel
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from binnagent_api.auth import ControlIdentity, require_control_identity
@@ -54,6 +55,12 @@ from binnagent_api.database import get_engine
 from binnagent_api.learner_auth import LearnerIdentity, ensure_identity_learner
 from binnagent_api.learner_level_service import enqueue_level_assessment, latest_level_assessment
 from binnagent_api.learning_evidence_service import record_personalized_run_evidence
+from binnagent_api.personalized_reading_content import (
+    expression_item_for_task as personalized_expression_item_for_task,
+)
+from binnagent_api.personalized_reading_content import (
+    expression_material_ref as personalized_expression_material_ref,
+)
 from binnagent_api.personalized_reading_content import (
     grammar_challenge as personalized_grammar_challenge,
 )
@@ -340,10 +347,33 @@ async def start_personalized_reading_run(
                 PublicErrorCode.CONTENT_NOT_ELIGIBLE,
                 "personalized_training_material_not_found",
             )
+        if (
+            row["status"] == "awaiting_review"
+            or row["quality_status"] == "semantic_review_required"
+        ):
+            raise DomainError(
+                PublicErrorCode.CONTENT_NOT_ELIGIBLE,
+                "personalized_training_material_quality_review_required",
+            )
         if row["status"] not in {"ready", "in_progress", "completed"}:
             raise DomainError(
                 PublicErrorCode.CONTENT_NOT_ELIGIBLE,
                 "personalized_training_material_not_ready",
+            )
+        if row["quality_status"] != "semantic_reviewed":
+            raise DomainError(
+                PublicErrorCode.CONTENT_NOT_ELIGIBLE,
+                "personalized_training_material_quality_review_required",
+            )
+        if (
+            not row["question_bank"]
+            or not row["grammar_annotations"]
+            or row["transfer_contract"] is None
+            or row["expression_task"] is None
+        ):
+            raise DomainError(
+                PublicErrorCode.CONTENT_NOT_ELIGIBLE,
+                "personalized_training_material_package_incomplete",
             )
         active_run_id = row["active_workflow_run_id"]
         if active_run_id is not None:
@@ -767,6 +797,15 @@ async def _next_material(
         decision = await _match(connection, run, current_task, now)
         return content_catalog.material_by_version(decision.selected_content_version_id), decision
     if run.stage is RunStage.MATCHED_READING:
+        personalized_row = await material_row_for_task(connection, current_task)
+        if personalized_row is not None:
+            return await _personalized_expression_material(
+                connection,
+                run,
+                current_task,
+                personalized_row,
+                now,
+            )
         decision = expression_matcher.select(
             decision_id=_id("match_decision"),
             profile=run.learner_profile,
@@ -871,7 +910,14 @@ async def _material_view(
 ) -> LearnerReadingMaterialView | LearnerExpressionMaterialView:
     personalized_row = await material_row_for_task(connection, task)
     item = (
-        personalized_learner_item(personalized_row)
+        (
+            await personalized_expression_item_for_task(connection, task, personalized_row)
+            if task.task_type is TaskType.MICRO_EXPRESSION
+            else personalized_learner_item(
+                personalized_row,
+                content_version_id=task.current_material.content_version_id,
+            )
+        )
         if personalized_row is not None
         else content_catalog.learner_item(task.current_material.content_version_id)
     )
@@ -983,6 +1029,127 @@ async def _material_view(
         ),
         v1_minimum=[str(value) for value in minimum] if isinstance(minimum, list) else [],
     )
+
+
+async def _personalized_expression_material(
+    connection: AsyncConnection,
+    run: VerticalSliceRun,
+    current_task: LearningTask,
+    material_row: sa.RowMapping,
+    now: datetime,
+) -> tuple[MaterialRef, MatchDecision]:
+    transfer = material_row["transfer_contract"]
+    expression = material_row["expression_task"]
+    objective = material_row["objective_bundle"]
+    if not isinstance(transfer, dict) or not isinstance(expression, dict):
+        raise DomainError(
+            PublicErrorCode.CONTENT_NOT_ELIGIBLE,
+            "personalized_transfer_contract_missing",
+        )
+    if not isinstance(objective, dict):
+        raise DomainError(
+            PublicErrorCode.CONTENT_NOT_ELIGIBLE,
+            "personalized_objective_bundle_missing",
+        )
+    objective_bundle_id = str(objective.get("objective_bundle_id", ""))
+    if (
+        not objective_bundle_id
+        or transfer.get("objective_bundle_id") != objective_bundle_id
+        or expression.get("objective_bundle_id") != objective_bundle_id
+        or expression.get("transfer_contract_id") != transfer.get("transfer_contract_id")
+    ):
+        raise DomainError(
+            PublicErrorCode.CONTENT_NOT_ELIGIBLE,
+            "personalized_transfer_lineage_invalid",
+        )
+
+    evidence_refs = [
+        *(annotation.annotation_id for annotation in current_task.annotations),
+        *(attempt.attempt_version_id for attempt in current_task.current_attempts),
+        *(intervention.intervention_id for intervention in current_task.interventions),
+    ]
+    if not evidence_refs:
+        evidence_refs.append(f"task:{current_task.task_id}:completion")
+    snapshot_id = f"reading_evidence_{sha256(current_task.task_id.encode()).hexdigest()[:32]}"
+    bound_expression = {
+        **expression,
+        "reading_evidence_refs": evidence_refs,
+        "reading_evidence_snapshot_id": snapshot_id,
+        "source_reading_task_id": current_task.task_id,
+    }
+    snapshot_payload = {
+        "snapshot_id": snapshot_id,
+        "learner_id": run.learner_id,
+        "objective_bundle_id": objective_bundle_id,
+        "reading_artifact_id": str(transfer.get("source_reading_artifact_id", "")),
+        "reading_artifact_version": int(objective.get("version", 1)),
+        "answer_events": [
+            {
+                "attempt_version_id": attempt.attempt_version_id,
+                "independence": attempt.independence.value,
+                "created_at": attempt.created_at.isoformat(),
+            }
+            for attempt in current_task.current_attempts
+        ],
+        "used_hint_ids": [
+            intervention.intervention_id for intervention in current_task.interventions
+        ],
+        "selected_spans": [
+            {
+                "annotation_id": annotation.annotation_id,
+                "kind": annotation.kind.value,
+                "paragraph_id": annotation.span.paragraph_id,
+                "start": annotation.span.start,
+                "end": annotation.span.end,
+                "text_quote": annotation.span.text_quote,
+            }
+            for annotation in current_task.annotations
+        ],
+        "difficulty_target_ids": [
+            annotation.annotation_id
+            for annotation in current_task.annotations
+            if annotation.kind.value in {"vocabulary", "grammar", "logic", "uncertain"}
+        ],
+        "completed_independently": current_task.highest_hint_level == 0,
+        "expression_task": bound_expression,
+        "captured_at": now.isoformat(),
+    }
+    await connection.execute(
+        pg_insert(tables.reading_evidence_snapshots)
+        .values(
+            snapshot_id=snapshot_id,
+            learner_id=run.learner_id,
+            workflow_run_id=run.workflow_run_id,
+            task_id=current_task.task_id,
+            objective_bundle_id=objective_bundle_id,
+            reading_artifact_id=str(transfer.get("source_reading_artifact_id", "")),
+            reading_artifact_version=int(objective.get("version", 1)),
+            payload=snapshot_payload,
+            created_at=now,
+        )
+        .on_conflict_do_nothing(index_elements=["task_id"])
+    )
+
+    material = personalized_expression_material_ref(
+        material_row,
+        snapshot_id=snapshot_id,
+        expression=bound_expression,
+    )
+    decision = MatchDecision(
+        decision_id=_id("match_decision"),
+        learner_snapshot_id=run.learner_profile.learner_snapshot_id,
+        candidate_version_ids=(material.content_version_id,),
+        selected_content_version_id=material.content_version_id,
+        policy_version="personalized_transfer_contract_v1",
+        conservative=True,
+        reason_codes=(
+            "same_objective_bundle",
+            "reading_evidence_bound",
+            "existing_expression_lab_reused",
+        ),
+        created_at=now,
+    )
+    return material, decision
 
 
 async def _save_run(

@@ -1,0 +1,221 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://binnagent.local/contracts/agent-quality/v1/language-provider-case.schema.json",
+  "title": "Language provider benchmark case",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "case_id",
+    "analysis_kind",
+    "gold_status",
+    "request",
+    "expected"
+  ],
+  "properties": {
+    "case_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "analysis_kind": {
+      "enum": [
+        "lexical",
+        "syntax"
+      ]
+    },
+    "gold_status": {
+      "enum": [
+        "engineering_seed",
+        "expert_frozen"
+      ]
+    },
+    "request": {
+      "type": "object"
+    },
+    "expected": {
+      "type": "object"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "analysis_kind": {
+            "const": "lexical"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "request": {
+            "$ref": "#/$defs/lexicalRequest"
+          },
+          "expected": {
+            "$ref": "#/$defs/lexicalExpected"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "analysis_kind": {
+            "const": "syntax"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "request": {
+            "$ref": "#/$defs/syntaxRequest"
+          },
+          "expected": {
+            "$ref": "#/$defs/syntaxExpected"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "status": {
+      "enum": [
+        "resolved",
+        "review_required",
+        "abstained"
+      ]
+    },
+    "lexicalRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lemma",
+        "selected_text",
+        "paragraph_context"
+      ],
+      "properties": {
+        "lemma": {
+          "type": "string",
+          "minLength": 1
+        },
+        "selected_text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "paragraph_context": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "lexicalExpected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "acceptable_statuses",
+        "accepted_sense_ids"
+      ],
+      "properties": {
+        "acceptable_statuses": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/status"
+          }
+        },
+        "accepted_sense_ids": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "required_part_of_speech": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "syntaxRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "selected_text",
+        "paragraph_context",
+        "selection_start",
+        "selection_end"
+      ],
+      "properties": {
+        "selected_text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "paragraph_context": {
+          "type": "string",
+          "minLength": 1
+        },
+        "selection_start": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "selection_end": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "syntaxExpected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "acceptable_statuses",
+        "required_structures"
+      ],
+      "properties": {
+        "acceptable_statuses": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/status"
+          }
+        },
+        "required_structures": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/structure"
+          }
+        }
+      }
+    },
+    "structure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "start",
+        "end",
+        "text_quote",
+        "label"
+      ],
+      "properties": {
+        "start": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "end": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "text_quote": {
+          "type": "string",
+          "minLength": 1
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

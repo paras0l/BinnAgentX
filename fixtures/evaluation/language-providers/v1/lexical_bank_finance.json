@@ -1,0 +1,19 @@
+{
+  "case_id": "lexical_bank_finance_001",
+  "analysis_kind": "lexical",
+  "gold_status": "engineering_seed",
+  "request": {
+    "lemma": "bank",
+    "selected_text": "bank",
+    "paragraph_context": "The small business asked the bank to extend its line of credit."
+  },
+  "expected": {
+    "acceptable_statuses": [
+      "resolved"
+    ],
+    "accepted_sense_ids": [
+      "bank%1:14:00::"
+    ],
+    "required_part_of_speech": "noun"
+  }
+}

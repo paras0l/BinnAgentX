@@ -1,0 +1,11 @@
+{
+  "version": "v1",
+  "contract": "contracts/agent-quality/v1/gold-case.schema.json",
+  "status": "engineering_seed_pending_expert_freeze",
+  "cases": [
+    "question_hint_leak.json",
+    "grammar_invalid_span.json",
+    "word_sense_unresolved.json",
+    "lab_continuity_unrelated.json"
+  ]
+}

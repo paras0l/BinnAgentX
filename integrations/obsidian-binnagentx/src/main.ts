@@ -31,9 +31,15 @@ interface LearningContextEntry {
   tags: string[];
   excerpt: string;
   modified_at: string;
+  authorized_content?: {
+    scope_prefix: string;
+    content: string;
+    content_hash: string;
+  };
 }
 
 interface PendingAssetExport {
+  export_id: string;
   asset_id: string;
   kind: LearningKind;
   title: string;
@@ -41,6 +47,11 @@ interface PendingAssetExport {
   source_type: string;
   source_task_id: string | null;
   initial_content: string | null;
+  operation: "CREATE" | "APPEND_PATCH";
+  source_key: string | null;
+  expected_content_hash: string | null;
+  patch_content: string | null;
+  knowledge_proposal_id: string | null;
 }
 
 interface OrganizationAction {
@@ -57,6 +68,8 @@ interface OrganizationPlan {
   inbox_count: number;
   classified_count: number;
   actions: OrganizationAction[];
+  knowledge_status: string;
+  needs_full_content_source_keys: string[];
 }
 
 interface ImportResponse {
@@ -708,7 +721,9 @@ export default class BinnAgentXLearningSyncPlugin extends Plugin {
     if (this.settings.autoSync) await this.sync(false);
   }
 
-  private async collectEntriesAsync(): Promise<LearningContextEntry[]> {
+  private async collectEntriesAsync(
+    fullContentSourceKeys: Set<string> = new Set(),
+  ): Promise<LearningContextEntry[]> {
     const folders = splitScope(this.settings.allowedFolders);
     const tags = splitScope(this.settings.allowedTags).map((tag) => tag.replace(/^#/, ""));
     if (!folders.length && !tags.length) throw new Error("请选择至少一个允许同步的文件夹或标签");
@@ -727,6 +742,10 @@ export default class BinnAgentXLearningSyncPlugin extends Plugin {
           ...arrayStrings(frontmatter.tags),
           ...(cache?.tags ?? []).map((tag) => tag.tag.replace(/^#/, "")),
         ]);
+        const content = await this.app.vault.read(file);
+        const scopePrefix =
+          folders.find((folder) => file.path.startsWith(folder)) ??
+          `${file.path.slice(0, file.path.lastIndexOf("/") + 1)}`;
         return {
           source_key: file.path,
           asset_id:
@@ -736,8 +755,17 @@ export default class BinnAgentXLearningSyncPlugin extends Plugin {
           title: String(frontmatter.title ?? file.basename),
           kind: inferKind(frontmatter.binnagent_kind, tags),
           tags,
-          excerpt: summarize(await this.app.vault.read(file), this.settings.maxExcerptCharacters),
+          excerpt: summarize(content, this.settings.maxExcerptCharacters),
           modified_at: new Date(file.stat.mtime).toISOString(),
+          ...(fullContentSourceKeys.has(file.path)
+            ? {
+                authorized_content: {
+                  scope_prefix: scopePrefix,
+                  content,
+                  content_hash: await sha256(content),
+                },
+              }
+            : {}),
         };
       }),
     );
@@ -927,23 +955,19 @@ export default class BinnAgentXLearningSyncPlugin extends Plugin {
     try {
       const exported = await this.pullPendingAssets();
       const entries = await this.collectEntriesAsync();
-      const response = await requestUrl({
-        url: `${this.settings.apiBaseUrl.replace(/\/$/, "")}/v1/obsidian-sync/${encodeURIComponent(this.settings.connectionId)}/import`,
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${this.settings.syncSecret}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          schema_version: "learning-context/v1",
-          vault_name: this.app.vault.getName(),
-          entries,
-        }),
-        throw: false,
-      });
-      if (response.status < 200 || response.status >= 300)
-        throw new Error(`BinnAgentX 拒绝同步（${response.status}）`);
-      const result = response.json as ImportResponse;
+      let result = await this.importEntries(entries);
+      const requested = new Set(result.organization?.needs_full_content_source_keys ?? []);
+      if (requested.size) {
+        const authorizedEntries = await this.collectEntriesAsync(requested);
+        const missing = [...requested].filter(
+          (sourceKey) =>
+            !authorizedEntries.some(
+              (entry) => entry.source_key === sourceKey && entry.authorized_content,
+            ),
+        );
+        if (missing.length) throw new Error(`无法读取服务器请求的授权原文：${missing.join("、")}`);
+        result = await this.importEntries(authorizedEntries);
+      }
       const organized = await this.applyOrganizationPlan(result.organization);
       const organizationSummary = summarizeOrganization(result.organization, organized);
       const syncSummary =
@@ -961,6 +985,26 @@ export default class BinnAgentXLearningSyncPlugin extends Plugin {
     }
   }
 
+  private async importEntries(entries: LearningContextEntry[]): Promise<ImportResponse> {
+    const response = await requestUrl({
+      url: `${this.settings.apiBaseUrl.replace(/\/$/, "")}/v1/obsidian-sync/${encodeURIComponent(this.settings.connectionId)}/import`,
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this.settings.syncSecret}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        schema_version: "learning-context/v1",
+        vault_name: this.app.vault.getName(),
+        entries,
+      }),
+      throw: false,
+    });
+    if (response.status < 200 || response.status >= 300)
+      throw new Error(`BinnAgentX 拒绝同步（${response.status}）`);
+    return response.json as ImportResponse;
+  }
+
   private async applyOrganizationPlan(plan: OrganizationPlan | null): Promise<number> {
     if (plan?.status !== "planned" || !plan.actions.length) return 0;
     const allowedTargets = new Set([
@@ -970,6 +1014,7 @@ export default class BinnAgentXLearningSyncPlugin extends Plugin {
       `${LIBRARY_ROOT}/04-Writing`,
     ]);
     const completed: string[] = [];
+    const completedSourceKeys: Record<string, string> = {};
     for (const action of plan.actions) {
       if (!action.source_key.startsWith(`${INBOX_FOLDER}/`)) continue;
       if (!allowedTargets.has(action.target_folder)) continue;
@@ -986,6 +1031,8 @@ export default class BinnAgentXLearningSyncPlugin extends Plugin {
           this.app.vault.getAbstractFileByPath(retryPath) instanceof TFile
         ) {
           completed.push(action.action_id);
+          completedSourceKeys[action.action_id] =
+            this.app.vault.getAbstractFileByPath(basePath) instanceof TFile ? basePath : retryPath;
         }
         continue;
       }
@@ -993,6 +1040,7 @@ export default class BinnAgentXLearningSyncPlugin extends Plugin {
       if (this.app.vault.getAbstractFileByPath(targetPath)) continue;
       await this.app.vault.rename(source, targetPath);
       completed.push(action.action_id);
+      completedSourceKeys[action.action_id] = targetPath;
     }
     if (completed.length !== plan.actions.length) {
       throw new Error("Inbox 整理未全部完成；未移动的笔记会保留在原处，下次同步重试");
@@ -1004,7 +1052,10 @@ export default class BinnAgentXLearningSyncPlugin extends Plugin {
         Authorization: `Bearer ${this.settings.syncSecret}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ completed_action_ids: completed }),
+      body: JSON.stringify({
+        completed_action_ids: completed,
+        completed_source_keys: completedSourceKeys,
+      }),
       throw: false,
     });
     if (response.status < 200 || response.status >= 300)
@@ -1026,7 +1077,10 @@ export default class BinnAgentXLearningSyncPlugin extends Plugin {
     const exports = response.json as PendingAssetExport[];
     let completed = 0;
     for (const item of exports) {
-      const file = await this.createAssetNote(item);
+      const file =
+        item.operation === "APPEND_PATCH"
+          ? await this.applyAssetPatch(item)
+          : await this.createAssetNote(item);
       const content = await this.app.vault.read(file);
       const digest = await sha256(content);
       const ack = await requestUrl({
@@ -1038,6 +1092,7 @@ export default class BinnAgentXLearningSyncPlugin extends Plugin {
           content_hash: digest,
           modified_at: new Date(file.stat.mtime).toISOString(),
           vault_name: this.app.vault.getName(),
+          export_id: item.export_id,
         }),
         throw: false,
       });
@@ -1046,6 +1101,37 @@ export default class BinnAgentXLearningSyncPlugin extends Plugin {
       completed += 1;
     }
     return completed;
+  }
+
+  private async applyAssetPatch(item: PendingAssetExport): Promise<TFile> {
+    const file = this.findAssetFile(item);
+    if (!(file instanceof TFile)) {
+      throw new Error(`无法定位待更新资产：${item.asset_id}`);
+    }
+    const content = await this.app.vault.read(file);
+    const currentHash = await sha256(content);
+    const marker = item.knowledge_proposal_id
+      ? `<!-- knowledge_proposal:${item.knowledge_proposal_id} -->`
+      : "";
+    if (marker && content.includes(marker)) return file;
+    if (item.expected_content_hash && currentHash !== item.expected_content_hash) {
+      throw new Error(`资产已在 Obsidian 中修改，拒绝覆盖：${file.path}`);
+    }
+    if (!item.patch_content) throw new Error(`资产补丁为空：${item.export_id}`);
+    await this.app.vault.modify(file, `${content.trimEnd()}${item.patch_content}`);
+    return file;
+  }
+
+  private findAssetFile(item: PendingAssetExport): TFile | null {
+    if (item.source_key) {
+      const exact = this.app.vault.getAbstractFileByPath(item.source_key);
+      if (exact instanceof TFile) return exact;
+    }
+    for (const file of this.app.vault.getMarkdownFiles()) {
+      const frontmatter = this.app.metadataCache.getFileCache(file)?.frontmatter;
+      if (frontmatter?.binnagent_asset_id === item.asset_id) return file;
+    }
+    return null;
   }
 
   private async createAssetNote(item: PendingAssetExport): Promise<TFile> {
