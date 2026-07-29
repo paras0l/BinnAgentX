@@ -3538,6 +3538,60 @@ textarea:disabled {
   font-size: 11px;
 }
 
+.account-invite-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 28px;
+  margin-bottom: 18px;
+  padding: 24px 26px;
+  border: 1px solid #cfded5;
+  border-radius: 18px;
+  background: linear-gradient(135deg, #f3f8f5, #fff);
+}
+
+.account-invite-card h2 {
+  margin: 5px 0 8px;
+  color: #263a30;
+  font-size: 22px;
+}
+
+.account-invite-card p {
+  margin: 0;
+  color: #65736b;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.account-invite-card .invited-count {
+  color: #24583f;
+  font-size: 15px;
+}
+
+.account-invite-code {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 12px;
+}
+
+.account-invite-code code {
+  padding: 11px 15px;
+  border: 1px solid #bfd1c6;
+  border-radius: 10px;
+  color: #24583f;
+  background: #fff;
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.account-invite-code button {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
 .profile-evidence-grid {
   display: grid;
   grid-template-columns: 1.1fr 0.9fr;
@@ -4073,6 +4127,16 @@ textarea:disabled {
   .profile-overview,
   .profile-evidence-grid {
     grid-template-columns: 1fr;
+  }
+
+  .account-invite-card,
+  .account-invite-code {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .account-invite-code button {
+    justify-content: center;
   }
 }
 

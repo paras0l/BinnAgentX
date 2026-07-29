@@ -36,6 +36,8 @@ test-results/
 artifacts/
 openwiki/
 fixtures/content/v1/generated/
+output/netem-vocabulary/.batches/
+
 # Logs and temporary files
 *.log
 *.tmp

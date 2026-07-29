@@ -354,6 +354,8 @@ describe("learner home", () => {
   });
 
   it("opens the evidence-based profile and preference controls", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { ...navigator, clipboard: { writeText } });
     saveExperienceProfile("learner_synthetic_local", {
       exam_track: "english_1",
       target_score: 70,
@@ -371,6 +373,7 @@ describe("learner home", () => {
     fireEvent.click(await screen.findByRole("button", { name: "查看学习画像" }));
     expect(screen.getByRole("heading", { name: "你的读写学习画像" })).toBeVisible();
     expect(screen.getByText(/不预测分数/)).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "你的专属邀请码" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "返回" })).not.toBeInTheDocument();
 
     fireEvent.click(
@@ -379,6 +382,14 @@ describe("learner home", () => {
       }),
     );
     expect(screen.getByRole("heading", { name: "让辅助按你的节奏出现" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "你的专属邀请码" })).toBeVisible();
+    expect(screen.getByText("BINN-LOCAL")).toBeVisible();
+    expect(
+      screen.getByRole("heading", { name: "你的专属邀请码" }).closest("section"),
+    ).toHaveTextContent("已成功邀请 0 人");
+    fireEvent.click(screen.getByRole("button", { name: "复制邀请码" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("BINN-LOCAL"));
+    expect(screen.getByRole("button", { name: "邀请码已复制" })).toBeVisible();
     expect(screen.getByLabelText(/行内辅助出现方式/)).toBeVisible();
     expect(screen.getByRole("button", { name: "保存偏好" })).toBeEnabled();
     expect(screen.queryByRole("button", { name: "取消" })).not.toBeInTheDocument();
@@ -731,6 +742,33 @@ describe("learner home", () => {
           });
         }
         if (url.endsWith("/v1/assets")) return Response.json([]);
+        if (url.includes("/v1/training-history")) {
+          return Response.json({
+            items: [
+              {
+                workflow_run_id: "workflow_run_completed_0001",
+                run_version: 10,
+                run_kind: "first_experience",
+                completed_at: "2026-07-21T11:00:00Z",
+                difficulty_rating: "matched",
+                completed_task_count: 4,
+                supported_task_count: 0,
+                matched_content_version_id: "matched_reading_01_v1",
+              },
+            ],
+            page: 1,
+            page_size: 5,
+            total_items: 1,
+            total_pages: 1,
+            summary: {
+              completed_sessions: 1,
+              independent_sessions: 1,
+              completed_tasks: 4,
+              supported_tasks: 0,
+              completed_last_7_days: 1,
+            },
+          });
+        }
         if (url.endsWith("/vault-status")) {
           return Response.json({ adapter: "disabled", connected: false, detail: "disabled" });
         }
@@ -785,7 +823,7 @@ describe("learner home", () => {
 
     expect(await screen.findByRole("heading", { name: "训练任务队列" })).toBeVisible();
     expect(screen.getByText("个性化阅读 · 3 段 · 综合 2 篇笔记 · 7/21")).toBeVisible();
-    fireEvent.click(screen.getByRole("button", { name: "选择并开始" }));
+    fireEvent.click(screen.getByRole("button", { name: "开始下一次训练" }));
     expect(await screen.findByText(/recent evidence supports shared spaces/)).toBeVisible();
     expect(
       screen.getByRole("heading", {

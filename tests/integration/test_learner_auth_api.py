@@ -365,3 +365,18 @@ async def test_run_and_task_access_isolated_between_accounts() -> None:
 
         assert (await client.get(f"/learner/v1/runs/{run_id}")).status_code == 404
         assert (await client.get(f"/learner/v1/tasks/{task_id}")).status_code == 404
+
+        await client.post("/learner/v1/auth/logout")
+        owner_login = await client.post(
+            "/learner/v1/auth/login",
+            json={
+                "email": first_email,
+                "verification_token": first_token,
+                "learner_id": first.json()["learner_id"],
+            },
+        )
+        assert owner_login.status_code == 200, owner_login.text
+        assert owner_login.json()["invited_count"] == 1
+        session = await client.get("/learner/v1/auth/session")
+        assert session.status_code == 200, session.text
+        assert session.json()["invited_count"] == 1

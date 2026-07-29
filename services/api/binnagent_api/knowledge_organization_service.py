@@ -50,7 +50,10 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from binnagent_api.database import get_engine
-from binnagent_api.knowledge_extraction_service import model_from_settings
+from binnagent_api.knowledge_extraction_service import (
+    longcat_knowledge_adapter,
+    model_from_settings,
+)
 from binnagent_api.learning_evidence_service import refresh_asset_projection
 from binnagent_api.settings import get_settings
 from binnagent_api.vertical_slice import tables
@@ -384,6 +387,7 @@ async def _extract_sources(
 ) -> tuple[AtomicKnowledgeCandidate, ...]:
     settings = get_settings()
     model = model_from_settings(settings)
+    longcat = longcat_knowledge_adapter(settings)
     candidates: list[AtomicKnowledgeCandidate] = []
     for row in source_rows:
         source = _source_record(row)
@@ -401,7 +405,7 @@ async def _extract_sources(
         )
         if cached is not None:
             output = AtomicKnowledgeExtraction.model_validate(cached)
-        elif model is None:
+        elif model is None and longcat is None:
             output = (
                 _deterministic_asset_capture_extraction(content)
                 if source.provider == "learning_asset_capture"
@@ -410,16 +414,20 @@ async def _extract_sources(
             await _complete_extraction(invocation_key, output)
         else:
             try:
-                result = await asyncio.wait_for(
-                    create_atomic_knowledge_extractor(model).run(
-                        f"<authorized_note>\n{content}\n</authorized_note>"
-                    ),
-                    timeout=settings.model_timeout_seconds,
-                )
+                source_prompt = f"<authorized_note>\n{content}\n</authorized_note>"
+                if longcat is not None:
+                    output = await longcat.extract_atomic(source_prompt)
+                else:
+                    if model is None:
+                        raise RuntimeError("atomic_knowledge_extraction_model_missing")
+                    result = await asyncio.wait_for(
+                        create_atomic_knowledge_extractor(model).run(source_prompt),
+                        timeout=settings.model_timeout_seconds,
+                    )
+                    output = result.output
             except Exception:
                 await _release_extraction(invocation_key)
                 raise
-            output = result.output
             await _complete_extraction(invocation_key, output)
         candidates.extend(_validated_candidates(source, content, output))
     return tuple(candidates)

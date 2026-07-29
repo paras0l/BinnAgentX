@@ -93,6 +93,8 @@ const DATE_FORMATTER = new Intl.DateTimeFormat("zh-CN", {
   second: "2-digit",
 });
 
+const PERSONALIZED_PAGE_SIZE = 10;
+
 export default function ControlHomePage() {
   const [view, setView] = useState<View>("content");
   const [status, setStatus] = useState<ContentControlStatus | null>(null);
@@ -103,6 +105,14 @@ export default function ControlHomePage() {
   const [selectedPersonalizedId, setSelectedPersonalizedId] = useState<string | null>(null);
   const [personalizedDetail, setPersonalizedDetail] =
     useState<PersonalizedMaterialJobDetail | null>(null);
+  const [personalizedQueryDraft, setPersonalizedQueryDraft] = useState("");
+  const [personalizedQuery, setPersonalizedQuery] = useState("");
+  const [personalizedPage, setPersonalizedPage] = useState(1);
+  const [personalizedTotalItems, setPersonalizedTotalItems] = useState(0);
+  const [personalizedTotalPages, setPersonalizedTotalPages] = useState(1);
+  const [expandedPersonalizedOwners, setExpandedPersonalizedOwners] = useState<Set<string>>(
+    new Set(),
+  );
   const [codes, setCodes] = useState<ExperienceCode[]>([]);
   const [users, setUsers] = useState<ManagedLearner[]>([]);
   const [tools, setTools] = useState<ManagedTool[]>([]);
@@ -122,11 +132,17 @@ export default function ControlHomePage() {
       const [nextStatus, nextJobs, nextPersonalizedJobs] = await Promise.all([
         getContentControlStatus(),
         listContentGenerationJobs(),
-        listPersonalizedMaterialJobs(),
+        listPersonalizedMaterialJobs({
+          page: personalizedPage,
+          pageSize: PERSONALIZED_PAGE_SIZE,
+          query: personalizedQuery,
+        }),
       ]);
       setStatus(nextStatus);
       setJobs(nextJobs);
-      setPersonalizedJobs(nextPersonalizedJobs);
+      setPersonalizedJobs(nextPersonalizedJobs.items);
+      setPersonalizedTotalItems(nextPersonalizedJobs.total_items);
+      setPersonalizedTotalPages(nextPersonalizedJobs.total_pages);
       const detailId = preferredJobId ?? selectedJobId ?? nextJobs[0]?.job_id ?? null;
       if (detailId) {
         const detail = await getContentGenerationJob(detailId);
@@ -135,15 +151,20 @@ export default function ControlHomePage() {
       } else {
         setJobDetail(null);
       }
-      const personalizedId = selectedPersonalizedId ?? nextPersonalizedJobs[0]?.material_id ?? null;
+      const personalizedId =
+        nextPersonalizedJobs.items.find((job) => job.material_id === selectedPersonalizedId)
+          ?.material_id ??
+        nextPersonalizedJobs.items[0]?.material_id ??
+        null;
       if (personalizedId) {
         setSelectedPersonalizedId(personalizedId);
         setPersonalizedDetail(await getPersonalizedMaterialJob(personalizedId));
       } else {
+        setSelectedPersonalizedId(null);
         setPersonalizedDetail(null);
       }
     },
-    [selectedJobId, selectedPersonalizedId],
+    [personalizedPage, personalizedQuery, selectedJobId, selectedPersonalizedId],
   );
 
   useEffect(() => {
@@ -175,7 +196,14 @@ export default function ControlHomePage() {
               (item) => !nextJobs.some((candidate) => candidate.job_id === item.job_id),
             ),
           ]);
-          setPersonalizedJobs(nextPersonalizedJobs);
+          setPersonalizedJobs(nextPersonalizedJobs.items);
+          setPersonalizedTotalItems(nextPersonalizedJobs.total_items);
+          setPersonalizedTotalPages(nextPersonalizedJobs.total_pages);
+          setExpandedPersonalizedOwners(
+            new Set(
+              nextPersonalizedJobs.items[0] ? [nextPersonalizedJobs.items[0].owner_ref] : [],
+            ),
+          );
           setCodes((current) => [
             ...nextCodes,
             ...current.filter(
@@ -192,7 +220,7 @@ export default function ControlHomePage() {
             setSelectedJobId(firstId);
             setJobDetail(detail);
           }
-          const firstPersonalizedId = nextPersonalizedJobs[0]?.material_id;
+          const firstPersonalizedId = nextPersonalizedJobs.items[0]?.material_id;
           if (firstPersonalizedId) {
             const detail = await getPersonalizedMaterialJob(firstPersonalizedId);
             if (!active) return;
@@ -210,7 +238,8 @@ export default function ControlHomePage() {
 
   const hasLiveJob =
     jobs.some((job) => job.status === "queued" || job.status === "running") ||
-    personalizedJobs.some((job) => ["requested", "generating", "validating"].includes(job.status));
+    (status?.personalized_queue_depth ?? 0) > 0 ||
+    (status?.personalized_running_count ?? 0) > 0;
 
   useEffect(() => {
     if (!hasLiveJob) return;
@@ -226,6 +255,18 @@ export default function ControlHomePage() {
     personalizedDetail?.job ??
     personalizedJobs.find((job) => job.material_id === selectedPersonalizedId) ??
     null;
+  const personalizedJobGroups = useMemo(() => {
+    const groups = new Map<string, PersonalizedMaterialJob[]>();
+    for (const job of personalizedJobs) {
+      const ownerJobs = groups.get(job.owner_ref) ?? [];
+      ownerJobs.push(job);
+      groups.set(job.owner_ref, ownerJobs);
+    }
+    return Array.from(groups, ([ownerRef, ownerJobs]) => ({
+      ownerRef,
+      jobs: ownerJobs,
+    }));
+  }, [personalizedJobs]);
   const failedJobs = useMemo(
     () =>
       jobs.filter((job) => job.status.includes("failed")).length +
@@ -263,6 +304,32 @@ export default function ControlHomePage() {
     startTransition(async () => {
       try {
         setPersonalizedDetail(await getPersonalizedMaterialJob(materialId));
+      } catch (reason) {
+        setError(controlErrorMessage(reason));
+      }
+    });
+  };
+
+  const showPersonalizedPage = (page: number, query: string) => {
+    setError(null);
+    startTransition(async () => {
+      try {
+        const result = await listPersonalizedMaterialJobs({
+          page,
+          pageSize: PERSONALIZED_PAGE_SIZE,
+          query,
+        });
+        setPersonalizedPage(result.page);
+        setPersonalizedQuery(query);
+        setPersonalizedJobs(result.items);
+        setPersonalizedTotalItems(result.total_items);
+        setPersonalizedTotalPages(result.total_pages);
+        setExpandedPersonalizedOwners(
+          new Set(result.items[0] ? [result.items[0].owner_ref] : []),
+        );
+        const firstId = result.items[0]?.material_id ?? null;
+        setSelectedPersonalizedId(firstId);
+        setPersonalizedDetail(firstId ? await getPersonalizedMaterialJob(firstId) : null);
       } catch (reason) {
         setError(controlErrorMessage(reason));
       }
@@ -385,57 +452,143 @@ export default function ControlHomePage() {
                   <p className="eyebrow">LEARNER MATERIAL RUNS</p>
                   <h2>个性化阅读生成</h2>
                 </div>
-                <span>{loading ? "读取中" : `${personalizedJobs.length} 次运行`}</span>
+                <span>{loading ? "读取中" : `${personalizedTotalItems} 次运行`}</span>
               </div>
-              <div className="job-table personalized-job-table" aria-busy={loading}>
-                <div className="job-table-head">
-                  <span>材料</span>
-                  <span>生成阶段</span>
-                  <span>来源 / 尝试</span>
-                  <span>结果</span>
-                </div>
-                {personalizedJobs.length === 0 && !loading ? (
-                  <p className="empty-state">还没有学习者发起个性化材料生成。</p>
-                ) : null}
-                {personalizedJobs.map((job) => (
+              <form
+                className="personalized-run-controls"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  showPersonalizedPage(1, personalizedQueryDraft.trim());
+                }}
+              >
+                <label>
+                  <span className="sr-only">查询个性化阅读运行</span>
+                  <input
+                    aria-label="查询个性化阅读运行"
+                    onChange={(event) => setPersonalizedQueryDraft(event.target.value)}
+                    placeholder="匿名用户空间、运行 ID 或状态"
+                    type="search"
+                    value={personalizedQueryDraft}
+                  />
+                </label>
+                <button disabled={isPending} type="submit">
+                  查询
+                </button>
+                {personalizedQuery ? (
                   <button
+                    disabled={isPending}
+                    onClick={() => {
+                      setPersonalizedQueryDraft("");
+                      showPersonalizedPage(1, "");
+                    }}
                     type="button"
-                    className={`job-row ${selectedPersonalizedId === job.material_id ? "selected" : ""}`}
-                    key={job.material_id}
-                    onClick={() => selectPersonalizedJob(job.material_id)}
                   >
-                    <span className="job-identity">
-                      <span className={`status-pill ${job.status}`}>
-                        {personalizedStatusLabel(job.status)}
-                      </span>
-                      <strong>{job.title}</strong>
-                      <small>
-                        {formatDate(job.created_at)} · {shortLearnerId(job.learner_id)}
-                      </small>
-                    </span>
-                    <span className="job-progress-cell">
-                      <strong>{personalizedStageLabel(job)}</strong>
-                      <span className="progress-track">
-                        <i style={{ width: `${personalizedProgress(job.status)}%` }} />
-                      </span>
-                      <small>{job.requested_goal}</small>
-                    </span>
-                    <span className="job-model">
-                      <strong>{job.source_context_count} 条笔记</strong>
-                      <small>第 {job.generation_attempt_count} / 3 次尝试</small>
-                      <small>更新 {relativeTime(job.updated_at)}</small>
-                    </span>
-                    <span className="job-result">
-                      <strong>{job.evidence_target_count} 条可靠来源映射</strong>
-                      <small>
-                        {job.generation_error_code
-                          ? friendlyFailure(job.generation_error_code)
-                          : "无阻断错误"}
-                      </small>
-                    </span>
+                    清除
                   </button>
+                ) : null}
+                <span>
+                  第 {personalizedPage} / {personalizedTotalPages} 页
+                </span>
+              </form>
+              <div className="personalized-owner-groups" aria-busy={loading}>
+                {personalizedJobs.length === 0 && !loading ? (
+                  <p className="empty-state">
+                    {personalizedQuery
+                      ? "没有匹配的个性化材料运行。"
+                      : "还没有学习者发起个性化材料生成。"}
+                  </p>
+                ) : null}
+                {personalizedJobGroups.map((group) => (
+                  <details
+                    className="personalized-owner-group"
+                    open={expandedPersonalizedOwners.has(group.ownerRef)}
+                    onToggle={(event) => {
+                      const isOpen = event.currentTarget.open;
+                      setExpandedPersonalizedOwners((current) => {
+                        const next = new Set(current);
+                        if (isOpen) next.add(group.ownerRef);
+                        else next.delete(group.ownerRef);
+                        return next;
+                      });
+                    }}
+                    key={group.ownerRef}
+                  >
+                    <summary>
+                      <div>
+                        <span>隔离用户空间</span>
+                        <h3 id={`owner-group-${group.ownerRef}`}>{group.ownerRef}</h3>
+                      </div>
+                      <small>{group.jobs.length} 次运行</small>
+                    </summary>
+                    <div className="job-table personalized-job-table">
+                      <div className="job-table-head">
+                        <span>运行</span>
+                        <span>生成阶段</span>
+                        <span>来源 / 尝试</span>
+                        <span>结果</span>
+                      </div>
+                      {group.jobs.map((job) => (
+                        <button
+                          type="button"
+                          className={`job-row ${selectedPersonalizedId === job.material_id ? "selected" : ""}`}
+                          key={job.material_id}
+                          onClick={() => selectPersonalizedJob(job.material_id)}
+                        >
+                          <span className="job-identity">
+                            <span className={`status-pill ${job.status}`}>
+                              {personalizedStatusLabel(job.status)}
+                            </span>
+                            <strong>{shortId(job.material_id)}</strong>
+                            <small>{formatDate(job.created_at)}</small>
+                          </span>
+                          <span className="job-progress-cell">
+                            <strong>{personalizedStageLabel(job)}</strong>
+                            <span className="progress-track">
+                              <i style={{ width: `${personalizedProgress(job.status)}%` }} />
+                            </span>
+                            <small>仅在该用户空间内生成与审核</small>
+                          </span>
+                          <span className="job-model">
+                            <strong>{job.source_context_count} 条笔记</strong>
+                            <small>第 {job.generation_attempt_count} / 3 次尝试</small>
+                            <small>更新 {relativeTime(job.updated_at)}</small>
+                          </span>
+                          <span className="job-result">
+                            <strong>{job.evidence_target_count} 条可靠来源映射</strong>
+                            <small>
+                              {job.generation_error_code
+                                ? friendlyFailure(job.generation_error_code)
+                                : "无阻断错误"}
+                            </small>
+                          </span>
+                        </button>
+                      ))}
+                    </div>
+                  </details>
                 ))}
               </div>
+              <nav className="personalized-pagination" aria-label="个性化运行分页">
+                <button
+                  aria-label="上一页个性化运行"
+                  disabled={isPending || personalizedPage <= 1}
+                  onClick={() => showPersonalizedPage(personalizedPage - 1, personalizedQuery)}
+                  type="button"
+                >
+                  ← 上一页
+                </button>
+                <span>
+                  共 {personalizedTotalItems} 次 · 第 {personalizedPage} /{" "}
+                  {personalizedTotalPages} 页
+                </span>
+                <button
+                  aria-label="下一页个性化运行"
+                  disabled={isPending || personalizedPage >= personalizedTotalPages}
+                  onClick={() => showPersonalizedPage(personalizedPage + 1, personalizedQuery)}
+                  type="button"
+                >
+                  下一页 →
+                </button>
+              </nav>
             </div>
             <aside className="detail-panel" aria-label="个性化材料运行详情">
               {selectedPersonalizedJob ? (
@@ -915,7 +1068,7 @@ function PersonalizedJobDetail({
       <div className="current-activity">
         <span>当前阶段</span>
         <strong>{latestEvent?.message ?? personalizedStageLabel(job)}</strong>
-        <small>{job.requested_goal}</small>
+        <small>仅展示去内容化运行元数据</small>
         {["requested", "generating", "validating"].includes(job.status) ? (
           <span className="activity-pulse">最后活动 {relativeTime(job.updated_at)}</span>
         ) : null}
@@ -934,8 +1087,8 @@ function PersonalizedJobDetail({
           <dd>{job.evidence_target_count} 条</dd>
         </div>
         <div>
-          <dt>学习者</dt>
-          <dd>{shortLearnerId(job.learner_id)}</dd>
+          <dt>匿名所有者</dt>
+          <dd>{job.owner_ref}</dd>
         </div>
       </dl>
       {job.generation_error_code ? (
@@ -1237,19 +1390,18 @@ function shortId(value: string): string {
     .replace("training_material_", "material_")
     .slice(0, 18);
 }
-function shortLearnerId(value: string): string {
-  return value.replace("learner_", "learner_").slice(0, 18);
-}
 function personalizedStatusLabel(status: PersonalizedMaterialJob["status"]): string {
   return (
     {
       requested: "等待生成",
       generating: "生成中",
       validating: "校验中",
+      awaiting_review: "等待自动迁移",
       ready: "可训练",
       in_progress: "训练中",
       completed: "已完成",
       generation_failed: "生成失败",
+      rejected: "质量未通过",
     } as const
   )[status];
 }
@@ -1265,10 +1417,12 @@ function personalizedProgress(status: PersonalizedMaterialJob["status"]): number
     requested: 10,
     generating: 50,
     validating: 80,
+    awaiting_review: 80,
     ready: 100,
     in_progress: 100,
     completed: 100,
     generation_failed: 100,
+    rejected: 100,
   }[status];
 }
 function progressPercent(job: ContentGenerationJob): number {

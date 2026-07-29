@@ -22,6 +22,35 @@ class MaterialCandidate:
     estimated_minutes: int
 
 
+def least_recent_material_candidates(
+    candidates: tuple[MaterialCandidate, ...],
+    recent_content_version_ids: tuple[str, ...],
+) -> tuple[MaterialCandidate, ...]:
+    """Prefer unseen material, then the material used least recently.
+
+    ``recent_content_version_ids`` must be ordered newest first. The matcher still
+    decides among equally novel candidates, so exposure control does not replace
+    the existing level and session-fit policy.
+    """
+    if not candidates:
+        return ()
+    recency = {
+        content_version_id: index
+        for index, content_version_id in enumerate(recent_content_version_ids)
+    }
+    unseen = tuple(
+        candidate for candidate in candidates if candidate.content_version_id not in recency
+    )
+    if unseen:
+        return unseen
+    oldest_index = max(recency[candidate.content_version_id] for candidate in candidates)
+    return tuple(
+        candidate
+        for candidate in candidates
+        if recency[candidate.content_version_id] == oldest_index
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class ExpressionMaterialCandidate:
     content_id: str

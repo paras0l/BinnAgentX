@@ -134,18 +134,17 @@ export interface ContentGenerationJobDetail {
 
 export interface PersonalizedMaterialJob {
   material_id: string;
-  learner_id: string;
-  title: string;
+  owner_ref: string;
   status:
     | "requested"
     | "generating"
     | "validating"
+    | "awaiting_review"
     | "ready"
     | "in_progress"
     | "completed"
-    | "generation_failed";
-  requested_goal: string;
-  requested_kinds: string[];
+    | "generation_failed"
+    | "rejected";
   source_context_count: number;
   evidence_target_count: number;
   generation_attempt_count: number;
@@ -155,6 +154,14 @@ export interface PersonalizedMaterialJob {
   lease_expires_at: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface PersonalizedMaterialJobPage {
+  items: PersonalizedMaterialJob[];
+  page: number;
+  page_size: number;
+  total_items: number;
+  total_pages: number;
 }
 
 export interface PersonalizedMaterialEvent {
@@ -296,8 +303,16 @@ export function getContentGenerationJob(jobId: string): Promise<ContentGeneratio
   return controlRequest(`content-generation/jobs/${jobId}`);
 }
 
-export function listPersonalizedMaterialJobs(): Promise<PersonalizedMaterialJob[]> {
-  return controlRequest("content-generation/personalized-jobs");
+export function listPersonalizedMaterialJobs(
+  options: { page?: number; pageSize?: number; query?: string } = {},
+): Promise<PersonalizedMaterialJobPage> {
+  const parameters = new URLSearchParams({
+    page: String(options.page ?? 1),
+    page_size: String(options.pageSize ?? 10),
+  });
+  const query = options.query?.trim();
+  if (query) parameters.set("query", query);
+  return controlRequest(`content-generation/personalized-jobs?${parameters.toString()}`);
 }
 
 export function getPersonalizedMaterialJob(

@@ -685,7 +685,7 @@ async def review_expression(
         settings = get_settings()
         gateway = ExpressionReviewGateway(
             expression_review_adapter(settings),
-            timeout_seconds=settings.model_timeout_seconds,
+            timeout_seconds=settings.expression_review_timeout_seconds,
             allow_remote=bool(settings.enable_remote_model_calls),
         )
 
@@ -731,7 +731,7 @@ async def review_expression(
             expected_task_version=body.expected_version,
             tool_name=tool_name,
             request_digest=request_digest,
-            timeout_seconds=settings.model_timeout_seconds,
+            timeout_seconds=settings.expression_review_timeout_seconds,
         )
         cached_response = await _reserve_model_invocation(
             connection,

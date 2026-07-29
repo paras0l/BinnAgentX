@@ -16,6 +16,46 @@ from binnagent_evaluation.content_integrity import validate_content_pack
 from binnagent_api.settings import Settings
 
 
+def build_content_reviewer_adapter(settings: Settings) -> RemoteContentReviewerAdapter | None:
+    if not settings.enable_remote_model_calls or settings.model_adapter == "deterministic_fixture":
+        return None
+    if settings.model_adapter == "ollama":
+        return RemoteContentReviewerAdapter(
+            provider="ollama",
+            base_url=settings.ollama_base_url,
+            model=settings.ollama_chat_model,
+            api_key=None,
+            estimated_cost_usd=settings.model_estimated_cost_usd,
+            max_tokens=settings.content_review_max_tokens,
+            timeout_seconds=settings.content_review_timeout_seconds,
+        )
+    if settings.model_adapter == "deepseek":
+        return RemoteContentReviewerAdapter(
+            provider="deepseek",
+            base_url=settings.deepseek_base_url,
+            model=settings.deepseek_chat_model,
+            api_key=(
+                settings.deepseek_api_key.get_secret_value() if settings.deepseek_api_key else None
+            ),
+            estimated_cost_usd=settings.model_estimated_cost_usd,
+            max_tokens=settings.content_review_max_tokens,
+            timeout_seconds=settings.content_review_timeout_seconds,
+        )
+    if settings.model_adapter == "longcat":
+        return RemoteContentReviewerAdapter(
+            provider="longcat",
+            base_url=settings.longcat_base_url,
+            model=settings.longcat_chat_model,
+            api_key=(
+                settings.longcat_api_key.get_secret_value() if settings.longcat_api_key else None
+            ),
+            estimated_cost_usd=settings.model_estimated_cost_usd,
+            max_tokens=settings.content_review_max_tokens,
+            timeout_seconds=settings.content_review_timeout_seconds,
+        )
+    return None
+
+
 def build_content_generation_workflow(
     settings: Settings,
     *,
@@ -42,7 +82,6 @@ def build_content_generation_workflow(
         )
     )
     generator: RemoteContentGenerationAdapter | None = None
-    reviewer: RemoteContentReviewerAdapter | None = None
     if settings.model_adapter == "ollama":
         generator = RemoteContentGenerationAdapter(
             provider="ollama",
@@ -52,15 +91,6 @@ def build_content_generation_workflow(
             estimated_cost_usd=settings.model_estimated_cost_usd,
             max_tokens=settings.content_generation_max_tokens,
             timeout_seconds=settings.content_generation_timeout_seconds,
-        )
-        reviewer = RemoteContentReviewerAdapter(
-            provider="ollama",
-            base_url=settings.ollama_base_url,
-            model=settings.ollama_chat_model,
-            api_key=None,
-            estimated_cost_usd=settings.model_estimated_cost_usd,
-            max_tokens=settings.content_review_max_tokens,
-            timeout_seconds=settings.content_review_timeout_seconds,
         )
     elif settings.model_adapter == "deepseek":
         api_key = (
@@ -75,15 +105,6 @@ def build_content_generation_workflow(
             max_tokens=settings.content_generation_max_tokens,
             timeout_seconds=settings.content_generation_timeout_seconds,
         )
-        reviewer = RemoteContentReviewerAdapter(
-            provider="deepseek",
-            base_url=settings.deepseek_base_url,
-            model=settings.deepseek_chat_model,
-            api_key=api_key,
-            estimated_cost_usd=settings.model_estimated_cost_usd,
-            max_tokens=settings.content_review_max_tokens,
-            timeout_seconds=settings.content_review_timeout_seconds,
-        )
     elif settings.model_adapter == "longcat":
         api_key = settings.longcat_api_key.get_secret_value() if settings.longcat_api_key else None
         generator = RemoteContentGenerationAdapter(
@@ -95,19 +116,10 @@ def build_content_generation_workflow(
             max_tokens=settings.content_generation_max_tokens,
             timeout_seconds=settings.content_generation_timeout_seconds,
         )
-        reviewer = RemoteContentReviewerAdapter(
-            provider="longcat",
-            base_url=settings.longcat_base_url,
-            model=settings.longcat_chat_model,
-            api_key=api_key,
-            estimated_cost_usd=settings.model_estimated_cost_usd,
-            max_tokens=settings.content_review_max_tokens,
-            timeout_seconds=settings.content_review_timeout_seconds,
-        )
     return ContentGenerationWorkflow(
         output_directory=output_directory,
         content_generator=generator,
-        content_reviewer=reviewer,
+        content_reviewer=build_content_reviewer_adapter(settings),
         pack_version=pack_version,
         pack_id=pack_id,
         progress_callback=progress_callback,

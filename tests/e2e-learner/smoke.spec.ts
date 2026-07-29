@@ -1248,7 +1248,7 @@ test("completed learner returns home and continues with a new practice material"
         selected_content_version_id: "matched_reading_02_v1",
         policy_version: "continuous_practice_match_v1",
         conservative: true,
-        reason_codes: ["recent_material_excluded"],
+        reason_codes: ["unseen_material_preferred"],
       },
     ],
     created_at: "2026-07-16T15:00:00Z",

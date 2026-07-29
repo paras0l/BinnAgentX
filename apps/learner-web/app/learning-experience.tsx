@@ -15,6 +15,8 @@ import {
   CalendarDots,
   CaretDown,
   ChartLineUp,
+  Check,
+  Copy,
   House,
   MoonStars,
   SidebarSimple,
@@ -541,6 +543,23 @@ export function LearningExperience({
     [identity.learner_id],
   );
 
+  const startNextTraining = useCallback(
+    (workflowRunId: string, runVersion: number) => {
+      const readyMaterial = trainingMaterials.find(
+        (material) =>
+          material.status === "ready" &&
+          material.quality_status === "semantic_reviewed" &&
+          (material.training_eligible || material.start_block_reason === "active_training"),
+      );
+      if (readyMaterial) {
+        startPersonalizedMaterial(readyMaterial);
+        return;
+      }
+      startPractice(workflowRunId, runVersion);
+    },
+    [startPersonalizedMaterial, startPractice, trainingMaterials],
+  );
+
   const toggleNavigation = useCallback(() => {
     const next = !navCollapsed;
     const currentPreferences = experience?.preferences ?? standalonePreferences;
@@ -672,6 +691,8 @@ export function LearningExperience({
     content = (
       <PreferencesPanel
         preferences={experience.preferences ?? DEFAULT_PREFERENCES}
+        inviteCode={identity.invite_code}
+        invitedCount={identity.invited_count ?? 0}
         onSave={savePreferences}
         onThemePreview={setPreviewTheme}
         isSaving={isPending || !preferencesReady}
@@ -692,7 +713,7 @@ export function LearningExperience({
       <CompletionPanel
         workspace={workspace}
         isPending={isPending}
-        onContinue={() => startPractice(workspace.run.workflow_run_id, workspace.run.version)}
+        onContinue={() => startNextTraining(workspace.run.workflow_run_id, workspace.run.version)}
         onHome={returnHome}
       />
     );
@@ -723,7 +744,9 @@ export function LearningExperience({
         isPending={isPending}
         resumableWorkspace={workspace?.run.lifecycle === "completed" ? null : workspace}
         onResume={resumeTraining}
-        onContinueSession={(session) => startPractice(session.workflowRunId, session.runVersion)}
+        onContinueSession={(session) =>
+          startNextTraining(session.workflowRunId, session.runVersion)
+        }
         onStartFirst={() => startFirstRun(experience.profile)}
         trainingMaterials={trainingMaterials}
         syncedContextCount={pluginSyncStatus?.synced_context_count ?? 0}
@@ -1594,17 +1617,22 @@ function confidenceLabel(confidence: CurrentLevel["confidence_band"]): string {
 
 function PreferencesPanel({
   preferences,
+  inviteCode,
+  invitedCount,
   onSave,
   onThemePreview,
   isSaving,
 }: {
   preferences: LearnerPreferences;
+  inviteCode: string;
+  invitedCount: number;
   onSave: (preferences: LearnerPreferences) => void;
   onThemePreview: (theme: ThemeId | null) => void;
   isSaving: boolean;
 }) {
   const [draft, setDraft] = useState(preferences);
   const [expandedTierTheme, setExpandedTierTheme] = useState<ThemeId | null>(null);
+  const [inviteCopied, setInviteCopied] = useState(false);
 
   useLayoutEffect(() => {
     const savedThemePreferences = {
@@ -1637,6 +1665,38 @@ function PreferencesPanel({
           <p>这些设置只改变呈现和介入节奏，不改变题目难度，也不会替你完成答案。</p>
         </div>
       </header>
+      {inviteCode ? (
+        <section className="account-invite-card" aria-labelledby="account-invite-title">
+          <div>
+            <p className="step-label">账号与邀请</p>
+            <h2 id="account-invite-title">你的专属邀请码</h2>
+            <p>
+              对方创建学习账号时填写此码即可。已成功邀请{" "}
+              <strong className="invited-count">{invitedCount}</strong> 人。
+            </p>
+          </div>
+          <div className="account-invite-code">
+            <code>{inviteCode}</code>
+            <button
+              type="button"
+              className="quiet-button"
+              aria-label={inviteCopied ? "邀请码已复制" : "复制邀请码"}
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(inviteCode);
+                  setInviteCopied(true);
+                  window.setTimeout(() => setInviteCopied(false), 1800);
+                } catch {
+                  setInviteCopied(false);
+                }
+              }}
+            >
+              {inviteCopied ? <Check size={17} weight="bold" /> : <Copy size={17} />}
+              {inviteCopied ? "已复制" : "复制邀请码"}
+            </button>
+          </div>
+        </section>
+      ) : null}
       <form
         className="preferences-form"
         data-ui-anchor="settings-form"

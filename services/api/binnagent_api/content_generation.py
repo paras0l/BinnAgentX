@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 from typing import Annotated, Any, Literal
 from urllib.request import urlopen
 from uuid import uuid4
 
 import sqlalchemy as sa
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
 
 from binnagent_api.auth import ControlIdentity, require_control_identity
@@ -86,11 +87,8 @@ class ContentGenerationJobDetail(BaseModel):
 
 class PersonalizedMaterialJobView(BaseModel):
     material_id: str
-    learner_id: str
-    title: str
+    owner_ref: str
     status: str
-    requested_goal: str
-    requested_kinds: list[str]
     source_context_count: int
     evidence_target_count: int
     generation_attempt_count: int
@@ -100,6 +98,14 @@ class PersonalizedMaterialJobView(BaseModel):
     lease_expires_at: datetime | None
     created_at: datetime
     updated_at: datetime
+
+
+class PersonalizedMaterialJobPage(BaseModel):
+    items: list[PersonalizedMaterialJobView]
+    page: int
+    page_size: int
+    total_items: int
+    total_pages: int
 
 
 class PersonalizedMaterialEventView(BaseModel):
@@ -239,31 +245,74 @@ async def get_content_control_status(
         personalized_queue_depth=int(personalized_counts.get("requested", 0)),
         personalized_running_count=int(personalized_counts.get("generating", 0))
         + int(personalized_counts.get("validating", 0)),
-        personalized_failed_count=int(personalized_counts.get("generation_failed", 0)),
+        personalized_failed_count=(
+            int(personalized_counts.get("generation_failed", 0))
+            + int(personalized_counts.get("rejected", 0))
+        ),
         active_pack_job_id=_publisher().active_job_id(),
     )
 
 
 @content_generation_router.get(
     "/personalized-jobs",
-    response_model=list[PersonalizedMaterialJobView],
+    response_model=PersonalizedMaterialJobPage,
 )
 async def list_personalized_material_jobs(
     _: Annotated[ControlIdentity, Depends(require_control_identity)],
-) -> list[PersonalizedMaterialJobView]:
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=50)] = 10,
+    query: Annotated[str, Query(max_length=80)] = "",
+) -> PersonalizedMaterialJobPage:
+    materials = tables.personalized_training_materials
+    normalized_query = query.strip().lower()
     async with get_engine().connect() as connection:
+        filters: list[Any] = []
+        if normalized_query:
+            search_pattern = f"%{normalized_query}%"
+            matching_learner_ids: list[str] = []
+            learner_ids = (
+                await connection.execute(sa.select(materials.c.learner_id).distinct())
+            ).scalars()
+            for learner_id in learner_ids:
+                learner_id_text = str(learner_id)
+                if normalized_query in _owner_ref(learner_id_text):
+                    matching_learner_ids.append(learner_id_text)
+            searchable_fields = [
+                materials.c.material_id.ilike(search_pattern),
+                materials.c.status.ilike(search_pattern),
+                materials.c.generation_error_code.ilike(search_pattern),
+            ]
+            if matching_learner_ids:
+                searchable_fields.append(materials.c.learner_id.in_(matching_learner_ids))
+            filters.append(sa.or_(*searchable_fields))
+
+        total_items = int(
+            (
+                await connection.execute(
+                    sa.select(sa.func.count()).select_from(materials).where(*filters)
+                )
+            ).scalar_one()
+        )
         rows = (
             (
                 await connection.execute(
-                    sa.select(tables.personalized_training_materials)
-                    .order_by(tables.personalized_training_materials.c.created_at.desc())
-                    .limit(30)
+                    sa.select(materials)
+                    .where(*filters)
+                    .order_by(materials.c.created_at.desc())
+                    .offset((page - 1) * page_size)
+                    .limit(page_size)
                 )
             )
             .mappings()
             .all()
         )
-    return [_personalized_view(row) for row in rows]
+    return PersonalizedMaterialJobPage(
+        items=[_personalized_view(row) for row in rows],
+        page=page,
+        page_size=page_size,
+        total_items=total_items,
+        total_pages=max(1, (total_items + page_size - 1) // page_size),
+    )
 
 
 @content_generation_router.get(
@@ -302,7 +351,7 @@ async def get_personalized_material_job(
         )
     return PersonalizedMaterialJobDetail(
         job=_personalized_view(row),
-        events=[PersonalizedMaterialEventView.model_validate(dict(event)) for event in events],
+        events=[_personalized_event_view(event) for event in events],
     )
 
 
@@ -617,16 +666,10 @@ def _view(row: Any, active_job_id: str | None) -> ContentGenerationJobView:
 def _personalized_view(row: Any) -> PersonalizedMaterialJobView:
     source_context_ids = row.get("source_context_ids")
     evidence_target_ids = row.get("evidence_target_asset_ids")
-    requested_kinds = row.get("requested_kinds")
     return PersonalizedMaterialJobView(
         material_id=str(row["material_id"]),
-        learner_id=str(row["learner_id"]),
-        title=str(row["title"]),
+        owner_ref=_owner_ref(str(row["learner_id"])),
         status=str(row["status"]),
-        requested_goal=str(row["requested_goal"]),
-        requested_kinds=(
-            [str(value) for value in requested_kinds] if isinstance(requested_kinds, list) else []
-        ),
         source_context_count=len(source_context_ids) if isinstance(source_context_ids, list) else 0,
         evidence_target_count=(
             len(evidence_target_ids) if isinstance(evidence_target_ids, list) else 0
@@ -640,6 +683,38 @@ def _personalized_view(row: Any) -> PersonalizedMaterialJobView:
         lease_expires_at=row.get("lease_expires_at"),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
+    )
+
+
+def _owner_ref(learner_id: str) -> str:
+    return f"owner_{sha256(learner_id.encode()).hexdigest()[:10]}"
+
+
+def _personalized_event_view(row: Any) -> PersonalizedMaterialEventView:
+    detail = row.get("detail")
+    allowed_detail_keys = {
+        "article_artifact_id",
+        "error_code",
+        "evidence_target_count",
+        "grammar_count",
+        "quality_status",
+        "question_count",
+        "repair_attempts",
+        "reviewer_id",
+    }
+    sanitized_detail = (
+        {key: value for key, value in detail.items() if key in allowed_detail_keys}
+        if isinstance(detail, dict)
+        else {}
+    )
+    return PersonalizedMaterialEventView(
+        event_id=int(row["event_id"]),
+        event_type=str(row["event_type"]),
+        stage=str(row["stage"]),
+        attempt=int(row["attempt"]) if row.get("attempt") is not None else None,
+        message=str(row["message"]),
+        detail=sanitized_detail,
+        occurred_at=row["occurred_at"],
     )
 
 

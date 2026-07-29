@@ -24,6 +24,7 @@ from binnagent_api.knowledge_organization_service import (
 from binnagent_api.learner_level_service import process_next_level_assessment
 from binnagent_api.personalized_material_service import (
     enqueue_due_personalized_material,
+    enqueue_legacy_personalized_material_upgrade,
     process_next_personalized_material,
     requeue_interrupted_personalized_materials,
 )
@@ -275,6 +276,7 @@ async def run_worker(*, stop_event: asyncio.Event | None = None, once: bool = Fa
         while not event.is_set():
             await requeue_interrupted_jobs()
             await requeue_interrupted_personalized_materials()
+            await enqueue_legacy_personalized_material_upgrade()
             await enqueue_due_personalized_material()
             processed = await process_next_content_job()
             processed = await process_next_level_assessment() or processed

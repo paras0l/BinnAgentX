@@ -111,6 +111,7 @@ class LearnerIdentityView(BaseModel):
     email: str
     invite_code: str
     account_type: str
+    invited_count: int = 0
 
 
 def _require_verified_email(body: VerifiedEmailRequest) -> None:
@@ -283,6 +284,17 @@ async def login(body: LoginRequest, response: Response) -> LearnerIdentity:
         )
         if row is None:
             raise HTTPException(status_code=404, detail="learner_not_found_for_email")
+        invited_count = int(
+            await connection.scalar(
+                sa.select(sa.func.count())
+                .select_from(tables.learners)
+                .where(
+                    tables.learners.c.invited_by_learner_id == row["learner_id"],
+                    tables.learners.c.account_type == "registered",
+                )
+            )
+            or 0
+        )
         token = await issue_session(connection, row["learner_id"], now)
         await enqueue_login_organization(
             connection, learner_id=str(row["learner_id"]), session_token=token
@@ -294,6 +306,7 @@ async def login(body: LoginRequest, response: Response) -> LearnerIdentity:
         email=row["email"],
         invite_code=row["invite_code"],
         account_type=row["account_type"],
+        invited_count=invited_count,
     )
 
 
@@ -356,6 +369,7 @@ async def register(body: RegisterRequest, response: Response) -> LearnerIdentity
         email=body.email,
         invite_code=invite_code,
         account_type="registered",
+        invited_count=0,
     )
 
 
@@ -469,6 +483,7 @@ async def experience_login(body: ExperienceLoginRequest, response: Response) -> 
         email="",
         invite_code="",
         account_type="experience",
+        invited_count=0,
     )
 
 

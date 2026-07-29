@@ -295,6 +295,34 @@ class VerticalSliceRunRepository:
         )
         return await self.load(connection, workflow_run_id) if workflow_run_id else None
 
+    async def matched_content_history(
+        self,
+        connection: AsyncConnection,
+        learner_id: str,
+    ) -> tuple[str, ...]:
+        """Return the learner's matched-reading versions, newest use first."""
+        rows = (
+            await connection.execute(
+                sa.select(tables.run_task_refs.c.content_version_id)
+                .select_from(
+                    tables.run_task_refs.join(
+                        tables.workflow_runs,
+                        tables.workflow_runs.c.workflow_run_id
+                        == tables.run_task_refs.c.workflow_run_id,
+                    )
+                )
+                .where(
+                    tables.workflow_runs.c.learner_id == learner_id,
+                    tables.run_task_refs.c.role == RunStage.MATCHED_READING.value,
+                )
+                .order_by(
+                    tables.workflow_runs.c.updated_at.desc(),
+                    tables.workflow_runs.c.workflow_run_id.desc(),
+                )
+            )
+        ).scalars()
+        return tuple(dict.fromkeys(str(content_version_id) for content_version_id in rows))
+
     async def _append_facts(
         self,
         connection: AsyncConnection,

@@ -11,7 +11,9 @@ from hashlib import sha256
 from typing import Any
 from uuid import uuid4
 
+import httpx2
 import sqlalchemy as sa
+from binnagent_agent.agents.content_reviewer import ContentReviewRequest, ContentReviewResult
 from binnagent_agent.workflows import (
     GRAPH_VERSION,
     build_personalized_content_graph,
@@ -37,8 +39,10 @@ from binnagent_domain.learning.content_quality import (
 from binnagent_evaluation.trajectory import evaluate_trajectory
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
+from pydantic import ValidationError
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 
+from binnagent_api.content_generation_service import build_content_reviewer_adapter
 from binnagent_api.database import get_engine
 from binnagent_api.knowledge_extraction_service import enrich_review_contexts
 from binnagent_api.learner_level_service import (
@@ -235,6 +239,30 @@ async def enqueue_due_personalized_material() -> bool:
             detail={"source_context_count": len(context_ids)},
             occurred_at=now,
         )
+    return True
+
+
+async def enqueue_legacy_personalized_material_upgrade() -> bool:
+    """Move one unused incomplete legacy draft into its owner's current generation path."""
+    async with get_engine().connect() as connection:
+        material_id = await connection.scalar(
+            sa.select(tables.personalized_training_materials.c.material_id)
+            .where(
+                tables.personalized_training_materials.c.status == "ready",
+                tables.personalized_training_materials.c.quality_status == "unverified_legacy",
+                tables.personalized_training_materials.c.runtime_kind == "explicit_state_machine",
+                tables.personalized_training_materials.c.active_workflow_run_id.is_(None),
+            )
+            .order_by(tables.personalized_training_materials.c.created_at)
+            .limit(1)
+        )
+    if material_id is None:
+        return False
+    await regenerate_legacy_personalized_material(
+        material_id=str(material_id),
+        reviewer_id="system_personalized_material_migration",
+        reason="旧材料缺少完整训练包, 在所属用户范围内自动升级并重新生成。",
+    )
     return True
 
 
@@ -606,10 +634,21 @@ async def _generate_langgraph_with_claim(
                 },
                 config,
             )
+        workflow_status = str(result.get("workflow_status", ""))
+        if workflow_status == "completed":
+            return "ready"
+        if workflow_status == "rejected":
+            decision = dict(result.get("review_decision", {}))
+            await _reject_reviewed_material(
+                material_id=material_id,
+                reviewer_id=str(decision.get("reviewer_id", "personalized_content_review_agent")),
+                reason=str(decision.get("reason", "automated_quality_review_rejected")),
+            )
+            return "rejected"
         if result.get("__interrupt__"):
             await _persist_review_candidate(row, dict(result))
             return "awaiting_review"
-        raise RuntimeError("personalized_graph_review_interrupt_missing")
+        raise RuntimeError("personalized_graph_terminal_state_missing")
     except Exception as exc:
         return await _handle_langgraph_generation_failure(row, exc)
 
@@ -622,6 +661,8 @@ def _build_personalized_material_graph(
     checkpointer: Any,
 ) -> Any:
     material_id = str(row["material_id"])
+    reviewer = build_content_reviewer_adapter(get_settings())
+    review_results: dict[int, ContentReviewResult] = {}
 
     async def generate_article(
         objective: LearningObjectiveBundle,
@@ -704,17 +745,123 @@ def _build_personalized_material_graph(
             publish_key=key,
         )
 
+    async def validate_package(
+        state: PersonalizedContentState,
+    ) -> tuple[QualityReport, ...]:
+        structural_report = structural_quality_reports(dict(state))[0]
+        article = dict(state["article"])
+        article_artifact = ContentArtifact.model_validate(article["artifact"])
+        if reviewer is None:
+            return (
+                structural_report,
+                QualityReport(
+                    report_id=f"{article_artifact.artifact_id}_review_agent_fixture_v1",
+                    artifact_id=article_artifact.artifact_id,
+                    validator_id="personalized_content_review_agent_fixture",
+                    validator_version="v1",
+                    result=QualityResult.PASS,
+                    severity=QualitySeverity.INFO,
+                    confidence=1.0,
+                ),
+            )
+        candidate = {
+            "title": article["title"],
+            "paragraphs": article["paragraphs"],
+            "focus_points": article.get("focus_points", []),
+            "question_bank": state["questions"],
+            "grammar_annotations": state["grammar_annotations"],
+            "transfer_contract": state["transfer_contract"],
+            "expression_task": state["expression_task"],
+        }
+        result = await asyncio.to_thread(
+            reviewer.review,
+            ContentReviewRequest(
+                content_type="matched_reading",
+                source_item={
+                    "title": "learner-authorized private context",
+                    "paragraphs": [],
+                    "difficulty": adaptation_profile,
+                },
+                candidate_item=candidate,
+            ),
+        )
+        revision = int(state.get("repair_attempts", 0))
+        review_results[revision] = result
+        if result.passes_release_gate():
+            review_report = QualityReport(
+                report_id=f"{article_artifact.artifact_id}_review_agent_r{revision}_v1",
+                artifact_id=article_artifact.artifact_id,
+                validator_id="personalized_content_review_agent",
+                validator_version="prompt_content_judge_v1",
+                result=QualityResult.PASS,
+                severity=QualitySeverity.INFO,
+                confidence=0.9,
+            )
+        else:
+            review_report = QualityReport(
+                report_id=f"{article_artifact.artifact_id}_review_agent_r{revision}_v1",
+                artifact_id=article_artifact.artifact_id,
+                validator_id="personalized_content_review_agent",
+                validator_version="prompt_content_judge_v1",
+                result=(
+                    QualityResult.REJECT if result.verdict == "reject" else QualityResult.REVISE
+                ),
+                issue_code=_review_issue_code(result),
+                severity=(
+                    QualitySeverity.BLOCKER if result.verdict == "reject" else QualitySeverity.ERROR
+                ),
+                repair_scope=(_review_repair_scope(result),),
+                confidence=0.9,
+            )
+        return structural_report, review_report
+
+    async def decide_review(
+        state: PersonalizedContentState,
+        _reports: tuple[QualityReport, ...],
+    ) -> dict[str, Any]:
+        revision = int(state.get("repair_attempts", 0))
+        result = review_results[revision]
+        action = "reject" if result.verdict == "reject" or revision >= 2 else "revise"
+        return {
+            "action": action,
+            "reviewer_id": "personalized_content_review_agent",
+            "reason": result.summary,
+            **({"repair_scope": _review_repair_scope(result)} if action == "revise" else {}),
+        }
+
     return build_personalized_content_graph(
         article_generator=generate_article,
         question_generator=generate_questions,
         quality_validator=lambda _objective, _article, _questions: (),
         language_generator=generate_language,
         transfer_generator=generate_transfer,
-        package_quality_validator=lambda state: structural_quality_reports(dict(state)),
+        package_quality_validator=validate_package,
+        review_decider=decide_review,
         publisher=publish,
         checkpointer=checkpointer,
         graph_version=str(row["graph_version"] or GRAPH_VERSION),
     )
+
+
+def _review_repair_scope(result: ContentReviewResult) -> str:
+    paths = " ".join(issue.field_path.lower() for issue in result.issues)
+    if "question" in paths or "answer" in paths or "evidence" in paths:
+        return "question_bank"
+    if "grammar" in paths or "language" in paths:
+        return "grammar_annotations"
+    if "transfer" in paths or "expression" in paths:
+        return "transfer_contract"
+    return "article"
+
+
+def _review_issue_code(result: ContentReviewResult) -> QualityIssueCode:
+    scope = _review_repair_scope(result)
+    return {
+        "article": QualityIssueCode.ARTICLE_COHERENCE_FAILED,
+        "question_bank": QualityIssueCode.QUESTION_NOT_ANSWERABLE,
+        "grammar_annotations": QualityIssueCode.GRAMMAR_PARSE_LOW_CONFIDENCE,
+        "transfer_contract": QualityIssueCode.TRANSFER_TASK_UNRELATED,
+    }[scope]
 
 
 async def review_personalized_material(
@@ -727,7 +874,30 @@ async def review_personalized_material(
 ) -> dict[str, Any]:
     row, contexts, adaptation_profile = await _personalized_graph_context(material_id)
     if row["runtime_kind"] != "langgraph":
-        raise ValueError("personalized_material_not_langgraph")
+        if (
+            row["quality_status"] == "unverified_legacy"
+            and row["status"] == "ready"
+            and action == "reject"
+        ):
+            await _reject_reviewed_material(
+                material_id=material_id,
+                reviewer_id=reviewer_id,
+                reason=reason,
+            )
+            async with get_engine().connect() as connection:
+                rejected = (
+                    (
+                        await connection.execute(
+                            sa.select(tables.personalized_training_materials).where(
+                                tables.personalized_training_materials.c.material_id == material_id
+                            )
+                        )
+                    )
+                    .mappings()
+                    .one()
+                )
+            return dict(rejected)
+        raise ValueError("personalized_legacy_material_requires_regeneration")
     if row["status"] not in {"awaiting_review", "ready", "rejected"}:
         raise ValueError("personalized_material_not_reviewable")
     if row["status"] == "ready" and row["quality_status"] == "semantic_reviewed":
@@ -774,6 +944,93 @@ async def review_personalized_material(
         )
         raise
     async with get_engine().connect() as connection:
+        updated = (
+            (
+                await connection.execute(
+                    sa.select(tables.personalized_training_materials).where(
+                        tables.personalized_training_materials.c.material_id == material_id
+                    )
+                )
+            )
+            .mappings()
+            .one()
+        )
+    return dict(updated)
+
+
+async def regenerate_legacy_personalized_material(
+    *,
+    material_id: str,
+    reviewer_id: str,
+    reason: str,
+) -> dict[str, Any]:
+    """Upgrade one incomplete legacy draft into the existing LangGraph generation path."""
+    now = datetime.now(UTC)
+    async with get_engine().begin() as connection:
+        row = (
+            (
+                await connection.execute(
+                    sa.select(tables.personalized_training_materials)
+                    .where(tables.personalized_training_materials.c.material_id == material_id)
+                    .with_for_update()
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if row is None:
+            raise LookupError(f"personalized material not found: {material_id}")
+        if (
+            row["runtime_kind"] == "langgraph"
+            or row["quality_status"] != "unverified_legacy"
+            or row["status"] != "ready"
+        ):
+            raise ValueError("personalized_material_legacy_regeneration_not_allowed")
+        if row["active_workflow_run_id"] is not None:
+            raise ValueError("personalized_material_has_active_training")
+        await connection.execute(
+            tables.personalized_training_materials.update()
+            .where(tables.personalized_training_materials.c.material_id == material_id)
+            .values(
+                title="正在升级并重新生成完整材料包",
+                paragraphs=[],
+                focus_points=[f"目标: {row['requested_goal']}"],
+                status="requested",
+                generation_attempt_count=0,
+                generation_error_code=None,
+                next_generation_attempt_at=now,
+                claimed_by=None,
+                lease_expires_at=None,
+                evidence_target_asset_ids=[],
+                quality_status="not_evaluated",
+                quality_reports=[],
+                objective_bundle={},
+                question_bank=[],
+                grammar_annotations=[],
+                transfer_contract=None,
+                expression_task=None,
+                runtime_kind="langgraph",
+                graph_thread_id=stable_thread_id("personalized-content", material_id),
+                graph_version=GRAPH_VERSION,
+                started_at=None,
+                completed_at=None,
+                updated_at=now,
+            )
+        )
+        await _insert_event(
+            connection,
+            material_id=material_id,
+            event_type="legacy_regeneration_requested",
+            stage="requested",
+            attempt=None,
+            message=(
+                "系统已将旧材料迁入所属用户的完整材料生成链路"
+                if reviewer_id == "system_personalized_material_migration"
+                else "经用户授权的人工异常处理要求旧材料重新生成"
+            ),
+            detail={"reviewer_id": reviewer_id, "reason": reason},
+            occurred_at=now,
+        )
         updated = (
             (
                 await connection.execute(
@@ -1005,45 +1262,89 @@ async def _publish_reviewed_material(
     state: dict[str, Any],
     publish_key: str,
 ) -> str:
-    decision = dict(state["review_decision"])
-    reviewer_id = str(decision["reviewer_id"])
-    reason = str(decision.get("reason", "human_semantic_review"))
+    decision = dict(state.get("review_decision", {}))
+    reviewer_id = str(decision.get("reviewer_id", "personalized_content_review_agent"))
+    reason = str(decision.get("reason", "automated_semantic_review_passed"))
+    objective = LearningObjectiveBundle.model_validate(state["objective_bundle"])
+    article = dict(state["article"])
+    questions = tuple(ReadingQuestionArtifact.model_validate(value) for value in state["questions"])
+    annotations = tuple(
+        GrammarAnalysisArtifact.model_validate(value) for value in state["grammar_annotations"]
+    )
+    transfer = TransferContract.model_validate(state["transfer_contract"])
+    expression = ExpressionTaskArtifact.model_validate(state["expression_task"])
+    revision = int(state.get("repair_attempts", 0))
+    assessment = await _load_cached_assessment(
+        material_id=material_id,
+        revision=revision,
+    )
+    persisted_questions = [
+        persisted_question(question, draft=draft)
+        for question, draft in zip(questions, assessment.questions, strict=True)
+    ]
+    persisted_annotations = [
+        persisted_grammar(annotation, draft)
+        for annotation, draft in zip(
+            annotations,
+            assessment.grammar_annotations,
+            strict=True,
+        )
+    ]
+    expression_payload = persisted_expression(
+        objective=objective,
+        transfer=transfer,
+        expression=expression,
+        draft=assessment.transfer,
+    )
     existing_reports = [QualityReport.model_validate(value) for value in state["quality_reports"]]
-    human_report = QualityReport(
-        report_id=f"{material_id}_human_{sha256(publish_key.encode()).hexdigest()[:16]}",
-        artifact_id=ContentArtifact.model_validate(state["article"]["artifact"]).artifact_id,
-        validator_id=reviewer_id,
-        validator_version="human-v1",
-        result=QualityResult.PASS,
-        severity=QualitySeverity.INFO,
-        confidence=1.0,
+    automated = reviewer_id == "personalized_content_review_agent"
+    final_reports = (
+        existing_reports
+        if automated
+        else [
+            *existing_reports,
+            QualityReport(
+                report_id=f"{material_id}_human_{sha256(publish_key.encode()).hexdigest()[:16]}",
+                artifact_id=ContentArtifact.model_validate(
+                    state["article"]["artifact"]
+                ).artifact_id,
+                validator_id=reviewer_id,
+                validator_version="human-v1",
+                result=QualityResult.PASS,
+                severity=QualitySeverity.INFO,
+                confidence=1.0,
+            ),
+        ]
     )
     now = datetime.now(UTC)
     async with get_engine().begin() as connection:
-        stored_annotations = await connection.scalar(
-            sa.select(tables.personalized_training_materials.c.grammar_annotations)
-            .where(tables.personalized_training_materials.c.material_id == material_id)
-            .with_for_update()
-        )
         reviewed_annotations = _human_reviewed_grammar_annotations(
-            stored_annotations,
+            persisted_annotations,
             reviewer_id=reviewer_id,
             reviewed_at=now,
+            automated=automated,
         )
         await connection.execute(
             tables.personalized_training_materials.update()
             .where(tables.personalized_training_materials.c.material_id == material_id)
             .values(
+                title=str(article["title"]),
+                paragraphs=list(article["paragraphs"]),
+                focus_points=list(article.get("focus_points", [])),
                 status="ready",
                 quality_status="semantic_reviewed",
+                objective_bundle=objective.model_dump(mode="json"),
+                question_bank=persisted_questions,
                 grammar_annotations=reviewed_annotations,
-                quality_reports=[
-                    *[report.model_dump(mode="json") for report in existing_reports],
-                    human_report.model_dump(mode="json"),
-                ],
+                transfer_contract=transfer.model_dump(mode="json"),
+                expression_task=expression_payload,
+                evidence_target_asset_ids=list(objective.source_asset_ids),
+                quality_reports=[report.model_dump(mode="json") for report in final_reports],
                 generation_error_code=None,
                 claimed_by=None,
                 lease_expires_at=None,
+                next_generation_attempt_at=None,
+                graph_version=str(state["graph_version"]),
                 completed_at=now,
                 updated_at=now,
             )
@@ -1060,7 +1361,11 @@ async def _publish_reviewed_material(
                 material_id=material_id,
                 event_type="semantic_review_approved",
                 stage="ready",
-                message="人工审核已批准完整材料包, 允许进入既有训练链路",
+                message=(
+                    "独立审核 Agent 已批准完整材料包, 允许进入用户训练链路"
+                    if automated
+                    else "人工异常审核已批准完整材料包, 允许进入用户训练链路"
+                ),
                 detail={
                     "reviewer_id": reviewer_id,
                     "reason": reason,
@@ -1076,6 +1381,7 @@ def _human_reviewed_grammar_annotations(
     *,
     reviewer_id: str,
     reviewed_at: datetime,
+    automated: bool = False,
 ) -> list[dict[str, Any]]:
     if not isinstance(annotations, list) or not annotations:
         raise RuntimeError("personalized_grammar_annotations_missing_during_publish")
@@ -1086,9 +1392,11 @@ def _human_reviewed_grammar_annotations(
         analysis = dict(value["analysis"])
         analysis.update(
             {
-                "parser_id": "human_semantic_review",
-                "parser_version": "human-v1",
-                "confidence": 1.0,
+                "parser_id": (
+                    "personalized_content_review_agent" if automated else "human_semantic_review"
+                ),
+                "parser_version": ("prompt_content_judge_v1" if automated else "human-v1"),
+                "confidence": 0.9 if automated else 1.0,
                 "status": "resolved",
             }
         )
@@ -1119,7 +1427,11 @@ async def _reject_reviewed_material(
             .values(
                 status="rejected",
                 quality_status="rejected",
-                generation_error_code="human_semantic_review_rejected",
+                generation_error_code=(
+                    "automated_quality_review_rejected"
+                    if reviewer_id == "personalized_content_review_agent"
+                    else "human_semantic_review_rejected"
+                ),
                 claimed_by=None,
                 lease_expires_at=None,
                 completed_at=now,
@@ -1131,7 +1443,11 @@ async def _reject_reviewed_material(
             material_id=material_id,
             event_type="semantic_review_rejected",
             stage="rejected",
-            message="人工审核拒绝材料包, 未进入训练",
+            message=(
+                "独立审核 Agent 未通过材料包, 未进入用户训练队列"
+                if reviewer_id == "personalized_content_review_agent"
+                else "经用户授权的人工异常审核拒绝材料包, 未进入训练"
+            ),
             detail={"reviewer_id": reviewer_id, "reason": reason},
             occurred_at=now,
         )
@@ -1198,23 +1514,76 @@ async def _cached_personalized_assessment(
     if cached is not None:
         return PersonalizedAssessmentOutput.model_validate(cached)
     adapter = personalized_assessment_adapter(get_settings())
+    fallback_reason: str | None = None
     try:
         if adapter is None:
             output = deterministic_assessment(article=article, objective=objective)
         else:
-            output = await adapter.generate(
-                title=str(article["title"]),
-                paragraphs=[str(value) for value in article["paragraphs"]],
-                objective_bundle=objective.model_dump(mode="json"),
-            )
+            try:
+                output = await adapter.generate(
+                    title=str(article["title"]),
+                    paragraphs=[str(value) for value in article["paragraphs"]],
+                    objective_bundle=objective.model_dump(mode="json"),
+                )
+                _validate_personalized_assessment(
+                    material_id=material_id,
+                    objective=objective,
+                    article=article,
+                    assessment=output,
+                )
+            except (
+                ValidationError,
+                ValueError,
+                httpx2.TransportError,
+                httpx2.HTTPStatusError,
+                TimeoutError,
+            ) as exc:
+                fallback_reason = type(exc).__name__
+                output = deterministic_assessment(article=article, objective=objective)
     except Exception:
         await _release_model_invocation(invocation_key)
         raise
+    if fallback_reason is not None:
+        await _record_event(
+            material_id,
+            event_type="assessment_deterministic_fallback",
+            stage="generating",
+            message="模型题包未通过确定性门, 已基于同一篇个性化文章生成可验证题包",
+            detail={"reason_code": fallback_reason},
+        )
     await _complete_material_model_invocation(
         invocation_key=invocation_key,
         response_payload=output.model_dump(mode="json"),
     )
     return output
+
+
+def _validate_personalized_assessment(
+    *,
+    material_id: str,
+    objective: LearningObjectiveBundle,
+    article: dict[str, Any],
+    assessment: PersonalizedAssessmentOutput,
+) -> None:
+    questions = build_question_artifacts(
+        material_id=material_id,
+        objective=objective,
+        article=article,
+        assessment=assessment,
+    )
+    build_grammar_artifacts(
+        material_id=material_id,
+        objective=objective,
+        article=article,
+        assessment=assessment,
+    )
+    build_transfer_artifacts(
+        material_id=material_id,
+        objective=objective,
+        article=article,
+        questions=questions,
+        assessment=assessment,
+    )
 
 
 async def _load_cached_assessment(
@@ -1324,7 +1693,20 @@ async def _handle_langgraph_generation_failure(
     terminal = attempts >= MAX_GENERATION_ATTEMPTS
     delay = timedelta(seconds=30 * 2 ** max(0, attempts - 1))
     status = "generation_failed" if terminal else "requested"
+    next_graph_thread_id = (
+        row["graph_thread_id"]
+        if terminal
+        else stable_thread_id(
+            "personalized-content",
+            f"{row['material_id']}:auto-retry:{uuid4().hex}",
+        )
+    )
     async with get_engine().begin() as connection:
+        await connection.execute(
+            tables.model_invocation_ledger.delete().where(
+                tables.model_invocation_ledger.c.workflow_run_id == row["material_id"]
+            )
+        )
         result = await connection.execute(
             tables.personalized_training_materials.update()
             .where(
@@ -1337,6 +1719,7 @@ async def _handle_langgraph_generation_failure(
                 next_generation_attempt_at=None if terminal else now + delay,
                 claimed_by=None,
                 lease_expires_at=None,
+                graph_thread_id=next_graph_thread_id,
                 updated_at=now,
             )
         )

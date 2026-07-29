@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import ControlHomePage from "./page";
@@ -25,11 +25,8 @@ const STATUS = {
 
 const PERSONALIZED_JOB = {
   material_id: "training_material_failed_0001",
-  learner_id: "learner_managed_0001",
-  title: "正在生成个性化阅读",
+  owner_ref: "owner_1234567890",
   status: "generation_failed",
-  requested_goal: "复习让步结构",
-  requested_kinds: ["grammar"],
   source_context_count: 2,
   evidence_target_count: 0,
   generation_attempt_count: 3,
@@ -39,6 +36,21 @@ const PERSONALIZED_JOB = {
   lease_expires_at: null,
   created_at: "2026-07-21T12:00:00Z",
   updated_at: "2026-07-21T12:03:00Z",
+} as const;
+
+const SECOND_PERSONALIZED_JOB = {
+  ...PERSONALIZED_JOB,
+  material_id: "training_material_ready_0002",
+  owner_ref: "owner_abcdefghij",
+  status: "ready",
+  generation_attempt_count: 1,
+  generation_error_code: null,
+} as const;
+
+const THIRD_PERSONALIZED_JOB = {
+  ...SECOND_PERSONALIZED_JOB,
+  material_id: "training_material_ready_0003",
+  owner_ref: "owner_klmnopqrst",
 } as const;
 
 const TOOL = {
@@ -91,8 +103,29 @@ describe("control cockpit home", () => {
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input);
         if (url.endsWith("content-generation/status")) return Response.json(STATUS);
-        if (url.endsWith("content-generation/personalized-jobs"))
-          return Response.json([PERSONALIZED_JOB]);
+        if (url.includes("content-generation/personalized-jobs?")) {
+          const requestUrl = new URL(url, "http://test");
+          const page = Number(requestUrl.searchParams.get("page") ?? "1");
+          const query = requestUrl.searchParams.get("query") ?? "";
+          if (query) {
+            return Response.json({
+              items: query.includes(SECOND_PERSONALIZED_JOB.owner_ref)
+                ? [SECOND_PERSONALIZED_JOB]
+                : [],
+              page,
+              page_size: 10,
+              total_items: query.includes(SECOND_PERSONALIZED_JOB.owner_ref) ? 1 : 0,
+              total_pages: 1,
+            });
+          }
+          return Response.json({
+            items: page === 1 ? [PERSONALIZED_JOB, SECOND_PERSONALIZED_JOB] : [THIRD_PERSONALIZED_JOB],
+            page,
+            page_size: 10,
+            total_items: 11,
+            total_pages: 2,
+          });
+        }
         if (url.endsWith(`content-generation/personalized-jobs/${PERSONALIZED_JOB.material_id}`)) {
           return Response.json({
             job: PERSONALIZED_JOB,
@@ -108,6 +141,16 @@ describe("control cockpit home", () => {
               },
             ],
           });
+        }
+        if (
+          url.endsWith(`content-generation/personalized-jobs/${SECOND_PERSONALIZED_JOB.material_id}`)
+        ) {
+          return Response.json({ job: SECOND_PERSONALIZED_JOB, events: [] });
+        }
+        if (
+          url.endsWith(`content-generation/personalized-jobs/${THIRD_PERSONALIZED_JOB.material_id}`)
+        ) {
+          return Response.json({ job: THIRD_PERSONALIZED_JOB, events: [] });
         }
         if (url.endsWith("content-generation/jobs")) return Response.json([]);
         if (url.endsWith("/tools")) return Response.json([TOOL]);
@@ -170,9 +213,36 @@ describe("control cockpit home", () => {
     expect(screen.getByText("已连接")).toBeVisible();
     expect(screen.getByText("在线待命")).toBeVisible();
     expect(screen.getByRole("heading", { name: "个性化阅读生成" })).toBeVisible();
-    expect((await screen.findAllByText("复习让步结构")).length).toBeGreaterThan(0);
+    expect(await screen.findByRole("heading", { name: "owner_1234567890" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "owner_abcdefghij" })).toBeVisible();
+    expect(screen.getAllByText("隔离用户空间")).toHaveLength(2);
+    expect(screen.getAllByText("仅在该用户空间内生成与审核")).toHaveLength(2);
+    expect(screen.queryByText("复习让步结构")).not.toBeInTheDocument();
+    expect(screen.queryByText("learner_managed_0001")).not.toBeInTheDocument();
     expect(screen.getAllByText(/旧版要求迁移重点逐字包含笔记标题/).length).toBeGreaterThan(0);
     expect(screen.getByRole("heading", { name: "个性化生成时间线" })).toBeVisible();
+  });
+
+  it("collapses, queries, and paginates personalized runs", async () => {
+    render(<ControlHomePage />);
+
+    const firstOwnerHeading = await screen.findByRole("heading", { name: "owner_1234567890" });
+    const firstOwnerGroup = firstOwnerHeading.closest("details");
+    expect(firstOwnerGroup).toHaveAttribute("open");
+    fireEvent.click(firstOwnerGroup!.querySelector("summary")!);
+    expect(firstOwnerGroup).not.toHaveAttribute("open");
+
+    const pagination = screen.getByRole("navigation", { name: "个性化运行分页" });
+    fireEvent.click(within(pagination).getByRole("button", { name: "下一页个性化运行" }));
+    expect(await screen.findByRole("heading", { name: "owner_klmnopqrst" })).toBeVisible();
+    expect(within(pagination).getByText(/第 2 \//)).toBeVisible();
+
+    fireEvent.change(screen.getByRole("searchbox", { name: "查询个性化阅读运行" }), {
+      target: { value: SECOND_PERSONALIZED_JOB.owner_ref },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "查询" }));
+    expect(await screen.findByRole("heading", { name: SECOND_PERSONALIZED_JOB.owner_ref })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: THIRD_PERSONALIZED_JOB.owner_ref })).not.toBeInTheDocument();
   });
 
   it("creates an experience code and exposes plaintext only in the one-time result", async () => {

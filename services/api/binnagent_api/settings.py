@@ -104,6 +104,8 @@ class Settings(BaseSettings):
     model_max_cost_usd_per_slice: Decimal = Decimal("0.20")
     model_estimated_cost_usd: Decimal = Decimal("0.02")
     model_max_tokens: int = 900
+    expression_review_timeout_seconds: int = 30
+    expression_review_max_tokens: int = 2000
     content_generation_timeout_seconds: int = 180
     content_generation_max_tokens: int = 16000
     content_review_timeout_seconds: int = 180

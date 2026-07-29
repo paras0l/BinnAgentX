@@ -35,6 +35,7 @@ const STATUS_LABEL: Record<PersonalizedTrainingMaterial["status"], string> = {
   in_progress: "进行中",
   completed: "已完成",
   generation_failed: "生成失败",
+  rejected: "质量审核未通过",
 };
 
 function shortDate(value: string): string {
@@ -183,16 +184,19 @@ export function TrainingTaskQueue({
             <button
               type="button"
               className="quiet-button"
-              disabled={!material.training_eligible && material.status !== "generation_failed"}
+              disabled={
+                !material.training_eligible &&
+                !["generation_failed", "rejected"].includes(material.status)
+              }
               onClick={() =>
-                material.status === "generation_failed"
+                ["generation_failed", "rejected"].includes(material.status)
                   ? onRetryMaterial(material)
                   : onOpenMaterial(material)
               }
             >
               {!material.training_eligible
                 ? material.start_block_reason === "material_not_ready"
-                  ? material.status === "generation_failed"
+                  ? ["generation_failed", "rejected"].includes(material.status)
                     ? "重新生成"
                     : "生成处理中"
                   : material.start_block_reason === "quality_review_required"

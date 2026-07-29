@@ -23,6 +23,7 @@ from binnagent_domain.vertical_slice.matching import (
     ConservativeMaterialMatcher,
     ExpressionMaterialMatcher,
     MatchDecision,
+    least_recent_material_candidates,
 )
 from binnagent_domain.vertical_slice.models import (
     ActorType,
@@ -241,15 +242,19 @@ async def continue_run(
             created_at=now,
         )
         candidates = content_catalog.candidates_for(TaskType.MATCHED_READING)
-        recent_versions = {
-            item.content_version_id
-            for item in predecessor.task_refs
-            if item.role is RunStage.MATCHED_READING
-        }
-        novel_candidates = tuple(
-            item for item in candidates if item.content_version_id not in recent_versions
+        recent_versions = await run_repository.matched_content_history(
+            connection,
+            str(predecessor.learner_id),
         )
-        selected_candidates = novel_candidates or candidates
+        selected_candidates = least_recent_material_candidates(candidates, recent_versions)
+        exposure_reason = (
+            "unseen_material_preferred"
+            if any(
+                candidate.content_version_id not in recent_versions
+                for candidate in selected_candidates
+            )
+            else "least_recent_material_reused"
+        )
         observations = tuple(
             CalibrationObservation(
                 task_id=item.task_id,
@@ -278,7 +283,7 @@ async def continue_run(
         decision = replace(
             decision,
             policy_version="continuous_practice_match_v1",
-            reason_codes=(*decision.reason_codes, "recent_material_excluded"),
+            reason_codes=(*decision.reason_codes, exposure_reason),
         )
         material = content_catalog.material_by_version(decision.selected_content_version_id)
         run_id = _id("workflow_run")

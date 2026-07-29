@@ -26,6 +26,7 @@ dependencies = [
   "sqlalchemy[asyncio]>=2.0.41,<2.1",
   "structlog>=25.4,<26",
   "uvicorn[standard]>=0.35,<1",
+  "json-repair>=0.61.7",
 ]
 
 [project.scripts]

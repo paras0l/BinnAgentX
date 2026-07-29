@@ -377,7 +377,8 @@ export interface PersonalizedTrainingMaterial {
     | "ready"
     | "in_progress"
     | "completed"
-    | "generation_failed";
+    | "generation_failed"
+    | "rejected";
   started_at: string | null;
   completed_at: string | null;
   created_at: string;

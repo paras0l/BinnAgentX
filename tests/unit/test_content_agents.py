@@ -12,7 +12,7 @@ from binnagent_agent.agents.content_reviewer import (
 )
 
 
-def test_longcat_complex_generation_enables_thinking_and_reads_only_final_content() -> None:
+def test_longcat_complex_generation_preserves_final_output_budget() -> None:
     adapter = RemoteContentGenerationAdapter(
         provider="longcat",
         base_url="https://api.longcat.test/openai",
@@ -28,9 +28,11 @@ def test_longcat_complex_generation_enables_thinking_and_reads_only_final_conten
         target_content_version_id="matched_reading_test_v1",
     )
 
-    payload = adapter._payload(request, {})
+    payload = adapter._payload(request, adapter._prompt_schema(request.content_type))
 
-    assert payload["thinking"] == {"type": "enabled"}
+    assert payload["thinking"] == {"type": "disabled"}
+    construction_schema = payload["messages"][0]["content"]
+    assert "clause.adverbial.concession.although.v1" in construction_schema
     assert (
         adapter._content(
             {
@@ -48,7 +50,7 @@ def test_longcat_complex_generation_enables_thinking_and_reads_only_final_conten
     )
 
 
-def test_longcat_review_agent_uses_reasoning_but_parses_final_judgment() -> None:
+def test_longcat_review_agent_preserves_final_output_budget() -> None:
     captured: dict[str, object] = {}
     final_report = {
         "verdict": "approve",
@@ -96,12 +98,19 @@ def test_longcat_review_agent_uses_reasoning_but_parses_final_judgment() -> None
     result = adapter.review(
         ContentReviewRequest(
             content_type="micro_expression",
-            source_item={"title": "source"},
+            source_item={
+                "title": "source",
+                "paragraphs": [{"text": "source paragraph must stay private"}],
+            },
             candidate_item={"title": "candidate"},
         )
     )
 
-    assert captured["thinking"] == {"type": "enabled"}
+    assert captured["thinking"] == {"type": "disabled"}
+    messages = captured["messages"]
+    assert isinstance(messages, list)
+    assert "must be an original replacement" in messages[1]["content"]
+    assert "source paragraph must stay private" not in messages[1]["content"]
     assert result.verdict == "approve"
 
 

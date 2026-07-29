@@ -41,6 +41,7 @@ class LearnerIdentity:
     email: str
     invite_code: str
     account_type: str
+    invited_count: int = 0
 
 
 def normalize_email(value: str) -> str:
@@ -168,6 +169,7 @@ async def resolve_request_identity(request: Request) -> LearnerIdentity | None:
             email="local@binnagent.invalid",
             invite_code="BINN-LOCAL",
             account_type="registered",
+            invited_count=0,
         )
     token = request.cookies.get(settings.session_cookie_name)
     if not token:
@@ -181,6 +183,16 @@ async def resolve_session_identity(
     token: str,
     now: datetime,
 ) -> LearnerIdentity | None:
+    invited = tables.learners.alias("invited_learners")
+    invited_count = (
+        sa.select(sa.func.count())
+        .where(
+            invited.c.invited_by_learner_id == tables.learners.c.learner_id,
+            invited.c.account_type == "registered",
+        )
+        .correlate(tables.learners)
+        .scalar_subquery()
+    )
     row = (
         (
             await connection.execute(
@@ -190,6 +202,7 @@ async def resolve_session_identity(
                     tables.learners.c.email,
                     tables.learners.c.invite_code,
                     tables.learners.c.account_type,
+                    invited_count.label("invited_count"),
                 )
                 .select_from(
                     tables.learner_sessions.join(

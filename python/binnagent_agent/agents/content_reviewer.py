@@ -9,6 +9,7 @@ import httpx2
 from pydantic import BaseModel, Field
 
 from binnagent_agent.agents.content_generator import ContentType, ProviderName
+from binnagent_agent.agents.structured_output import load_model_json
 from binnagent_agent.observability import observe
 from binnagent_agent.prompts import DEFAULT_PROMPT_REGISTRY
 
@@ -114,7 +115,7 @@ class RemoteContentReviewerAdapter:
             payload["format"] = schema
             payload["options"] = {"temperature": 0.1, "num_predict": self._max_tokens}
         elif self._provider == "longcat":
-            payload["thinking"] = {"type": "enabled"}
+            payload["thinking"] = {"type": "disabled"}
         elif self._provider == "deepseek":
             payload["response_format"] = {"type": "json_object"}
 
@@ -158,9 +159,12 @@ class RemoteContentReviewerAdapter:
     def _user_prompt(request: ContentReviewRequest) -> str:
         source_reference = {
             "title": request.source_item.get("title"),
-            "paragraphs": request.source_item.get("paragraphs"),
             "difficulty": request.source_item.get("difficulty"),
             "target_argument_move": request.source_item.get("target_argument_move"),
+            "generation_boundary": (
+                "The candidate must be an original replacement, not a rewrite of the "
+                "source topic or facts. Originality was checked before this review."
+            ),
         }
         candidate = dict(request.candidate_item)
         candidate.pop("review", None)
@@ -196,17 +200,8 @@ class RemoteContentReviewerAdapter:
         return content
 
 
-def _strip_json_fence(content: str) -> str:
-    value = content.strip()
-    if value.startswith("```") and value.endswith("```"):
-        lines = value.splitlines()
-        if len(lines) >= 3:
-            return "\n".join(lines[1:-1]).strip()
-    return value
-
-
 def _parse_review_result(content: str) -> ContentReviewResult:
-    payload = json.loads(_strip_json_fence(content))
+    payload = load_model_json(content)
     if not isinstance(payload, dict):
         raise ValueError("review_response_must_be_an_object")
     summary = payload.get("summary")

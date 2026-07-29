@@ -1,0 +1,18 @@
+{
+  "status": "complete",
+  "model_provider": "longcat",
+  "model": "LongCat-2.0 + Codex fallback",
+  "source_url": "https://raw.githubusercontent.com/exam-data/NETEMVocabulary/master/netem_full_list.json",
+  "source_sha256": "6d71a301321056291902bc4804e223c6926dca0d629a45076a6ca5adab185f62",
+  "source_license": "CC BY-NC-SA 4.0",
+  "target_word_count": 5530,
+  "completed_word_count": 5530,
+  "continuous_word_count": 5530,
+  "batch_size": 20,
+  "document_size": 200,
+  "completed_document_count": 28,
+  "completed_batches": 277,
+  "total_batches": 277,
+  "error": null,
+  "updated_at_unix": 1785354343
+}

@@ -35,7 +35,7 @@ DEFAULT_PROMPT_REGISTRY = PromptRegistry(
                 "{{output_schema}}。"
             ),
             variables=("article", "objective_bundle", "output_schema"),
-            model_policy={"temperature": 0.2, "max_tokens": 2600},
+            model_policy={"temperature": 0.2, "max_tokens": 5000},
         ),
         PromptDefinition(
             prompt_id="reading.selection_analysis",
@@ -171,6 +171,8 @@ DEFAULT_PROMPT_REGISTRY = PromptRegistry(
                 "事实自洽、语言自然、题目是否唯一可答、答案与逐字证据是否一致、H1-H4 是否逐步加深、"
                 "难度是否匹配、题型是否真正多样。发现答案不唯一、证据不支持、复制源材料或教学边界"
                 "失守时必须 revise 或 reject。approve 仅用于所有分数至少4且无 high/critical issue。"
+                "候选必须是全新替代材料，不得要求它保留源材料的主题、人物、事实或论证路径；"
+                "原创性相似度已由前置确定性 validator 检查，不要臆测源正文或要求复刻源内容。"
                 "Schema: {{output_schema}}"
             ),
             variables=("output_schema",),
@@ -182,7 +184,8 @@ DEFAULT_PROMPT_REGISTRY = PromptRegistry(
             owner="content_ops",
             purpose="组装独立内容审核的源摘要和候选输入。",
             template_text=(
-                "内容类型: {{content_type}}\n源材料只用于检查过度复用和难度对齐，不代表正确答案。\n"
+                "内容类型: {{content_type}}\n源摘要只用于难度对齐，不包含源正文，也不代表正确答案；"
+                "候选应采用不同主题和事实。\n"
                 "源材料摘要: {{source_reference}}\n待审候选: {{candidate}}\n"
                 "独立审核并只返回最终 JSON。"
             ),

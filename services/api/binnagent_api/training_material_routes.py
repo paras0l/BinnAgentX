@@ -347,8 +347,21 @@ async def retry_personalized_training_material(
     now = datetime.now(UTC)
     async with get_engine().begin() as connection:
         row = await _owned_material(connection, identity.learner_id, material_id)
-        if row["status"] != "generation_failed":
+        if row["status"] not in {"generation_failed", "rejected"}:
             raise HTTPException(status_code=409, detail="training_material_retry_not_allowed")
+        graph_thread_id = (
+            stable_thread_id(
+                "personalized-content",
+                f"{material_id}:retry:{uuid4().hex}",
+            )
+            if row["runtime_kind"] == "langgraph"
+            else row["graph_thread_id"]
+        )
+        await connection.execute(
+            tables.model_invocation_ledger.delete().where(
+                tables.model_invocation_ledger.c.workflow_run_id == material_id
+            )
+        )
         await connection.execute(
             tables.personalized_training_materials.update()
             .where(tables.personalized_training_materials.c.material_id == material_id)
@@ -359,6 +372,16 @@ async def retry_personalized_training_material(
                 next_generation_attempt_at=now,
                 claimed_by=None,
                 lease_expires_at=None,
+                quality_status="not_evaluated",
+                quality_reports=[],
+                objective_bundle={},
+                question_bank=[],
+                grammar_annotations=[],
+                transfer_contract=None,
+                expression_task=None,
+                graph_thread_id=graph_thread_id,
+                started_at=None,
+                completed_at=None,
                 updated_at=now,
             )
         )

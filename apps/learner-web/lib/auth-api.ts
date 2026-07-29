@@ -3,6 +3,7 @@ export interface LearnerIdentity {
   nickname: string;
   email: string;
   invite_code: string;
+  invited_count: number;
   account_type: "registered" | "experience";
 }
 

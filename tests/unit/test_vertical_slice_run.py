@@ -11,6 +11,7 @@ from binnagent_domain.vertical_slice.matching import (
     ExpressionMaterialMatcher,
     MatchDecision,
     MaterialCandidate,
+    least_recent_material_candidates,
 )
 from binnagent_domain.vertical_slice.models import (
     AttemptIndependence,
@@ -373,6 +374,29 @@ def test_matcher_allows_moderate_novelty_after_two_independent_calibrations() ->
     assert decision.selected_content_version_id == "matched_reading_02_v1"
     assert decision.conservative is False
     assert "moderate_topic_novelty_allowed" in decision.reason_codes
+
+
+def test_exposure_control_prefers_unseen_then_least_recent_material() -> None:
+    first, second = _candidates()
+    third = replace(
+        first,
+        content_id="matched_reading_03",
+        content_version_id="matched_reading_03_v1",
+    )
+    candidates = (first, second, third)
+
+    assert least_recent_material_candidates(
+        candidates,
+        ("matched_reading_02_v1", "matched_reading_01_v1"),
+    ) == (third,)
+    assert least_recent_material_candidates(
+        candidates,
+        (
+            "matched_reading_03_v1",
+            "matched_reading_01_v1",
+            "matched_reading_02_v1",
+        ),
+    ) == (second,)
 
 
 def test_expression_matcher_prefers_task_linked_to_completed_reading() -> None:

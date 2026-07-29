@@ -47,6 +47,15 @@ button:disabled {
   cursor: not-allowed;
   opacity: 0.48;
 }
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  clip-path: inset(50%);
+}
 
 .cockpit-shell {
   width: min(1600px, calc(100% - 48px));
@@ -495,6 +504,104 @@ button:disabled {
 }
 .personalized-workbench {
   margin-bottom: 14px;
+}
+.personalized-owner-groups {
+  display: grid;
+  gap: 12px;
+  padding: 0 12px 12px;
+}
+.personalized-run-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px 12px;
+}
+.personalized-run-controls label {
+  flex: 1;
+}
+.personalized-run-controls input {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 9px 11px;
+  color: var(--ink);
+  background: #0c151c;
+  outline: none;
+}
+.personalized-run-controls input:focus {
+  border-color: var(--accent);
+}
+.personalized-run-controls button,
+.personalized-pagination button {
+  border: 1px solid #38505d;
+  border-radius: 7px;
+  padding: 8px 12px;
+  color: var(--ink);
+  background: #16242d;
+}
+.personalized-run-controls > span,
+.personalized-pagination span {
+  color: var(--muted);
+  font-size: 9px;
+  white-space: nowrap;
+}
+.personalized-owner-group {
+  overflow: hidden;
+  border: 1px solid #29404d;
+  border-radius: 10px;
+  background: #0c171f;
+}
+.personalized-owner-group > summary {
+  display: flex;
+  min-height: 56px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 10px 16px;
+  background: #10212a;
+  cursor: pointer;
+  list-style: none;
+}
+.personalized-owner-group[open] > summary {
+  border-bottom: 1px solid #29404d;
+}
+.personalized-owner-group > summary::-webkit-details-marker {
+  display: none;
+}
+.personalized-owner-group > summary::after {
+  color: var(--accent);
+  content: "展开 ↓";
+  font-size: 9px;
+}
+.personalized-owner-group[open] > summary::after {
+  content: "收起 ↑";
+}
+.personalized-owner-group > summary div {
+  display: grid;
+  flex: 1;
+  gap: 3px;
+}
+.personalized-owner-group > summary span,
+.personalized-owner-group > summary small {
+  color: var(--muted);
+  font-size: 9px;
+}
+.personalized-owner-group > summary h3 {
+  margin: 0;
+  color: #a8ddc8;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+.personalized-owner-group .job-table {
+  border-top: 0;
+}
+.personalized-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border-top: 1px solid var(--line);
+  padding: 12px;
 }
 .job-column,
 .detail-panel {
@@ -1165,6 +1272,17 @@ button:disabled {
   }
   .new-run-bar {
     grid-template-columns: 1fr;
+  }
+  .personalized-run-controls {
+    align-items: stretch;
+    flex-wrap: wrap;
+  }
+  .personalized-run-controls label {
+    flex-basis: 100%;
+  }
+  .personalized-run-controls > span {
+    align-self: center;
+    margin-left: auto;
   }
   .job-table-head {
     display: none;

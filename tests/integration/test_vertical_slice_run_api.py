@@ -10,9 +10,12 @@ from binnagent_api.database import dispose_engine, get_engine
 from binnagent_api.main import create_app
 from binnagent_api.vertical_slice import tables
 from binnagent_api.vertical_slice.content_catalog import LocalContentCatalog
+from binnagent_api.vertical_slice.repository import VerticalSliceRepository
+from binnagent_api.vertical_slice.run_repository import VerticalSliceRunRepository
 
 pytestmark = pytest.mark.integration
 content_catalog = LocalContentCatalog()
+run_repository = VerticalSliceRunRepository(VerticalSliceRepository())
 
 
 @pytest.mark.asyncio
@@ -496,6 +499,12 @@ async def test_complete_cross_task_run_with_conservative_matching_and_replay() -
         assert continued_run["predecessor_run_id"] == run_id
         assert continued_run["stage"] == "matched_reading"
         assert continued_run["task_refs"][0]["content_version_id"] == "matched_reading_02_v1"
+        assert "unseen_material_preferred" in continued_run["match_decisions"][0]["reason_codes"]
+        async with get_engine().connect() as connection:
+            assert await run_repository.matched_content_history(
+                connection,
+                "learner_synthetic_local",
+            ) == ("matched_reading_02_v1", "matched_reading_01_v1")
         repeated_continuation = await client.post(
             f"/learner/v1/runs/{run_id}/continue",
             headers={"Idempotency-Key": "run-continue-0002"},

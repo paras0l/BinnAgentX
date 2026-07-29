@@ -6,7 +6,10 @@ import asyncio
 import logging
 from typing import Any, cast
 
-from binnagent_agent.agents.knowledge_extractor import create_knowledge_extractor
+from binnagent_agent.agents.knowledge_extractor import (
+    LongCatKnowledgeAdapter,
+    create_knowledge_extractor,
+)
 from pydantic_ai.models import Model
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
@@ -22,23 +25,25 @@ async def enrich_review_contexts(
     """Enrich untrusted excerpts without allowing model output to change asset identity."""
 
     settings = get_settings()
-    if settings.model_adapter == "longcat":
-        # LongCat's OpenAI-compatible endpoint returns HTTP 200 for this request,
-        # but does not complete PydanticAI's prompted-output run. Extraction is
-        # optional, so avoid adding a guaranteed timeout before reading generation.
-        return contexts, False, "provider_output_protocol_unsupported:longcat"
     model = model_from_settings(settings)
-    if model is None or not contexts:
+    longcat = longcat_knowledge_adapter(settings)
+    if (model is None and longcat is None) or not contexts:
         return contexts, False, None
     source = "\n\n".join(
         f"<note source_title={item['title']!r} kind={item['kind']!r}>\n{item['excerpt']}\n</note>"
         for item in contexts
     )
     try:
-        result = await asyncio.wait_for(
-            create_knowledge_extractor(model).run(source),
-            timeout=settings.model_timeout_seconds,
-        )
+        if longcat is not None:
+            output = await longcat.extract(source)
+        else:
+            if model is None:
+                raise RuntimeError("knowledge_extraction_model_missing")
+            result = await asyncio.wait_for(
+                create_knowledge_extractor(model).run(source),
+                timeout=settings.model_timeout_seconds,
+            )
+            output = result.output
     except Exception as exc:
         error_code = f"{type(exc).__name__}:{str(exc)[:80]}"
         logger.warning("knowledge extraction fallback: %s", error_code)
@@ -46,7 +51,7 @@ async def enrich_review_contexts(
 
     by_title = {str(item["title"]): item for item in contexts}
     additions: dict[str, list[str]] = {}
-    for item in result.output.items:
+    for item in output.items:
         if item.source_title not in by_title:
             continue
         additions.setdefault(item.source_title, []).append(
@@ -62,6 +67,22 @@ async def enrich_review_contexts(
         for context in contexts
     )
     return enriched, True, None
+
+
+def longcat_knowledge_adapter(settings: Settings) -> LongCatKnowledgeAdapter | None:
+    if (
+        not settings.enable_remote_model_calls
+        or settings.model_adapter != "longcat"
+        or settings.longcat_api_key is None
+    ):
+        return None
+    return LongCatKnowledgeAdapter(
+        base_url=settings.longcat_base_url,
+        model=settings.longcat_chat_model,
+        api_key=settings.longcat_api_key.get_secret_value(),
+        max_tokens=max(settings.model_max_tokens, 4000),
+        timeout_seconds=max(settings.model_timeout_seconds, 30),
+    )
 
 
 def model_from_settings(settings: Settings) -> Model | None:

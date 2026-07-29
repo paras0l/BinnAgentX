@@ -26,7 +26,10 @@ from binnagent_api.asset_content_denoiser import (
     project_asset_capture,
 )
 from binnagent_api.database import get_engine
-from binnagent_api.knowledge_extraction_service import model_from_settings
+from binnagent_api.knowledge_extraction_service import (
+    longcat_knowledge_adapter,
+    model_from_settings,
+)
 from binnagent_api.settings import get_settings
 from binnagent_api.vertical_slice import tables
 
@@ -248,7 +251,8 @@ async def _write_gate_output(
 ) -> AssetWriteGateOutput:
     settings = get_settings()
     model = model_from_settings(settings)
-    if model is None:
+    longcat = longcat_knowledge_adapter(settings)
+    if model is None and longcat is None:
         return AssetWriteGateOutput(
             decision=baseline.decision.value,
             retained_segment_ids=baseline.retained_segment_ids,
@@ -268,14 +272,21 @@ async def _write_gate_output(
     if cached is not None:
         return AssetWriteGateOutput.model_validate(cached)
     try:
-        result = await asyncio.wait_for(
-            create_asset_write_gate(model).run(
-                "<asset_capture>\n"
-                + json.dumps(request_payload, ensure_ascii=False)
-                + "\n</asset_capture>"
-            ),
-            timeout=settings.model_timeout_seconds,
+        source = (
+            "<asset_capture>\n"
+            + json.dumps(request_payload, ensure_ascii=False)
+            + "\n</asset_capture>"
         )
+        if longcat is not None:
+            output = await longcat.decide_write(source)
+        else:
+            if model is None:
+                raise RuntimeError("asset_write_gate_model_missing")
+            result = await asyncio.wait_for(
+                create_asset_write_gate(model).run(source),
+                timeout=settings.model_timeout_seconds,
+            )
+            output = result.output
     except Exception:
         await _release(invocation_key)
         return AssetWriteGateOutput(
@@ -284,8 +295,8 @@ async def _write_gate_output(
             reason_codes=[*baseline.reason_codes, "model_gate_fallback"],
             confidence=0,
         )
-    await _complete(invocation_key, result.output)
-    return result.output
+    await _complete(invocation_key, output)
+    return output
 
 
 def _guarded_projection(

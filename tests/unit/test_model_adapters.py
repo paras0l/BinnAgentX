@@ -3,13 +3,22 @@ from decimal import Decimal
 
 import httpx2
 import pytest
-from binnagent_agent import AnnotationAnalysisRequest, PriorityFeedbackRequest
+from binnagent_agent import (
+    AnnotationAnalysisRequest,
+    ExpressionReviewRequest,
+    PriorityFeedbackRequest,
+)
 from binnagent_agent.prompts import RenderedPrompt
 from binnagent_api.model_adapters import (
+    PersonalizedQuestionOutput,
     PersonalizedReadingAdapter,
     RemoteAnnotationAnalysisAdapter,
+    RemoteExpressionReviewAdapter,
     RemotePriorityFeedbackAdapter,
+    expression_review_adapter,
+    personalized_reading_adapter,
 )
+from binnagent_api.settings import Settings
 
 
 def _request() -> PriorityFeedbackRequest:
@@ -36,6 +45,89 @@ class ManagedPromptRuntime:
             model_policy={"temperature": 0.33, "max_tokens": 260},
             source="database",
         )
+
+
+def test_personalized_generation_uses_background_model_timeout() -> None:
+    settings = Settings(
+        BINNAGENT_MODEL_ADAPTER="longcat",
+        enable_remote_model_calls=True,
+        model_timeout_seconds=20,
+        content_generation_timeout_seconds=180,
+        content_generation_max_tokens=16000,
+    )
+
+    adapter = personalized_reading_adapter(settings)
+
+    assert adapter is not None
+    assert adapter._timeout_seconds == 180
+    assert adapter._max_tokens == 16000
+
+
+def test_expression_review_uses_dedicated_model_budget_and_timeout() -> None:
+    settings = Settings(
+        BINNAGENT_MODEL_ADAPTER="longcat",
+        enable_remote_model_calls=True,
+        model_timeout_seconds=20,
+        model_max_tokens=900,
+        expression_review_timeout_seconds=30,
+        expression_review_max_tokens=2000,
+    )
+
+    adapter = expression_review_adapter(settings)
+
+    assert adapter._timeout_seconds == 30
+    assert adapter._max_tokens == 2000
+
+
+def test_personalized_question_completes_longcat_three_hint_shape() -> None:
+    output = PersonalizedQuestionOutput.model_validate(
+        {
+            "question_type": "inference",
+            "difficulty_tier": "advanced",
+            "stem": "What can reasonably be inferred from the passage?",
+            "options": [
+                {"option_id": "A", "text": "First option"},
+                {"option_id": "B", "text": "Second option"},
+                {"option_id": "C", "text": "Third option"},
+            ],
+            "answer_option_id": "B",
+            "evidence_paragraph_index": 1,
+            "evidence_quote": "The policy changed how existing space was shared.",
+            "hints": ["Find the claim.", "Locate its evidence.", "Compare the option scope."],
+            "public_explanation": "The second option stays within the evidence in the passage.",
+        }
+    )
+
+    assert len(output.hints) == 4
+    assert "stronger claim" in output.hints[-1]
+
+
+def test_personalized_question_normalizes_longcat_duplicate_type_key() -> None:
+    output = PersonalizedQuestionOutput.model_validate(
+        {
+            "question_type": "inference",
+            "question_type_type": "inference",
+            "difficulty_tier": "advanced",
+            "stem": "What can reasonably be inferred from the passage?",
+            "options": [
+                {"option_id": "A", "text": "First option"},
+                {"option_id": "B", "text": "Second option"},
+                {"option_id": "C", "text": "Third option"},
+            ],
+            "answer_option_id": "B",
+            "evidence_paragraph_index": 1,
+            "evidence_quote": "The policy changed how existing space was shared.",
+            "hints": [
+                "Find the claim.",
+                "Locate its evidence.",
+                "Compare the option scope.",
+                "Eliminate claims stronger than the passage.",
+            ],
+            "public_explanation": "The second option stays within the evidence in the passage.",
+        }
+    )
+
+    assert output.question_type == "inference"
 
 
 @pytest.mark.asyncio
@@ -214,6 +306,43 @@ async def test_remote_provider_requires_its_api_key_before_network_access() -> N
 
 
 @pytest.mark.asyncio
+async def test_longcat_retries_one_transient_protocol_disconnect() -> None:
+    attempts = 0
+    content = json.dumps(
+        {
+            "schema_version": "1.0.0",
+            "focus": "logic",
+            "feedback": "Keep the conclusion within the evidence stated in the passage.",
+            "evidence_quote": "the conclusion is too broad",
+            "replacement_text": None,
+        }
+    )
+
+    async def handler(_: httpx2.Request) -> httpx2.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise httpx2.RemoteProtocolError("server disconnected")
+        return httpx2.Response(200, json={"choices": [{"message": {"content": content}}]})
+
+    adapter = RemotePriorityFeedbackAdapter(
+        provider="longcat",
+        base_url="https://models.example",
+        model="test-model",
+        api_key="test-key",
+        estimated_cost_usd=Decimal("0.02"),
+        max_tokens=400,
+        timeout_seconds=2,
+        transport=httpx2.MockTransport(handler),
+    )
+
+    result = await adapter.generate(_request())
+
+    assert attempts == 2
+    assert result.payload == json.loads(content)
+
+
+@pytest.mark.asyncio
 async def test_annotation_adapter_routes_sentence_selection_to_translation_and_grammar() -> None:
     seen: dict[str, object] = {}
     content = json.dumps(
@@ -271,4 +400,67 @@ async def test_annotation_adapter_routes_sentence_selection_to_translation_and_g
     assert "selection_scope: sentence_or_paragraph" in messages[1]["content"]
     assert "Sentence core" in messages[1]["content"]
     assert "translation 必须" in messages[0]["content"]
-    assert body["thinking"] == {"type": "enabled"}
+    assert body["thinking"] == {"type": "disabled"}
+
+
+@pytest.mark.asyncio
+async def test_longcat_expression_review_disables_thinking_for_final_output() -> None:
+    seen: dict[str, object] = {}
+    content = json.dumps(
+        {
+            "schema_version": "1.0.0",
+            "original_quote": "Digital tools can support learning",
+            "thinking_difference": "x" * 900,
+            "versions": [
+                {
+                    "style": "logic_mirror",
+                    "label": "中式思路镜像",
+                    "text": "Digital tools can support learning, but students should reason first.",
+                    "explanation": ["It preserves the original information order."],
+                },
+                {
+                    "style": "academic",
+                    "label": "地道学术版",
+                    "text": "Although digital tools help, their use should follow reasoning.",
+                    "explanation": ["The concession narrows the claim."],
+                },
+                {
+                    "style": "news",
+                    "label": "极简新闻版",
+                    "text": "Students should reason before using digital tools.",
+                    "explanation": ["The learner action appears first."],
+                },
+            ],
+        }
+    )
+
+    async def handler(request: httpx2.Request) -> httpx2.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx2.Response(200, json={"choices": [{"message": {"content": content}}]})
+
+    adapter = RemoteExpressionReviewAdapter(
+        provider="longcat",
+        base_url="https://models.example",
+        model="test-model",
+        api_key="test-key",
+        estimated_cost_usd=Decimal("0.02"),
+        max_tokens=1600,
+        timeout_seconds=2,
+        transport=httpx2.MockTransport(handler),
+    )
+    result = await adapter.generate(
+        ExpressionReviewRequest(
+            workflow_run_id="workflow_run_model_0001",
+            task_id="task_model_0001",
+            content_version_id="micro_expression_01_v1",
+            draft=(
+                "Digital tools can support learning, but students should reason before using them."
+            ),
+        )
+    )
+
+    body = seen["body"]
+    assert isinstance(body, dict)
+    assert body["thinking"] == {"type": "disabled"}
+    assert isinstance(result.payload, dict)
+    assert len(result.payload["thinking_difference"]) == 800

@@ -7,6 +7,11 @@ import httpx2
 import pytest
 import pytest_asyncio
 import sqlalchemy as sa
+from binnagent_agent.agents.content_reviewer import (
+    ContentQualityScores,
+    ContentReviewRequest,
+    ContentReviewResult,
+)
 from binnagent_agent.agents.obsidian_inbox_organizer import (
     InboxAdapterResult,
     InboxClassificationOutput,
@@ -875,6 +880,30 @@ async def test_knowledge_organizer_empty_extraction_requests_more_context() -> N
 async def test_bidirectional_sync_personalized_reading_and_annotation_export(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    review_requests: list[ContentReviewRequest] = []
+
+    class PrivateCandidateReviewer:
+        def review(self, request: ContentReviewRequest) -> ContentReviewResult:
+            review_requests.append(request)
+            return ContentReviewResult(
+                verdict="approve",
+                scores=ContentQualityScores(
+                    factual_coherence=5,
+                    answerability=5,
+                    evidence_grounding=5,
+                    difficulty_alignment=5,
+                    question_diversity=5,
+                    hint_progression=5,
+                    language_quality=5,
+                ),
+                summary="候选材料包已通过独立质量审核, 可以进入所属用户的训练队列。",
+                limitations=["仅审核生成后的候选材料包。"],
+            )
+
+    monkeypatch.setattr(
+        "binnagent_api.personalized_material_service.build_content_reviewer_adapter",
+        lambda _settings: PrivateCandidateReviewer(),
+    )
     transport = httpx2.ASGITransport(app=create_app())
     async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
         created = await client.post(
@@ -953,7 +982,7 @@ async def test_bidirectional_sync_personalized_reading_and_annotation_export(
         assert reading.json()["status"] == "requested"
         assert reading.json()["training_eligible"] is False
         assert reading.json()["start_block_reason"] == "material_not_ready"
-        await process_personalized_material(reading.json()["material_id"])
+        assert await process_personalized_material(reading.json()["material_id"]) == "ready"
         generated = await client.get("/learner/v1/training-materials")
         reading_payload = next(
             item
@@ -962,10 +991,10 @@ async def test_bidirectional_sync_personalized_reading_and_annotation_export(
         )
         assert len(reading_payload["paragraphs"]) >= 3
         assert "Contrast and concession" in " ".join(reading_payload["focus_points"])
-        assert reading_payload["status"] == "awaiting_review"
-        assert reading_payload["quality_status"] == "semantic_review_required"
+        assert reading_payload["status"] == "ready"
+        assert reading_payload["quality_status"] == "semantic_reviewed"
         assert reading_payload["training_eligible"] is False
-        assert reading_payload["start_block_reason"] == "quality_review_required"
+        assert reading_payload["start_block_reason"] == "calibration_required"
         reading = httpx2.Response(200, json=reading_payload)
         async with get_engine().connect() as connection:
             memory_event = (
@@ -1028,28 +1057,19 @@ async def test_bidirectional_sync_personalized_reading_and_annotation_export(
                 .values(state="completed", stage="completed", updated_at=datetime.now(UTC))
             )
 
-        quality_blocked = await client.post(
-            f"/learner/v1/runs/personalized/{reading.json()['material_id']}",
-            headers={"Idempotency-Key": "start-unreviewed-personalized-reading"},
-            json={},
-        )
-        assert quality_blocked.status_code == 422, quality_blocked.text
-        assert quality_blocked.json()["code"] == "CONTENT_NOT_ELIGIBLE"
-        assert (
-            quality_blocked.json()["reason"]
-            == "personalized_training_material_quality_review_required"
-        )
-        control_headers = {"X-BinnAgent-Control-Role": "developer_reviewer"}
-        review_queue = await client.get(
-            "/control/v1/personalized-content/reviews",
-            headers=control_headers,
-        )
-        assert review_queue.status_code == 200, review_queue.text
-        candidate = next(
-            item
-            for item in review_queue.json()
-            if item["material_id"] == reading.json()["material_id"]
-        )
+        async with get_engine().connect() as connection:
+            candidate = dict(
+                (
+                    await connection.execute(
+                        sa.select(tables.personalized_training_materials).where(
+                            tables.personalized_training_materials.c.material_id
+                            == reading.json()["material_id"]
+                        )
+                    )
+                )
+                .mappings()
+                .one()
+            )
         assert [item["correct_answer"] for item in candidate["question_bank"]] == [
             "B",
             "C",
@@ -1065,38 +1085,17 @@ async def test_bidirectional_sync_personalized_reading_and_annotation_export(
                 for option in question["options"]
                 if option["option_id"] != question["correct_answer"]
             )
-        assert candidate["grammar_annotations"][0]["analysis"]["status"] == "review_required"
+        assert candidate["grammar_annotations"][0]["analysis"]["status"] == "resolved"
         assert candidate["grammar_annotations"][0]["analysis"]["parser_id"] == (
-            "model_candidate_unverified"
+            "personalized_content_review_agent"
         )
         assert (
             candidate["transfer_contract"]["objective_bundle_id"]
             == (candidate["objective_bundle"]["objective_bundle_id"])
         )
         grammar_learner_id = candidate["objective_bundle"]["learner_id"]
-        reviewed = await client.post(
-            f"/control/v1/personalized-content/reviews/{reading.json()['material_id']}",
-            headers=control_headers,
-            json={
-                "action": "approve",
-                "reason": (
-                    "人工复核通过: 三道题答案唯一且证据逐字命中, 干扰项机制明确; "
-                    "让步结构候选与原文一致; 表达任务保持同一目标并切换到新语境。"
-                ),
-            },
-        )
-        assert reviewed.status_code == 200, reviewed.text
-        assert reviewed.json()["status"] == "ready"
-        assert reviewed.json()["quality_status"] == "semantic_reviewed"
-        assert reviewed.json()["grammar_annotations"][0]["analysis"]["status"] == "resolved"
-        assert reviewed.json()["grammar_annotations"][0]["review"]["reviewer_id"] == (
-            "developer_reviewer"
-        )
-        reviewed_queue = await client.get("/learner/v1/training-materials")
-        reading_payload = next(
-            item
-            for item in reviewed_queue.json()
-            if item["material_id"] == reading.json()["material_id"]
+        assert candidate["grammar_annotations"][0]["review"]["reviewer_id"] == (
+            "personalized_content_review_agent"
         )
         reading = httpx2.Response(200, json=reading_payload)
 
@@ -1117,22 +1116,7 @@ async def test_bidirectional_sync_personalized_reading_and_annotation_export(
 
         blocked_reading = await client.post("/learner/v1/training-materials/personalized")
         assert blocked_reading.status_code == 202, blocked_reading.text
-        await process_personalized_material(blocked_reading.json()["material_id"])
-        blocked_queue = await client.get("/learner/v1/training-materials")
-        blocked_payload = next(
-            item
-            for item in blocked_queue.json()
-            if item["material_id"] == blocked_reading.json()["material_id"]
-        )
-        blocked_reviewed = await client.post(
-            f"/control/v1/personalized-content/reviews/{blocked_reading.json()['material_id']}",
-            headers=control_headers,
-            json={
-                "action": "approve",
-                "reason": "人工复核通过: 证据、答案、语法候选和迁移任务均满足审核清单。",
-            },
-        )
-        assert blocked_reviewed.status_code == 200, blocked_reviewed.text
+        assert await process_personalized_material(blocked_reading.json()["material_id"]) == "ready"
         blocked_queue = await client.get("/learner/v1/training-materials")
         blocked_payload = next(
             item
@@ -1491,18 +1475,7 @@ async def test_bidirectional_sync_personalized_reading_and_annotation_export(
             "binnagent_api.personalized_material_service.generate_personalized_reading",
             generate_without_source_mapping,
         )
-        assert await process_personalized_material(due_material_id) == "awaiting_review"
-        due_reviewed = await client.post(
-            f"/control/v1/personalized-content/reviews/{due_material_id}",
-            headers=control_headers,
-            json={
-                "action": "approve",
-                "reason": (
-                    "人工复核通过: 来源资产由目标包绑定, 题目证据和语法替换均通过确定性校验。"
-                ),
-            },
-        )
-        assert due_reviewed.status_code == 200, due_reviewed.text
+        assert await process_personalized_material(due_material_id) == "ready"
         async with get_engine().connect() as connection:
             ready_row = (
                 (
@@ -1527,8 +1500,15 @@ async def test_bidirectional_sync_personalized_reading_and_annotation_export(
         assert ready_row["status"] == "ready"
         assert ready_row["evidence_target_asset_ids"] == [projected["asset_id"]]
         assert all(QualityReport.model_validate(report) for report in ready_row["quality_reports"])
-        assert "semantic_review_requested" in event_types
         assert "semantic_review_approved" in event_types
+        assert review_requests
+        assert all(request.source_item["paragraphs"] == [] for request in review_requests)
+        assert all(
+            "learner_id" not in request.source_item
+            and "source_context_ids" not in request.source_item
+            for request in review_requests
+        )
+        assert all(request.candidate_item["paragraphs"] for request in review_requests)
 
 
 @pytest.mark.asyncio

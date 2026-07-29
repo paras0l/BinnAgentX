@@ -53,6 +53,10 @@ PackageQualityValidator = Callable[
     ["PersonalizedContentState"],
     MaybeAwaitable[tuple[QualityReport, ...]],
 ]
+ReviewDecider = Callable[
+    ["PersonalizedContentState", tuple[QualityReport, ...]],
+    MaybeAwaitable[dict[str, Any]],
+]
 ContentPublisher = Callable[["PersonalizedContentState", str], MaybeAwaitable[str]]
 FaultInjector = Callable[[str, str], None]
 
@@ -82,6 +86,7 @@ def build_personalized_content_graph(
     language_generator: LanguageGenerator | None = None,
     transfer_generator: TransferGenerator | None = None,
     package_quality_validator: PackageQualityValidator | None = None,
+    review_decider: ReviewDecider | None = None,
     fault_injector: FaultInjector | None = None,
     graph_version: str = GRAPH_VERSION,
     compatible_graph_versions: frozenset[str] = frozenset(),
@@ -212,19 +217,23 @@ def build_personalized_content_graph(
             else "review"
         )
 
-    def review_node(state: PersonalizedContentState) -> dict[str, Any]:
+    async def review_node(state: PersonalizedContentState) -> dict[str, Any]:
         validate_version(state)
         fault("review", "before")
         reports = tuple(QualityReport.model_validate(item) for item in state["quality_reports"])
-        decision = interrupt(
-            {
-                "kind": "personalized_content_quality_review",
-                "objective_bundle_id": state["objective_bundle"]["objective_bundle_id"],
-                "quality_reports": [report.model_dump(mode="json") for report in reports],
-                "allowed_actions": ["approve", "reject", "revise"],
-                "allowed_repair_scopes": sorted(available_repair_scopes),
-                "repair_attempts": int(state.get("repair_attempts", 0)),
-            }
+        decision = (
+            await _resolve(review_decider(state, reports))
+            if review_decider is not None
+            else interrupt(
+                {
+                    "kind": "personalized_content_quality_review",
+                    "objective_bundle_id": state["objective_bundle"]["objective_bundle_id"],
+                    "quality_reports": [report.model_dump(mode="json") for report in reports],
+                    "allowed_actions": ["approve", "reject", "revise"],
+                    "allowed_repair_scopes": sorted(available_repair_scopes),
+                    "repair_attempts": int(state.get("repair_attempts", 0)),
+                }
+            )
         )
         if not isinstance(decision, dict):
             raise ValueError("review_resume_payload_must_be_object")

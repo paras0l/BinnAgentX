@@ -13,6 +13,7 @@ from binnagent_domain.learning.grammar_ontology import (
 )
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
+from binnagent_agent.agents.structured_output import load_model_json
 from binnagent_agent.gateways.model import ModelAdapterResponse
 from binnagent_agent.observability import observe
 from binnagent_agent.prompts import DEFAULT_PROMPT_REGISTRY
@@ -62,7 +63,7 @@ class _GeneratedGrammarChallenge(BaseModel):
     construction_id: str = Field(pattern=r"^[a-z][a-z0-9_.]+\.v[1-9][0-9]*$")
     tested_facet: GrammarFacet
     error_type: str = Field(min_length=2, max_length=80)
-    hint: str = Field(min_length=4, max_length=200)
+    hint: str = Field(min_length=4, max_length=600)
 
     @model_validator(mode="before")
     @classmethod
@@ -101,7 +102,7 @@ class _ReadingGenerationDraft(BaseModel):
 
 class _GeneratedPriorityCheck(BaseModel):
     check_id: str = Field(pattern=r"^[a-z][a-z0-9_]{2,31}$")
-    signal_terms: list[str] = Field(min_length=1, max_length=8)
+    signal_terms: list[str] = Field(min_length=1, max_length=12)
     feedback: str = Field(min_length=20, max_length=500)
 
 
@@ -111,7 +112,7 @@ class _MicroGenerationDraft(BaseModel):
     audience: str = Field(min_length=2, max_length=200)
     purpose: str = Field(min_length=2, max_length=300)
     target_argument_move: str = Field(min_length=2, max_length=300)
-    optional_active_resource: str = Field(min_length=1, max_length=200)
+    optional_active_resource: str = Field(min_length=1, max_length=600)
     forbidden_mechanical_use: list[str] = Field(min_length=1, max_length=4)
     v1_minimum: list[str] = Field(min_length=2, max_length=5)
     priority_feedback_checks: list[_GeneratedPriorityCheck] = Field(min_length=1, max_length=4)
@@ -197,7 +198,7 @@ class _RemoteContentGenerationAdapterBase:
             payload["format"] = schema
             payload["options"] = {"temperature": 0.25, "num_predict": self._max_tokens}
         elif self._provider == "longcat":
-            payload["thinking"] = {"type": "enabled"}
+            payload["thinking"] = {"type": "disabled"}
         elif self._provider == "deepseek":
             payload["response_format"] = {"type": "json_object"}
         return payload
@@ -231,7 +232,7 @@ class _RemoteContentGenerationAdapterBase:
             if observation is not None:
                 observation.update(output=content)
             return ModelAdapterResponse(
-                payload=json.loads(_strip_json_fence(content)),
+                payload=load_model_json(content),
                 actual_cost_usd=self.estimated_cost_usd,
             )
 
@@ -291,7 +292,19 @@ class _RemoteContentGenerationAdapterBase:
 
     def _prompt_schema(self, content_type: ContentType) -> dict[str, Any]:
         if content_type in {"calibration_reading", "matched_reading"}:
-            return _ReadingGenerationDraft.model_json_schema()
+            schema = _ReadingGenerationDraft.model_json_schema()
+            grammar_schema = schema.get("$defs", {}).get(
+                "_GeneratedGrammarChallenge",
+                {},
+            )
+            construction_schema = grammar_schema.get("properties", {}).get(
+                "construction_id",
+            )
+            if isinstance(construction_schema, dict):
+                construction_schema["enum"] = [
+                    item.construction_id for item in load_grammar_catalog().constructions
+                ]
+            return schema
         return _MicroGenerationDraft.model_json_schema()
 
     def _path(self) -> str:
@@ -323,12 +336,3 @@ class _RemoteContentGenerationAdapterBase:
 
 class RemoteContentGenerationAdapter(_RemoteContentGenerationAdapterBase):
     pass
-
-
-def _strip_json_fence(content: str) -> str:
-    value = content.strip()
-    if value.startswith("```") and value.endswith("```"):
-        lines = value.splitlines()
-        if len(lines) >= 3:
-            return "\n".join(lines[1:-1]).strip()
-    return value
