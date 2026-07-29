@@ -24,7 +24,7 @@ dependencies = [
   "pydantic-settings>=2.10,<3",
   "psycopg[binary,pool]>=3.3,<4",
   "sqlalchemy[asyncio]>=2.0.41,<2.1",
-  "structlog>=25.4,<26",
+  "structlog>=25.4,<27",
   "uvicorn[standard]>=0.35,<1",
   "json-repair>=0.61.7",
 ]
