@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import difflib
 import os
 import re
 import socket
@@ -28,6 +29,10 @@ from binnagent_agent.workflows.knowledge_organization_graph import (
     KnowledgeOrganizationState,
 )
 from binnagent_domain.learning.content_quality import SourceSpan
+from binnagent_domain.learning.grammar_ontology import (
+    resolve_construction_from_text,
+    resolve_construction_id,
+)
 from binnagent_domain.learning.knowledge_organization import (
     AtomicKnowledgeCandidate,
     CandidateValidationStatus,
@@ -46,6 +51,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from binnagent_api.database import get_engine
 from binnagent_api.knowledge_extraction_service import model_from_settings
+from binnagent_api.learning_evidence_service import refresh_asset_projection
 from binnagent_api.settings import get_settings
 from binnagent_api.vertical_slice import tables
 
@@ -396,7 +402,11 @@ async def _extract_sources(
         if cached is not None:
             output = AtomicKnowledgeExtraction.model_validate(cached)
         elif model is None:
-            output = _deterministic_atomic_extraction(content)
+            output = (
+                _deterministic_asset_capture_extraction(content)
+                if source.provider == "learning_asset_capture"
+                else _deterministic_atomic_extraction(content)
+            )
             await _complete_extraction(invocation_key, output)
         else:
             try:
@@ -455,6 +465,32 @@ def _deterministic_atomic_extraction(content: str) -> AtomicKnowledgeExtraction:
             )
         )
     return AtomicKnowledgeExtraction(items=items)
+
+
+def _deterministic_asset_capture_extraction(content: str) -> AtomicKnowledgeExtraction:
+    """Offline fallback only promotes learner-authored capture segments."""
+
+    learner_segments = [
+        match.group("content").strip()
+        for match in re.finditer(
+            r"\[segment (?P<attrs>[^\]]+)\]\n"
+            r"(?P<content>.*?)(?=\n\n\[segment |\Z)",
+            content,
+            re.S,
+        )
+        if "origin=learner" in match.group("attrs")
+        and any(
+            marker in match.group("attrs")
+            for marker in (
+                "role=learner_interpretation",
+                "role=reusable_rule",
+                "role=example",
+            )
+        )
+    ]
+    if not learner_segments:
+        return AtomicKnowledgeExtraction(items=[])
+    return _deterministic_atomic_extraction("\n\n".join(learner_segments))
 
 
 async def _reserve_or_load_extraction(
@@ -559,7 +595,15 @@ def _validated_candidates(
 ) -> tuple[AtomicKnowledgeCandidate, ...]:
     candidates: list[AtomicKnowledgeCandidate] = []
     for item in output.items:
-        canonical_key = _canonical_key(item.canonical_key)
+        knowledge_kind = KnowledgeKind(item.knowledge_kind)
+        construction_id = (
+            resolve_construction_from_text(item.canonical_key, item.title, item.claim)
+            if knowledge_kind is KnowledgeKind.GRAMMAR
+            else None
+        )
+        canonical_key = (
+            construction_id if construction_id is not None else _canonical_key(item.canonical_key)
+        )
         spans = _exact_spans(
             source.source_record_id,
             source.content_hash,
@@ -577,7 +621,7 @@ def _validated_candidates(
             AtomicKnowledgeCandidate(
                 candidate_id=f"knowledge_candidate_{key[:36]}",
                 source_record_id=source.source_record_id,
-                knowledge_kind=KnowledgeKind(item.knowledge_kind),
+                knowledge_kind=knowledge_kind,
                 canonical_key=canonical_key,
                 title=item.title,
                 claim=item.claim,
@@ -588,6 +632,7 @@ def _validated_candidates(
                 validation_status=(
                     CandidateValidationStatus.CANDIDATE
                     if item.confidence >= 0.8
+                    and (knowledge_kind is not KnowledgeKind.GRAMMAR or construction_id is not None)
                     else CandidateValidationStatus.NEEDS_REVIEW
                 ),
                 extractor_version=ATOMIC_EXTRACTOR_VERSION,
@@ -718,52 +763,10 @@ async def _build_proposals(
     seen_keys: set[str] = set()
     proposals: list[KnowledgeChangeProposal] = []
     for candidate in candidates:
-        historical = (
-            (
-                await connection.execute(
-                    sa.select(
-                        tables.learning_asset_index,
-                        tables.atomic_knowledge_candidates.c.canonical_key.label(
-                            "matched_canonical_key"
-                        ),
-                        tables.atomic_knowledge_candidates.c.claim.label("matched_claim"),
-                    )
-                    .join(
-                        tables.knowledge_change_proposals,
-                        tables.knowledge_change_proposals.c.committed_asset_id
-                        == tables.learning_asset_index.c.asset_id,
-                        isouter=True,
-                    )
-                    .join(
-                        tables.atomic_knowledge_candidates,
-                        tables.atomic_knowledge_candidates.c.candidate_id
-                        == tables.knowledge_change_proposals.c.candidate_id,
-                        isouter=True,
-                    )
-                    .where(
-                        tables.learning_asset_index.c.learner_id == learner_id,
-                        sa.or_(
-                            tables.atomic_knowledge_candidates.c.canonical_key
-                            == candidate.canonical_key,
-                            sa.func.lower(tables.learning_asset_index.c.display_title)
-                            == candidate.title.casefold(),
-                        ),
-                    )
-                    .order_by(
-                        sa.case(
-                            (
-                                tables.atomic_knowledge_candidates.c.canonical_key
-                                == candidate.canonical_key,
-                                0,
-                            ),
-                            else_=1,
-                        )
-                    )
-                    .limit(1)
-                )
-            )
-            .mappings()
-            .one_or_none()
+        ranked_existing = await _rank_existing_assets(
+            connection,
+            learner_id=learner_id,
+            candidate=candidate,
         )
         source = (
             (
@@ -777,18 +780,8 @@ async def _build_proposals(
             .mappings()
             .one()
         )
-        existing = historical
-        match = (
-            ExistingAssetMatch(
-                asset_id=str(existing["asset_id"]),
-                asset_version=int(existing["version"]),
-                canonical_key_match=(existing["matched_canonical_key"] == candidate.canonical_key),
-                lexical_score=1,
-                evidence="Stable canonical key or normalized title matched an existing asset.",
-            )
-            if existing is not None
-            else None
-        )
+        existing = ranked_existing[0][0] if ranked_existing else None
+        matches = tuple(item[1] for item in ranked_existing)
         action = _select_change_action(
             confidence=candidate.confidence,
             duplicate_in_run=candidate.canonical_key in seen_keys,
@@ -800,6 +793,11 @@ async def _build_proposals(
             supersedes_source=source["supersedes_source_record_id"] is not None,
             incoming_claim=candidate.claim,
         )
+        if candidate.knowledge_kind is KnowledgeKind.GRAMMAR:
+            try:
+                resolve_construction_id(candidate.canonical_key)
+            except ValueError:
+                action = KnowledgeChangeAction.DEFER
         seen_keys.add(candidate.canonical_key)
         proposal_key = sha256(
             f"{run_id}:{candidate.candidate_id}:{action.value}".encode()
@@ -809,7 +807,7 @@ async def _build_proposals(
                 proposal_id=f"knowledge_proposal_{proposal_key[:36]}",
                 candidate_id=candidate.candidate_id,
                 action=action,
-                existing_asset_matches=(match,) if match is not None else (),
+                existing_asset_matches=matches,
                 field_changes=(
                     FieldChange(
                         field_name="knowledge_claim",
@@ -845,6 +843,109 @@ async def _build_proposals(
             )
         )
     return tuple(proposals)
+
+
+async def _rank_existing_assets(
+    connection: AsyncConnection,
+    *,
+    learner_id: str,
+    candidate: AtomicKnowledgeCandidate,
+    limit: int = 4,
+) -> list[tuple[sa.RowMapping, ExistingAssetMatch]]:
+    """Coarse same-kind retrieval followed by deterministic lexical reranking."""
+
+    rows = (
+        (
+            await connection.execute(
+                sa.select(
+                    tables.learning_asset_index,
+                    tables.atomic_knowledge_candidates.c.canonical_key.label(
+                        "matched_canonical_key"
+                    ),
+                    tables.atomic_knowledge_candidates.c.claim.label("matched_claim"),
+                )
+                .join(
+                    tables.knowledge_change_proposals,
+                    tables.knowledge_change_proposals.c.committed_asset_id
+                    == tables.learning_asset_index.c.asset_id,
+                    isouter=True,
+                )
+                .join(
+                    tables.atomic_knowledge_candidates,
+                    tables.atomic_knowledge_candidates.c.candidate_id
+                    == tables.knowledge_change_proposals.c.candidate_id,
+                    isouter=True,
+                )
+                .where(
+                    tables.learning_asset_index.c.learner_id == learner_id,
+                    tables.learning_asset_index.c.asset_kind
+                    == _asset_kind(candidate.knowledge_kind.value),
+                )
+                .order_by(tables.learning_asset_index.c.updated_at.desc())
+                .limit(80)
+            )
+        )
+        .mappings()
+        .all()
+    )
+    best_by_asset: dict[str, tuple[sa.RowMapping, float, bool]] = {}
+    for row in rows:
+        canonical_match = row["matched_canonical_key"] == candidate.canonical_key
+        score = (
+            1.0
+            if canonical_match
+            else _lexical_similarity(
+                candidate.title,
+                candidate.claim,
+                str(row["display_title"]),
+                str(row["matched_claim"] or ""),
+            )
+        )
+        asset_id = str(row["asset_id"])
+        previous = best_by_asset.get(asset_id)
+        if previous is None or score > previous[1]:
+            best_by_asset[asset_id] = (row, score, canonical_match)
+    ranked = sorted(
+        best_by_asset.values(),
+        key=lambda item: (item[2], item[1], item[0]["updated_at"]),
+        reverse=True,
+    )
+    selected = [item for item in ranked if item[2] or item[1] >= 0.45][:limit]
+    return [
+        (
+            row,
+            ExistingAssetMatch(
+                asset_id=str(row["asset_id"]),
+                asset_version=int(row["version"]),
+                canonical_key_match=canonical_match,
+                lexical_score=round(score, 4),
+                evidence=(
+                    "Stable canonical key matched."
+                    if canonical_match
+                    else "Same-kind title and claim survived lexical Top-K reranking."
+                ),
+            ),
+        )
+        for row, score, canonical_match in selected
+    ]
+
+
+def _lexical_similarity(
+    incoming_title: str,
+    incoming_claim: str,
+    existing_title: str,
+    existing_claim: str,
+) -> float:
+    incoming = _normalized_claim(f"{incoming_title} {incoming_claim}")
+    existing = _normalized_claim(f"{existing_title} {existing_claim}")
+    if not incoming or not existing:
+        return 0
+    incoming_tokens = set(incoming.split())
+    existing_tokens = set(existing.split())
+    union = incoming_tokens | existing_tokens
+    jaccard = len(incoming_tokens & existing_tokens) / len(union) if union else 0
+    sequence = difflib.SequenceMatcher(None, incoming, existing).ratio()
+    return max(jaccard, sequence)
 
 
 async def _persist_proposals(
@@ -1115,67 +1216,122 @@ async def _commit_create_proposal(
         .one()
     )
     now = datetime.now(UTC)
-    asset_id = f"asset_{sha256(str(proposal['proposal_id']).encode()).hexdigest()[:32]}"
-    await connection.execute(
-        pg_insert(tables.learning_asset_index)
-        .values(
-            asset_id=asset_id,
-            learner_id=proposal["learner_id"],
-            asset_kind=_asset_kind(str(candidate["knowledge_kind"])),
-            display_title=candidate["title"],
-            tag_index=["knowledge-proposal", str(candidate["knowledge_kind"])],
-            source_type="import",
-            source_title="Obsidian organizer proposal",
-            source_task_id=None,
-            source_annotation_id=None,
-            source_intervention_id=None,
-            vault_provider="obsidian",
-            vault_id=None,
-            document_id=None,
-            relative_path=None,
-            document_uri=None,
-            content_hash=None,
-            document_updated_at=None,
-            evidence_status="pending_validation",
-            evidence_count=0,
-            last_verified_at=None,
-            next_review_at=now,
-            starred=False,
-            sync_status="pending_export",
-            sync_error_code=None,
-            indexed_at=None,
-            created_at=now,
-            updated_at=now,
-            version=1,
+    source = (
+        (
+            await connection.execute(
+                sa.select(tables.knowledge_source_records).where(
+                    tables.knowledge_source_records.c.source_record_id
+                    == candidate["source_record_id"]
+                )
+            )
         )
-        .on_conflict_do_nothing(index_elements=["asset_id"])
+        .mappings()
+        .one()
     )
-    message_id = _stable_uuid(f"knowledge-export:create:{proposal['proposal_id']}")
-    await connection.execute(
-        pg_insert(tables.outbox_messages)
-        .values(
-            message_id=message_id,
-            topic="asset_export_requested",
-            aggregate_id=asset_id,
-            payload={
-                "export_id": str(message_id),
-                "asset_id": asset_id,
-                "export_schema_version": "asset/v1",
-                "operation": "CREATE",
-                "initial_content": (
-                    f"# {candidate['title']}\n\n{candidate['claim']}\n\n"
-                    f"<!-- source_record:{candidate['source_record_id']} -->"
-                ),
-                "knowledge_proposal_id": proposal["proposal_id"],
-            },
-            status="pending",
-            attempt_count=0,
-            occurred_at=now,
-            available_at=now,
-            processed_at=None,
+    captured_asset_id = (
+        str(source["source_key"]).removeprefix("asset:")
+        if source["provider"] == "learning_asset_capture"
+        and str(source["source_key"]).startswith("asset:")
+        else None
+    )
+    captured_asset = (
+        (
+            await connection.execute(
+                sa.select(tables.learning_asset_index).where(
+                    tables.learning_asset_index.c.asset_id == captured_asset_id,
+                    tables.learning_asset_index.c.learner_id == proposal["learner_id"],
+                )
+            )
         )
-        .on_conflict_do_nothing(index_elements=["message_id"])
+        .mappings()
+        .one_or_none()
+        if captured_asset_id is not None
+        else None
     )
+    if captured_asset is not None:
+        capture_already_claimed = await connection.scalar(
+            sa.select(sa.func.count())
+            .select_from(tables.knowledge_change_proposals)
+            .join(
+                tables.atomic_knowledge_candidates,
+                tables.atomic_knowledge_candidates.c.candidate_id
+                == tables.knowledge_change_proposals.c.candidate_id,
+            )
+            .where(
+                tables.atomic_knowledge_candidates.c.source_record_id
+                == candidate["source_record_id"],
+                tables.knowledge_change_proposals.c.committed_asset_id == captured_asset_id,
+                tables.knowledge_change_proposals.c.proposal_id != proposal["proposal_id"],
+            )
+        )
+        if capture_already_claimed:
+            captured_asset = None
+    if captured_asset is not None:
+        asset_id = str(captured_asset["asset_id"])
+        asset_version = int(captured_asset["version"])
+    else:
+        asset_id = f"asset_{sha256(str(proposal['proposal_id']).encode()).hexdigest()[:32]}"
+        asset_version = 1
+        await connection.execute(
+            pg_insert(tables.learning_asset_index)
+            .values(
+                asset_id=asset_id,
+                learner_id=proposal["learner_id"],
+                asset_kind=_asset_kind(str(candidate["knowledge_kind"])),
+                display_title=candidate["title"],
+                tag_index=["knowledge-proposal", str(candidate["knowledge_kind"])],
+                source_type="import",
+                source_title="Obsidian organizer proposal",
+                source_task_id=None,
+                source_annotation_id=None,
+                source_intervention_id=None,
+                vault_provider="obsidian",
+                vault_id=None,
+                document_id=None,
+                relative_path=None,
+                document_uri=None,
+                content_hash=None,
+                document_updated_at=None,
+                evidence_status="pending_validation",
+                evidence_count=0,
+                last_verified_at=None,
+                next_review_at=now,
+                starred=False,
+                sync_status="pending_export",
+                sync_error_code=None,
+                indexed_at=None,
+                created_at=now,
+                updated_at=now,
+                version=1,
+            )
+            .on_conflict_do_nothing(index_elements=["asset_id"])
+        )
+        message_id = _stable_uuid(f"knowledge-export:create:{proposal['proposal_id']}")
+        await connection.execute(
+            pg_insert(tables.outbox_messages)
+            .values(
+                message_id=message_id,
+                topic="asset_export_requested",
+                aggregate_id=asset_id,
+                payload={
+                    "export_id": str(message_id),
+                    "asset_id": asset_id,
+                    "export_schema_version": "asset/v1",
+                    "operation": "CREATE",
+                    "initial_content": (
+                        f"# {candidate['title']}\n\n{candidate['claim']}\n\n"
+                        f"<!-- source_record:{candidate['source_record_id']} -->"
+                    ),
+                    "knowledge_proposal_id": proposal["proposal_id"],
+                },
+                status="pending",
+                attempt_count=0,
+                occurred_at=now,
+                available_at=now,
+                processed_at=None,
+            )
+            .on_conflict_do_nothing(index_elements=["message_id"])
+        )
     relation_key = f"derived:{asset_id}:{candidate['source_record_id']}"
     await connection.execute(
         pg_insert(tables.knowledge_relations)
@@ -1184,7 +1340,7 @@ async def _commit_create_proposal(
             learner_id=proposal["learner_id"],
             relation_type="DERIVED_FROM",
             from_entity_id=asset_id,
-            from_version=1,
+            from_version=asset_version,
             to_entity_id=candidate["source_record_id"],
             to_version=1,
             source_spans=list(candidate["source_spans"]),
@@ -1384,6 +1540,36 @@ async def _commit_versioned_patch(
         )
         .on_conflict_do_nothing(index_elements=["message_id"])
     )
+    if action is KnowledgeChangeAction.MARK_CONFLICT:
+        await connection.execute(
+            pg_insert(tables.learning_evidence)
+            .values(
+                evidence_id=(
+                    "evidence_knowledge_conflict_"
+                    + sha256(str(proposal["proposal_id"]).encode()).hexdigest()[:32]
+                ),
+                learner_id=proposal["learner_id"],
+                asset_id=asset_id,
+                evidence_type="conflict",
+                workflow_run_id=None,
+                task_id=None,
+                source_version=expected_version + 1,
+                observed_at=now,
+                detail={
+                    "knowledge_proposal_id": str(proposal["proposal_id"]),
+                    "candidate_id": str(proposal["candidate_id"]),
+                    "source_spans": list(proposal["source_spans"]),
+                },
+            )
+            .on_conflict_do_nothing(index_elements=["evidence_id"])
+        )
+        await refresh_asset_projection(
+            connection,
+            learner_id=str(proposal["learner_id"]),
+            asset_id=asset_id,
+            now=now,
+            increment_version=False,
+        )
     await _insert_candidate_relation(
         connection,
         proposal,

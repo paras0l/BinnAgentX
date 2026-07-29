@@ -3,7 +3,9 @@ from hashlib import sha256
 
 import pytest
 from binnagent_api.knowledge_organization_service import (
+    _deterministic_asset_capture_extraction,
     _deterministic_atomic_extraction,
+    _lexical_similarity,
     _select_change_action,
     _validated_candidates,
 )
@@ -102,6 +104,33 @@ def test_all_knowledge_change_actions_are_explicit(
     assert _select_change_action(**inputs) is expected  # type: ignore[arg-type]
 
 
+def test_lexical_reranker_prioritizes_same_concept_over_shared_generic_words() -> None:
+    close = _lexical_similarity(
+        "Although concession",
+        "Although introduces a concession before the main claim.",
+        "Concession with although",
+        "Although marks a concession and the main clause carries the claim.",
+    )
+    noisy = _lexical_similarity(
+        "Although concession",
+        "Although introduces a concession before the main claim.",
+        "Finding the main idea",
+        "Read the title and identify the writer's main claim.",
+    )
+
+    assert close > noisy
+    assert close >= 0.45
+
+
+def test_capture_fallback_does_not_promote_agent_hint_without_learner_claim() -> None:
+    content = (
+        "[segment id=hint role=agent_hint origin=agent hint_level=4]\n"
+        "The main clause carries the writer's claim."
+    )
+
+    assert _deterministic_asset_capture_extraction(content).items == []
+
+
 def test_deterministic_extractor_splits_mixed_note_and_preserves_exact_evidence() -> None:
     content = (
         "Although introduces a concession. The writer's main claim appears in the main clause."
@@ -131,6 +160,7 @@ def test_deterministic_extractor_splits_mixed_note_and_preserves_exact_evidence(
         "reading_skill",
     ]
     assert len({item.candidate_id for item in candidates}) == 2
+    assert candidates[0].canonical_key == "clause.adverbial.concession.although.v1"
     for candidate in candidates:
         for span in candidate.source_spans:
             assert content[span.start : span.end] == span.text_quote

@@ -838,14 +838,14 @@ test("first experience opens the reading and output workspace", async ({ page })
   await expect(page.getByText("宾语从句：how its study rooms were shared")).toBeVisible();
   await expect(page.getByText("这个卡点更像是主干和修饰层级混在了一起。")).toBeVisible();
   await expect(page.getByText("下一步自查", { exact: true })).toBeVisible();
-  await expect(page.getByText("当前选区分析")).toBeVisible();
+  await expect(page.getByText("分析指引（已拒答）")).toBeVisible();
   await expect(page.getByText(/本地保守分析|模型暂不可用/)).toHaveCount(0);
   await expect(page.getByRole("tab", { name: /临时任务.*已完成 2 个，共 3 个/ })).toBeVisible();
   await page.getByRole("button", { name: "保存标注与分析" }).click();
 
   await expect(page.getByText("1 条 · 原文中的痕迹也已保留")).toBeVisible();
   await expect(page.getByText(/请优先给出当前选区的完整中文翻译/)).toBeVisible();
-  await expect(page.getByRole("button", { name: /语法重点.*标记/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /语法重点.*标记/ }).first()).toBeVisible();
   await page.getByRole("button", { name: "返回本步任务" }).click();
 
   await page.getByRole("radio", { name: /B It helped/ }).check();
@@ -1289,6 +1289,37 @@ test("completed learner returns home and continues with a new practice material"
       });
     },
   );
+  await page.route("**/api/learner/v1/training-history*", async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        items: [
+          {
+            workflow_run_id: predecessorRunId,
+            run_version: 10,
+            run_kind: "first_experience",
+            completed_at: "2026-07-16T14:30:00Z",
+            difficulty_rating: "matched",
+            completed_task_count: 4,
+            supported_task_count: 0,
+            matched_content_version_id: "matched_reading_01_v1",
+          },
+        ],
+        page: 1,
+        page_size: 5,
+        total_items: 1,
+        total_pages: 1,
+        summary: {
+          completed_sessions: 1,
+          independent_sessions: 1,
+          completed_tasks: 4,
+          supported_tasks: 0,
+          completed_last_7_days: 0,
+        },
+      }),
+    });
+  });
 
   await page.goto("/");
   await page.evaluate((completedRunId) => {

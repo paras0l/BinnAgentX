@@ -10,4 +10,8 @@
 - 任一文件修改都必须产生新的 `content_version_id` 和哈希，不得覆盖旧证据；
 - 只有 Manifest 列出的版本可以被固定场景引用。
 
+本包早于版本化语法构式契约，运行时只通过受审核的 `error_type` 兼容表解析
+`construction_id`。新生成内容必须显式携带 `construction_id`、`construction_version`
+和 `tested_facet`；不得回写本包冒充原始版本。
+
 人工教研、目标用户难度试测与正式商用权利审核尚未完成。

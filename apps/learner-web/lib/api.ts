@@ -228,6 +228,21 @@ interface LearningAssetApiView {
   version: number;
 }
 
+export interface AssetDenoiseComparison {
+  asset_id: string;
+  status: "pending" | "ready";
+  raw_content: string;
+  denoised_content: string | null;
+  decision: "KEEP" | "SPLIT" | "NOOP" | "REVIEW" | null;
+  reason_codes: string[];
+  retained_segment_ids: string[];
+  removed_segment_ids: string[];
+  before_character_count: number;
+  after_character_count: number;
+  reduction_ratio: number;
+  projected_at: string | null;
+}
+
 function learningAssetFromApi(asset: LearningAssetApiView): LearningAsset {
   return {
     assetId: asset.asset_id,
@@ -255,6 +270,12 @@ function learningAssetFromApi(asset: LearningAssetApiView): LearningAsset {
 export async function listLearningAssets(): Promise<LearningAssetsState> {
   const assets = await request<LearningAssetApiView[]>("/v1/assets");
   return { schemaVersion: 2, items: assets.map(learningAssetFromApi) };
+}
+
+export function getAssetDenoiseComparison(assetId: string): Promise<AssetDenoiseComparison> {
+  return request<AssetDenoiseComparison>(
+    `/v1/assets/${encodeURIComponent(assetId)}/denoise-comparison`,
+  );
 }
 
 export function getCurrentLevel(): Promise<CurrentLevel> {
@@ -417,9 +438,23 @@ export async function createLearningAsset(input: LearningAssetInput): Promise<Le
       source_type: input.sourceType ?? "manual",
       source_title: input.sourceTitle ?? null,
       source_task_id: input.sourceTaskId ?? null,
+      source_annotation_id: input.sourceAnnotationId ?? null,
+      source_intervention_id: input.sourceInterventionId ?? null,
       // Kept only for this request so detailed captures go directly to the
       // vault bridge, never to browser storage or the metadata index.
-      initial_content: initialContent || null,
+      initial_content: input.capture ? null : initialContent || null,
+      capture: input.capture
+        ? {
+            schema_version: input.capture.schemaVersion,
+            segments: input.capture.segments.map((segment) => ({
+              segment_id: segment.segmentId,
+              role: segment.role,
+              content: segment.content,
+              origin: segment.origin,
+              hint_level: segment.hintLevel ?? null,
+            })),
+          }
+        : null,
     }),
   });
   return learningAssetFromApi(asset);

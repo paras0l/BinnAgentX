@@ -1,3 +1,4 @@
+from binnagent_domain.learning.grammar_ontology import GrammarFacet
 from binnagent_domain.vertical_slice.grammar_challenge import (
     GrammarChallenge,
     is_correct_grammar_correction,
@@ -12,6 +13,9 @@ def _candidate(challenge_id: str, correct: str, incorrect: str) -> GrammarChalle
         paragraph_id="paragraph_01",
         correct_text=correct,
         incorrect_text=incorrect,
+        construction_id="sentence.core.subject_verb_agreement.v1",
+        construction_version=1,
+        tested_facet=GrammarFacet.FORM,
         error_type="主谓一致",
         hint="检查主语和谓语形式。",
     )

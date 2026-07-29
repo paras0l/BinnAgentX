@@ -346,6 +346,8 @@ class LearnerReadingQuestionView(BaseModel):
 
 class GrammarChallengeView(BaseModel):
     challenge_id: str
+    construction_id: str
+    tested_facet: Literal["form", "meaning", "use"]
     status: Literal["pending", "resolved"]
     attempt_count: int
     hint_revealed: bool

@@ -181,6 +181,8 @@ export interface ReadingMaterialView {
 
 export interface GrammarChallengeView {
   challenge_id: string;
+  construction_id: string;
+  tested_facet: "form" | "meaning" | "use";
   status: "pending" | "resolved";
   attempt_count: number;
   hint_revealed: boolean;

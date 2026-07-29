@@ -1,0 +1,334 @@
+{
+  "catalog_id": "binnagent.grammar.en",
+  "version": 1,
+  "constructions": [
+    {
+      "construction_id": "clause.main.finite.v1",
+      "version": 1,
+      "title_zh": "限定主句核心",
+      "family": "clause_core",
+      "form": "A finite subject-predicate clause that can carry the sentence's main assertion.",
+      "meaning": "Profiles the event or state asserted by the speaker or writer.",
+      "use": "Carries the main claim to which subordinate material is related.",
+      "constraints": ["Requires a finite predicate or an accepted finite-clause equivalent."],
+      "aliases": ["main_clause", "finite_main_clause", "主句"],
+      "relations": [],
+      "parser_signatures": ["root + finite predicate"],
+      "can_do_outcomes": [
+        "Locate the clause that carries the main assertion in a complex sentence."
+      ],
+      "external_mappings": ["CEFR: linguistic range and grammatical accuracy"]
+    },
+    {
+      "construction_id": "sentence.core.subject_verb_agreement.v1",
+      "version": 1,
+      "title_zh": "主谓一致",
+      "family": "sentence_core",
+      "form": "A finite verb agrees with the grammatical subject where English marks agreement.",
+      "meaning": "Signals the grammatical relation between subject and finite predicate.",
+      "use": "Maintains a well-formed finite clause, including when modifiers separate subject and verb.",
+      "constraints": [
+        "Agreement follows the head of the subject phrase rather than the nearest noun."
+      ],
+      "aliases": ["subject_verb_agreement", "subject verb agreement", "主谓一致"],
+      "relations": [{ "relation_type": "REQUIRES", "target_id": "clause.main.finite.v1" }],
+      "parser_signatures": ["nsubj + finite verb Number feature"],
+      "can_do_outcomes": [
+        "Select and produce the agreeing finite verb when the subject contains modifiers."
+      ],
+      "external_mappings": ["EGP crosswalk pending"]
+    },
+    {
+      "construction_id": "phrase.word_class.selection.v1",
+      "version": 1,
+      "title_zh": "词类槽位选择",
+      "family": "phrase_structure",
+      "form": "A syntactic slot selects an appropriate noun, verb, adjective, adverb, or related form.",
+      "meaning": "Encodes the role contributed by the selected lexical category.",
+      "use": "Builds a well-formed phrase while preserving the intended relation.",
+      "constraints": [
+        "The required category depends on the governing head and local construction."
+      ],
+      "aliases": ["word_class_selection", "part_of_speech_selection", "词性选择"],
+      "relations": [],
+      "parser_signatures": ["UPOS and governing dependency relation"],
+      "can_do_outcomes": ["Choose a word form that satisfies the local syntactic slot."],
+      "external_mappings": ["EGP crosswalk pending"]
+    },
+    {
+      "construction_id": "phrase.modifier.form.v1",
+      "version": 1,
+      "title_zh": "修饰成分形式选择",
+      "family": "phrase_structure",
+      "form": "A modifier takes a form licensed by its head and syntactic position.",
+      "meaning": "Adds a property, circumstance, or restriction to the modified element.",
+      "use": "Condenses or expands description without changing the intended attachment.",
+      "constraints": ["Form and attachment must both be supported by the host phrase."],
+      "aliases": ["modifier_form", "modifier form", "修饰语形式"],
+      "relations": [{ "relation_type": "REQUIRES", "target_id": "phrase.word_class.selection.v1" }],
+      "parser_signatures": ["amod/advmod/acl attachment + UPOS"],
+      "can_do_outcomes": [
+        "Distinguish adjective, adverb, and clause-like modifier forms in context."
+      ],
+      "external_mappings": ["EGP crosswalk pending"]
+    },
+    {
+      "construction_id": "verb.finite.tense_form.v1",
+      "version": 1,
+      "title_zh": "限定谓语的时态与形式",
+      "family": "verb_system",
+      "form": "A finite predicate realizes tense and any required auxiliary or participial morphology.",
+      "meaning": "Locates or frames an event relative to time and viewpoint.",
+      "use": "Maintains temporal coherence across a clause and its discourse context.",
+      "constraints": [
+        "Tense form must be licensed by the clause, aspect, voice, and auxiliary sequence."
+      ],
+      "aliases": ["tense_and_verb_form", "tense verb form", "时态与谓语形式"],
+      "relations": [{ "relation_type": "REQUIRES", "target_id": "clause.main.finite.v1" }],
+      "parser_signatures": ["finite AUX/VERB + Tense/VerbForm features"],
+      "can_do_outcomes": ["Select and explain a finite predicate form from temporal context."],
+      "external_mappings": ["EGP crosswalk pending"]
+    },
+    {
+      "construction_id": "verb.modal.bare_infinitive.v1",
+      "version": 1,
+      "title_zh": "情态动词加动词原形",
+      "family": "verb_system",
+      "form": "modal auxiliary + bare infinitive verb phrase",
+      "meaning": "Adds modality such as possibility, obligation, prediction, or stance.",
+      "use": "Qualifies a proposition while keeping the lexical verb in the bare infinitive.",
+      "constraints": [
+        "A core modal is followed by a bare infinitive, including passive be when needed."
+      ],
+      "aliases": ["modal_bare_infinitive", "情态动词后的谓语形式"],
+      "relations": [{ "relation_type": "REQUIRES", "target_id": "clause.main.finite.v1" }],
+      "parser_signatures": ["aux modal + VerbForm=Inf"],
+      "can_do_outcomes": ["Produce the licensed verb form after a modal auxiliary."],
+      "external_mappings": ["EGP crosswalk pending"]
+    },
+    {
+      "construction_id": "clause.adverbial.cause.because.v1",
+      "version": 1,
+      "title_zh": "because 原因从句",
+      "family": "adverbial_clause",
+      "form": "because + finite subordinate clause, linked to a main clause",
+      "meaning": "Presents a cause or reason for the main proposition.",
+      "use": "Supports an assertion by making its causal or justificatory basis explicit.",
+      "constraints": [
+        "Because introduces a finite clause; the relation must be causal or justificatory."
+      ],
+      "aliases": ["because_clause", "cause_clause", "原因状语从句"],
+      "relations": [
+        { "relation_type": "REQUIRES", "target_id": "clause.main.finite.v1" },
+        {
+          "relation_type": "CONTRASTS_WITH",
+          "target_id": "clause.adverbial.concession.although.v1"
+        }
+      ],
+      "parser_signatures": ["advcl + mark(because)"],
+      "can_do_outcomes": [
+        "Distinguish a reason relation from concession and temporal coincidence."
+      ],
+      "external_mappings": ["EGP crosswalk pending"]
+    },
+    {
+      "construction_id": "clause.adverbial.concession.although.v1",
+      "version": 1,
+      "title_zh": "although 让步从句",
+      "family": "adverbial_clause",
+      "form": "although + finite subordinate clause, linked to a distinct main clause",
+      "meaning": "Acknowledges a fact while asserting a conclusion that runs against an expectation.",
+      "use": "Manages counter-expectation and supports a concede-then-assert discourse move.",
+      "constraints": [
+        "Although introduces a finite clause.",
+        "The main clause carries the primary assertion.",
+        "Standard written English does not coordinate the same relation as although ... but ..."
+      ],
+      "aliases": [
+        "concession_clause",
+        "although",
+        "although_clause",
+        "grammar:concession:although",
+        "subordinator_logic",
+        "让步连接词与主从句逻辑",
+        "让步状语从句"
+      ],
+      "relations": [
+        { "relation_type": "REQUIRES", "target_id": "clause.main.finite.v1" },
+        { "relation_type": "CONTRASTS_WITH", "target_id": "clause.adverbial.cause.because.v1" },
+        { "relation_type": "COMMONLY_CONFUSED_WITH", "target_id": "clause.adverbial.time.when.v1" }
+      ],
+      "parser_signatures": [
+        "advcl + mark(although)",
+        "root main clause with finite concessive dependent"
+      ],
+      "can_do_outcomes": [
+        "Locate the concessive clause and the main assertion.",
+        "Explain the counter-expectation relation.",
+        "Use the same concessive function in a new topic without copying the source sentence."
+      ],
+      "external_mappings": ["CEFR B2 complex sentence range prior", "EGP crosswalk pending"]
+    },
+    {
+      "construction_id": "clause.adverbial.condition.if.v1",
+      "version": 1,
+      "title_zh": "if 条件从句",
+      "family": "adverbial_clause",
+      "form": "if + finite subordinate clause, linked to a main clause",
+      "meaning": "Sets a condition under which the main proposition holds.",
+      "use": "Expresses dependencies, hypotheses, constraints, or decision conditions.",
+      "constraints": [
+        "Tense and modality depend on whether the condition is open, remote, or counterfactual."
+      ],
+      "aliases": ["if_clause", "condition_clause", "条件状语从句"],
+      "relations": [{ "relation_type": "REQUIRES", "target_id": "clause.main.finite.v1" }],
+      "parser_signatures": ["advcl + mark(if)"],
+      "can_do_outcomes": ["Identify the condition and the consequence without reversing them."],
+      "external_mappings": ["EGP crosswalk pending"]
+    },
+    {
+      "construction_id": "clause.adverbial.time.when.v1",
+      "version": 1,
+      "title_zh": "when 时间从句",
+      "family": "adverbial_clause",
+      "form": "when + finite subordinate clause, linked to a main clause",
+      "meaning": "Locates an event relative to another time or event.",
+      "use": "Orders or frames events in narration and explanation.",
+      "constraints": [
+        "Context must support a temporal reading rather than a conditional or contrastive one."
+      ],
+      "aliases": ["when_clause", "time_clause", "时间状语从句"],
+      "relations": [
+        { "relation_type": "REQUIRES", "target_id": "clause.main.finite.v1" },
+        {
+          "relation_type": "COMMONLY_CONFUSED_WITH",
+          "target_id": "clause.adverbial.concession.although.v1"
+        }
+      ],
+      "parser_signatures": ["advcl + mark(when)"],
+      "can_do_outcomes": ["Explain the temporal ordering contributed by a when-clause."],
+      "external_mappings": ["EGP crosswalk pending"]
+    },
+    {
+      "construction_id": "clause.relative.defining.v1",
+      "version": 1,
+      "title_zh": "限定性定语从句",
+      "family": "relative_clause",
+      "form": "A relative marker or gap links a finite clause to a nominal antecedent.",
+      "meaning": "Restricts the reference of the antecedent.",
+      "use": "Identifies which person, thing, or set is intended.",
+      "constraints": ["The relative element has a recoverable role inside the relative clause."],
+      "aliases": ["relative_clause", "defining_relative_clause", "限定性定语从句"],
+      "relations": [{ "relation_type": "REQUIRES", "target_id": "clause.main.finite.v1" }],
+      "parser_signatures": ["acl:relcl + antecedent"],
+      "can_do_outcomes": ["Locate the antecedent and recover the relative element's clause role."],
+      "external_mappings": ["EGP crosswalk pending"]
+    },
+    {
+      "construction_id": "clause.nominal.that.v1",
+      "version": 1,
+      "title_zh": "that 名词性从句",
+      "family": "nominal_clause",
+      "form": "that + finite clause occupying a nominal complement or subject position",
+      "meaning": "Packages a proposition as an argument of another expression.",
+      "use": "Reports, evaluates, assumes, or reasons about a proposition.",
+      "constraints": ["The clause must fill a licensed nominal role in the larger construction."],
+      "aliases": ["that_nominal_clause", "that_clause", "that名词性从句"],
+      "relations": [{ "relation_type": "REQUIRES", "target_id": "clause.main.finite.v1" }],
+      "parser_signatures": ["ccomp/csubj + mark(that)"],
+      "can_do_outcomes": ["Identify the nominal role played by a that-clause."],
+      "external_mappings": ["EGP crosswalk pending"]
+    },
+    {
+      "construction_id": "nonfinite.infinitive.to.v1",
+      "version": 1,
+      "title_zh": "to 不定式结构",
+      "family": "nonfinite_clause",
+      "form": "to + base-form verb phrase functioning as a non-finite clause",
+      "meaning": "Profiles a potential, intended, evaluated, or purpose-like event according to its governor.",
+      "use": "Fills complement, modifier, subject-like, or purpose roles compactly.",
+      "constraints": [
+        "The understood subject and semantic relation must be licensed by the governor or context."
+      ],
+      "aliases": ["to_infinitive", "to不定式", "不定式结构"],
+      "relations": [],
+      "parser_signatures": ["xcomp/acl/advcl with mark(to) or VerbForm=Inf"],
+      "can_do_outcomes": ["Recover the role and understood subject of a to-infinitive in context."],
+      "external_mappings": ["EGP crosswalk pending"]
+    },
+    {
+      "construction_id": "nonfinite.participle.ing.v1",
+      "version": 1,
+      "title_zh": "-ing 非谓语结构",
+      "family": "nonfinite_clause",
+      "form": "An -ing verb form heads a non-finite clause or phrase.",
+      "meaning": "Construes an event as ongoing, simultaneous, characteristic, or nominalized by context.",
+      "use": "Builds complements, modifiers, adjuncts, and condensed event descriptions.",
+      "constraints": [
+        "Attachment and the understood subject must be recoverable from syntax and context."
+      ],
+      "aliases": ["ing_participle", "present_participle_clause", "现在分词结构"],
+      "relations": [
+        { "relation_type": "COMMONLY_CONFUSED_WITH", "target_id": "nonfinite.participle.ed.v1" }
+      ],
+      "parser_signatures": ["VerbForm=Part + Tense=Pres; acl/advcl/xcomp"],
+      "can_do_outcomes": [
+        "Explain attachment and the understood participant of an -ing structure."
+      ],
+      "external_mappings": ["EGP crosswalk pending"]
+    },
+    {
+      "construction_id": "nonfinite.participle.ed.v1",
+      "version": 1,
+      "title_zh": "-ed 非谓语结构",
+      "family": "nonfinite_clause",
+      "form": "A past-participial verb form heads a reduced non-finite structure.",
+      "meaning": "Typically presents a participant as affected, completed, or statively characterized.",
+      "use": "Builds reduced relatives, adjuncts, complements, and condensed descriptions.",
+      "constraints": [
+        "Voice, attachment, and the understood participant must be supported by context."
+      ],
+      "aliases": ["ed_participle", "past_participle_clause", "过去分词结构"],
+      "relations": [
+        { "relation_type": "COMMONLY_CONFUSED_WITH", "target_id": "nonfinite.participle.ing.v1" }
+      ],
+      "parser_signatures": ["VerbForm=Part + Tense=Past; acl/advcl/xcomp"],
+      "can_do_outcomes": ["Distinguish affected-participant and active -ing readings in context."],
+      "external_mappings": ["EGP crosswalk pending"]
+    },
+    {
+      "construction_id": "sentence.information.inversion.negative.v1",
+      "version": 1,
+      "title_zh": "否定前置倒装",
+      "family": "information_structure",
+      "form": "A negative or restrictive element is fronted and triggers auxiliary-subject inversion.",
+      "meaning": "Gives emphatic scope to a negative or restrictive frame.",
+      "use": "Creates formal emphasis and controls information packaging.",
+      "constraints": [
+        "Inversion is licensed when the fronted expression has negative or restrictive scope."
+      ],
+      "aliases": ["negative_inversion", "否定词前置倒装"],
+      "relations": [{ "relation_type": "REQUIRES", "target_id": "clause.main.finite.v1" }],
+      "parser_signatures": ["fronted negative adverbial + aux before subject"],
+      "can_do_outcomes": ["Restore canonical order and explain the emphasis added by inversion."],
+      "external_mappings": ["EGP crosswalk pending"]
+    },
+    {
+      "construction_id": "discourse.reference.pronoun_chain.v1",
+      "version": 1,
+      "title_zh": "代词指代链",
+      "family": "discourse_cohesion",
+      "form": "Pronouns and referring expressions form a recoverable chain across clauses or sentences.",
+      "meaning": "Maintains reference to discourse entities.",
+      "use": "Creates cohesion while avoiding unnecessary repetition.",
+      "constraints": [
+        "Antecedent selection must agree with syntax, semantics, and discourse salience."
+      ],
+      "aliases": ["pronoun_reference_chain", "reference_chain", "代词指代链"],
+      "relations": [],
+      "parser_signatures": ["coreference chain + syntactic agreement evidence"],
+      "can_do_outcomes": ["Resolve a pronoun to its supported antecedent and cite the evidence."],
+      "external_mappings": ["CEFR coherence"]
+    }
+  ]
+}

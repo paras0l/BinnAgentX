@@ -8,6 +8,11 @@ from hashlib import sha256
 from typing import Any
 
 import sqlalchemy as sa
+from binnagent_domain.learning.grammar_ontology import (
+    GrammarFacet,
+    load_grammar_catalog,
+    resolve_construction_id,
+)
 from binnagent_domain.public_errors import PublicErrorCode
 from binnagent_domain.vertical_slice.aggregate import LearningTask
 from binnagent_domain.vertical_slice.errors import DomainError
@@ -256,11 +261,18 @@ def grammar_challenge(row: RowMapping | Mapping[str, Any]) -> GrammarChallenge:
             "personalized_reading_grammar_annotation_invalid",
         )
     try:
+        construction_id = resolve_construction_id(
+            str(annotation.get("construction_id", annotation["error_type"]))
+        )
+        construction = load_grammar_catalog().by_id(construction_id)
         return GrammarChallenge(
             challenge_id=str(annotation["challenge_id"]),
             paragraph_id=str(annotation["paragraph_id"]),
             correct_text=str(annotation["correct_text"]),
             incorrect_text=str(annotation["incorrect_text"]),
+            construction_id=construction_id,
+            construction_version=int(annotation.get("construction_version", construction.version)),
+            tested_facet=GrammarFacet(str(annotation.get("tested_facet", "form"))),
             error_type=str(annotation["error_type"]),
             hint=str(annotation["hint"]),
         )

@@ -14,6 +14,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Literal, TypedDict, cast
 
+from binnagent_domain.learning.grammar_ontology import load_grammar_catalog
 from binnagent_evaluation.content_integrity import validate_content_pack
 from jsonschema import Draft202012Validator
 
@@ -625,6 +626,7 @@ class ContentGenerationWorkflow:
                 maximum=120,
             )
             paragraph = paragraphs[paragraph_index]
+            construction = load_grammar_catalog().by_id(draft.construction_id)
             challenges.append(
                 {
                     "challenge_id": f"{target_content_version_id}_grammar_{index:02d}",
@@ -633,6 +635,9 @@ class ContentGenerationWorkflow:
                     "incorrect_text": self._normalize_text(
                         draft.incorrect_text, minimum=2, maximum=120
                     ),
+                    "construction_id": construction.construction_id,
+                    "construction_version": construction.version,
+                    "tested_facet": draft.tested_facet.value,
                     "error_type": self._normalize_text(draft.error_type, minimum=2, maximum=80),
                     "hint": self._normalize_text(draft.hint, minimum=4, maximum=200),
                 }

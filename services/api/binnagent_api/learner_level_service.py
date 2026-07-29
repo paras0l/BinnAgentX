@@ -163,9 +163,11 @@ async def collect_level_evidence(
         (
             await connection.execute(
                 sa.select(
-                    tables.task_grammar_challenges.c.attempt_count,
-                    tables.task_grammar_challenges.c.resolved,
-                ).where(tables.task_grammar_challenges.c.task_id.in_(task_ids or ["__none__"]))
+                    tables.learner_grammar_states.c.construction_id,
+                    tables.learner_grammar_states.c.modality,
+                    tables.learner_grammar_states.c.status,
+                    tables.learner_grammar_states.c.evidence_count,
+                ).where(tables.learner_grammar_states.c.learner_id == learner_id)
             )
         )
         .mappings()
@@ -206,8 +208,38 @@ async def collect_level_evidence(
         hinted_tasks=hinted,
         revision_count=revision_count,
         annotation_count=annotation_count,
-        grammar_attempts=sum(int(row["attempt_count"]) for row in grammar_rows),
-        grammar_resolved=sum(bool(row["resolved"]) for row in grammar_rows),
+        grammar_attempts=sum(int(row["evidence_count"]) for row in grammar_rows),
+        grammar_resolved=len(
+            {
+                str(row["construction_id"])
+                for row in grammar_rows
+                if str(row["modality"]) == "receptive"
+                and str(row["status"]) in {"awaiting_delayed_validation", "delayed_stable"}
+            }
+        ),
+        grammar_constructs=len(
+            {
+                str(row["construction_id"])
+                for row in grammar_rows
+                if str(row["modality"]) == "receptive"
+                and str(row["status"]) in {"awaiting_delayed_validation", "delayed_stable"}
+            }
+        ),
+        grammar_stable_constructs=len(
+            {
+                str(row["construction_id"])
+                for row in grammar_rows
+                if str(row["modality"]) == "receptive" and str(row["status"]) == "delayed_stable"
+            }
+        ),
+        grammar_productive_constructs=len(
+            {
+                str(row["construction_id"])
+                for row in grammar_rows
+                if str(row["modality"]) == "productive"
+                and str(row["status"]) in {"awaiting_delayed_validation", "delayed_stable"}
+            }
+        ),
         expression_attempts=expression_attempts,
         difficulty_too_easy=sum(rating == "too_easy" for rating in ratings),
         difficulty_matched=sum(rating == "matched" for rating in ratings),

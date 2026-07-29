@@ -6,7 +6,12 @@ from decimal import Decimal
 from typing import Any, Literal, Protocol
 
 import httpx2
-from pydantic import BaseModel, Field, ValidationError
+from binnagent_domain.learning.grammar_ontology import (
+    GrammarFacet,
+    load_grammar_catalog,
+    resolve_construction_id,
+)
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from binnagent_agent.gateways.model import ModelAdapterResponse
 from binnagent_agent.observability import observe
@@ -54,8 +59,26 @@ class _GeneratedGrammarChallenge(BaseModel):
     paragraph_index: int = Field(ge=0, le=4)
     correct_text: str = Field(min_length=2, max_length=400)
     incorrect_text: str = Field(min_length=2, max_length=400)
+    construction_id: str = Field(pattern=r"^[a-z][a-z0-9_.]+\.v[1-9][0-9]*$")
+    tested_facet: GrammarFacet
     error_type: str = Field(min_length=2, max_length=80)
     hint: str = Field(min_length=4, max_length=200)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_label(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
+        migrated = dict(value)
+        if "construction_id" not in migrated and isinstance(migrated.get("error_type"), str):
+            migrated["construction_id"] = resolve_construction_id(migrated["error_type"])
+        migrated.setdefault("tested_facet", GrammarFacet.FORM)
+        return migrated
+
+    @model_validator(mode="after")
+    def construction_exists(self) -> _GeneratedGrammarChallenge:
+        load_grammar_catalog().by_id(self.construction_id)
+        return self
 
 
 class _GeneratedTransferableExpression(BaseModel):

@@ -22,6 +22,7 @@ class GrammarChallengeState:
     hint_revealed: bool = False
     attempt_count: int = 0
     resolved: bool = False
+    resolution_kind: str | None = None
     last_submission_hash: str | None = None
 
 
@@ -31,6 +32,8 @@ def grammar_challenge_view(
 ) -> GrammarChallengeView:
     return GrammarChallengeView(
         challenge_id=challenge.challenge_id,
+        construction_id=challenge.construction_id,
+        tested_facet=challenge.tested_facet,
         status="resolved" if state.resolved else "pending",
         attempt_count=state.attempt_count,
         hint_revealed=state.hint_revealed,
@@ -70,13 +73,13 @@ async def reveal_grammar_challenge_hint(
     connection: AsyncConnection,
     task_id: str,
     content_version_id: str,
-    challenge_id: str,
+    challenge: GrammarChallenge,
 ) -> GrammarChallengeState:
     state = await _ensure_state(
         connection,
         task_id,
         content_version_id,
-        challenge_id,
+        challenge,
     )
     if state.hint_revealed:
         return state
@@ -99,7 +102,7 @@ async def reveal_grammar_challenge_answer(
         connection,
         task_id,
         content_version_id,
-        challenge.challenge_id,
+        challenge,
     )
     if state.resolved:
         return state
@@ -110,11 +113,17 @@ async def reveal_grammar_challenge_answer(
         .values(
             hint_revealed=True,
             resolved=True,
+            resolution_kind="answer_revealed",
             updated_at=now,
             resolved_at=now,
         )
     )
-    return replace(state, hint_revealed=True, resolved=True)
+    return replace(
+        state,
+        hint_revealed=True,
+        resolved=True,
+        resolution_kind="answer_revealed",
+    )
 
 
 async def verify_grammar_correction(
@@ -128,7 +137,7 @@ async def verify_grammar_correction(
         connection,
         task_id,
         content_version_id,
-        challenge.challenge_id,
+        challenge,
     )
     if state.resolved:
         return state, True
@@ -144,6 +153,13 @@ async def verify_grammar_correction(
         .values(
             attempt_count=attempt_count,
             resolved=correct,
+            resolution_kind=(
+                "supported_correction"
+                if correct and state.hint_revealed
+                else "independent_correction"
+                if correct
+                else None
+            ),
             last_submission_hash=submission_hash,
             updated_at=now,
             resolved_at=now if correct else None,
@@ -154,6 +170,13 @@ async def verify_grammar_correction(
             state,
             attempt_count=attempt_count,
             resolved=correct,
+            resolution_kind=(
+                "supported_correction"
+                if correct and state.hint_revealed
+                else "independent_correction"
+                if correct
+                else None
+            ),
             last_submission_hash=submission_hash,
         ),
         correct,
@@ -181,7 +204,7 @@ async def _ensure_state(
     connection: AsyncConnection,
     task_id: str,
     content_version_id: str,
-    challenge_id: str,
+    challenge: GrammarChallenge,
 ) -> GrammarChallengeState:
     now = datetime.now(UTC)
     await connection.execute(
@@ -189,10 +212,14 @@ async def _ensure_state(
         .values(
             task_id=task_id,
             content_version_id=content_version_id,
-            challenge_id=challenge_id,
+            challenge_id=challenge.challenge_id,
+            construction_id=challenge.construction_id,
+            construction_version=challenge.construction_version,
+            tested_facet=challenge.tested_facet.value,
             hint_revealed=False,
             attempt_count=0,
             resolved=False,
+            resolution_kind=None,
             last_submission_hash=None,
             created_at=now,
             updated_at=now,
@@ -211,17 +238,27 @@ async def _ensure_state(
         .mappings()
         .one()
     )
-    if row["content_version_id"] == content_version_id and row["challenge_id"] == challenge_id:
+    if (
+        row["content_version_id"] == content_version_id
+        and row["challenge_id"] == challenge.challenge_id
+        and row["construction_id"] == challenge.construction_id
+        and row["construction_version"] == challenge.construction_version
+        and row["tested_facet"] == challenge.tested_facet.value
+    ):
         return _state_from_row(row)
     await connection.execute(
         sa.update(tables.task_grammar_challenges)
         .where(tables.task_grammar_challenges.c.task_id == task_id)
         .values(
             content_version_id=content_version_id,
-            challenge_id=challenge_id,
+            challenge_id=challenge.challenge_id,
+            construction_id=challenge.construction_id,
+            construction_version=challenge.construction_version,
+            tested_facet=challenge.tested_facet.value,
             hint_revealed=False,
             attempt_count=0,
             resolved=False,
+            resolution_kind=None,
             last_submission_hash=None,
             updated_at=now,
             resolved_at=None,
@@ -235,6 +272,9 @@ def _state_from_row(row: RowMapping) -> GrammarChallengeState:
         hint_revealed=bool(row["hint_revealed"]),
         attempt_count=int(row["attempt_count"]),
         resolved=bool(row["resolved"]),
+        resolution_kind=(
+            str(row["resolution_kind"]) if row["resolution_kind"] is not None else None
+        ),
         last_submission_hash=(
             str(row["last_submission_hash"]) if row["last_submission_hash"] is not None else None
         ),

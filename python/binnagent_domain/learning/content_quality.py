@@ -7,9 +7,15 @@ import json
 import re
 from datetime import datetime
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from binnagent_domain.learning.grammar_ontology import (
+    GrammarFacet,
+    load_grammar_catalog,
+    resolve_construction_id,
+)
 
 
 class StrictModel(BaseModel):
@@ -87,9 +93,26 @@ class TargetWordSense(StrictModel):
 
 class TargetGrammarStructure(StrictModel):
     target_id: str = Field(min_length=1, max_length=128)
-    structure_key: str = Field(min_length=1, max_length=160)
+    construction_id: str = Field(pattern=r"^[a-z][a-z0-9_.]+\.v[1-9][0-9]*$")
+    construction_version: Annotated[int, Field(ge=1)]
+    target_facets: tuple[GrammarFacet, ...] = Field(min_length=1)
     learner_gap: str = Field(min_length=1, max_length=500)
     evidence: tuple[SourceSpan, ...] = Field(min_length=1)
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_structure_key(cls, value: Any) -> Any:
+        migrated = _migrate_construction_reference(value)
+        if isinstance(migrated, dict):
+            migrated.setdefault("target_facets", [GrammarFacet.FORM, GrammarFacet.MEANING])
+        return migrated
+
+    @model_validator(mode="after")
+    def construction_exists(self) -> TargetGrammarStructure:
+        construction = load_grammar_catalog().by_id(self.construction_id)
+        if construction.version != self.construction_version:
+            raise ValueError("target_grammar_construction_version_mismatch")
+        return self
 
 
 class DifficultyConstraints(StrictModel):
@@ -243,19 +266,52 @@ class ReadingQuestionArtifact(StrictModel):
         return self
 
 
+class GrammarRoleSpan(StrictModel):
+    role: str = Field(min_length=1, max_length=120)
+    span: SourceSpan
+
+
 class GrammarAnalysisArtifact(StrictModel):
     artifact: ContentArtifact
-    structure_key: str = Field(min_length=1, max_length=160)
+    construction_id: str = Field(pattern=r"^[a-z][a-z0-9_.]+\.v[1-9][0-9]*$")
+    construction_version: Annotated[int, Field(ge=1)]
+    target_facets: tuple[GrammarFacet, ...] = Field(min_length=1)
     span: SourceSpan
+    role_spans: tuple[GrammarRoleSpan, ...] = ()
+    form: str = Field(min_length=3, max_length=1000)
+    meaning: str = Field(min_length=3, max_length=1000)
+    use: str = Field(min_length=3, max_length=1000)
     explanation: str = Field(min_length=1, max_length=2000)
     parser_id: str = Field(min_length=1, max_length=128)
     parser_version: str = Field(min_length=1, max_length=80)
+    parser_evidence: tuple[str, ...] = ()
     confidence: Annotated[float, Field(ge=0, le=1)]
     status: Literal["resolved", "abstained", "review_required"]
     alternatives: tuple[str, ...] = ()
 
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_structure_key(cls, value: Any) -> Any:
+        migrated = _migrate_construction_reference(value)
+        if not isinstance(migrated, dict):
+            return migrated
+        construction_id = migrated.get("construction_id")
+        if not isinstance(construction_id, str):
+            return migrated
+        construction = load_grammar_catalog().by_id(construction_id)
+        migrated.setdefault("target_facets", [GrammarFacet.FORM, GrammarFacet.MEANING])
+        migrated.setdefault("form", construction.form)
+        migrated.setdefault("meaning", construction.meaning)
+        migrated.setdefault("use", construction.use)
+        migrated.setdefault("role_spans", [])
+        migrated.setdefault("parser_evidence", [])
+        return migrated
+
     @model_validator(mode="after")
-    def low_confidence_must_not_claim_resolution(self) -> GrammarAnalysisArtifact:
+    def valid_resolution_and_construction(self) -> GrammarAnalysisArtifact:
+        construction = load_grammar_catalog().by_id(self.construction_id)
+        if construction.version != self.construction_version:
+            raise ValueError("grammar_analysis_construction_version_mismatch")
         if self.confidence < 0.7 and self.status == "resolved":
             raise ValueError("grammar_low_confidence_must_abstain")
         return self
@@ -310,6 +366,16 @@ class PersonalizedLearningPackage(StrictModel):
         required = set(self.transfer_contract.required_transfer_targets)
         if not required.intersection(self.expression_task.required_target_ids):
             raise ValueError("expression_task_has_no_required_transfer_target")
+        grammar_targets = {
+            target.construction_id for target in self.objective_bundle.target_grammar_structures
+        }
+        annotation_targets = {annotation.construction_id for annotation in self.grammar_annotations}
+        if not annotation_targets.issubset(grammar_targets):
+            raise ValueError("grammar_annotation_outside_objective")
+        if not grammar_targets.issubset(required):
+            raise ValueError("grammar_target_missing_from_transfer")
+        if not grammar_targets.issubset(set(self.expression_task.required_target_ids)):
+            raise ValueError("grammar_target_missing_from_expression")
         return self
 
 
@@ -330,3 +396,18 @@ def validate_source_span(span: SourceSpan, source_text: str) -> bool:
 
 def _normalized(value: str) -> str:
     return re.sub(r"\W+", "", value, flags=re.UNICODE).casefold()
+
+
+def _migrate_construction_reference(value: Any) -> Any:
+    if not isinstance(value, dict):
+        return value
+    migrated = dict(value)
+    legacy = migrated.pop("structure_key", None)
+    construction_value = migrated.get("construction_id", legacy)
+    if not isinstance(construction_value, str):
+        return migrated
+    construction_id = resolve_construction_id(construction_value)
+    construction = load_grammar_catalog().by_id(construction_id)
+    migrated["construction_id"] = construction_id
+    migrated.setdefault("construction_version", construction.version)
+    return migrated

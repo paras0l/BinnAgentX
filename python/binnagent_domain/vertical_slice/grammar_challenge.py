@@ -2,6 +2,11 @@ from dataclasses import dataclass
 from hashlib import sha256
 from unicodedata import normalize
 
+from binnagent_domain.learning.grammar_ontology import (
+    GrammarFacet,
+    load_grammar_catalog,
+)
+
 
 @dataclass(frozen=True)
 class GrammarChallenge:
@@ -9,8 +14,17 @@ class GrammarChallenge:
     paragraph_id: str
     correct_text: str
     incorrect_text: str
+    construction_id: str
+    construction_version: int
+    tested_facet: GrammarFacet
     error_type: str
     hint: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "tested_facet", GrammarFacet(self.tested_facet))
+        construction = load_grammar_catalog().by_id(self.construction_id)
+        if construction.version != self.construction_version:
+            raise ValueError("grammar_challenge_construction_version_mismatch")
 
 
 def select_grammar_challenge(

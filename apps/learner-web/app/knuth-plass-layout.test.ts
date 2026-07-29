@@ -20,7 +20,23 @@ describe("layoutKnuthPlassParagraph", () => {
 
   it("uses paragraph-wide optimization instead of always taking the fullest first line", () => {
     const text = "aa bb cc dd ee ff gg hh";
-    const segments = ["aa", " ", "bb", " ", "cc", " ", "dd", " ", "ee", " ", "ff", " ", "gg", " ", "hh"];
+    const segments = [
+      "aa",
+      " ",
+      "bb",
+      " ",
+      "cc",
+      " ",
+      "dd",
+      " ",
+      "ee",
+      " ",
+      "ff",
+      " ",
+      "gg",
+      " ",
+      "hh",
+    ];
     const widths = [18, 8, 45, 8, 21, 8, 41, 8, 16, 8, 44, 8, 33, 8, 27];
 
     const lines = layoutKnuthPlassParagraph(text, { segments, widths }, 100);

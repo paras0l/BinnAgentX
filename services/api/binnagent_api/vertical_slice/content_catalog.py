@@ -4,6 +4,11 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, NoReturn
 
+from binnagent_domain.learning.grammar_ontology import (
+    GrammarFacet,
+    load_grammar_catalog,
+    resolve_construction_id,
+)
 from binnagent_domain.public_errors import PublicErrorCode
 from binnagent_domain.vertical_slice.errors import DomainError
 from binnagent_domain.vertical_slice.grammar_challenge import (
@@ -421,11 +426,18 @@ class LocalContentCatalog:
             for raw in raw_candidates:
                 if not isinstance(raw, dict):
                     raise ValueError("grammar_challenge_candidate_invalid")
+                construction_id = resolve_construction_id(
+                    str(raw.get("construction_id", raw["error_type"]))
+                )
+                construction = load_grammar_catalog().by_id(construction_id)
                 candidate = GrammarChallenge(
                     challenge_id=str(raw["challenge_id"]),
                     paragraph_id=str(raw["paragraph_id"]),
                     correct_text=str(raw["correct_text"]),
                     incorrect_text=str(raw["incorrect_text"]),
+                    construction_id=construction_id,
+                    construction_version=int(raw.get("construction_version", construction.version)),
+                    tested_facet=GrammarFacet(str(raw.get("tested_facet", "form"))),
                     error_type=str(raw["error_type"]),
                     hint=str(raw["hint"]),
                 )

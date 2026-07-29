@@ -19,10 +19,20 @@ import sqlalchemy as sa
 from binnagent_domain.public_errors import PublicErrorCode
 from binnagent_domain.vertical_slice.errors import DomainError
 from fastapi import APIRouter, Header, HTTPException, Request, status
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
+from binnagent_api.asset_capture_service import (
+    deserialize_asset_capture_source,
+    enqueue_asset_capture_organization,
+)
+from binnagent_api.asset_content_denoiser import (
+    LearningAssetCapture,
+    denoise_asset_content,
+    project_asset_capture,
+    render_raw_asset_capture,
+)
 from binnagent_api.database import get_engine
 from binnagent_api.knowledge_vault import (
     KnowledgeVaultError,
@@ -73,6 +83,13 @@ class CreateLearningAssetRequest(BaseModel):
     source_annotation_id: str | None = Field(default=None, max_length=128)
     source_intervention_id: str | None = Field(default=None, max_length=128)
     initial_content: str | None = Field(default=None, max_length=12_000)
+    capture: LearningAssetCapture | None = None
+
+    @model_validator(mode="after")
+    def content_source_is_unambiguous(self) -> CreateLearningAssetRequest:
+        if self.capture is not None and self.initial_content is not None:
+            raise ValueError("asset_capture_and_initial_content_are_mutually_exclusive")
+        return self
 
     @field_validator("kind")
     @classmethod
@@ -136,6 +153,22 @@ class LearningAssetView(BaseModel):
     created_at: datetime
     updated_at: datetime
     version: int
+
+
+class AssetDenoiseComparisonView(BaseModel):
+    asset_id: str
+    status: Literal["pending", "ready"]
+    raw_capture: LearningAssetCapture
+    raw_content: str
+    denoised_content: str | None
+    decision: Literal["KEEP", "SPLIT", "NOOP", "REVIEW"] | None
+    reason_codes: list[str]
+    retained_segment_ids: list[str]
+    removed_segment_ids: list[str]
+    before_character_count: int
+    after_character_count: int
+    reduction_ratio: float
+    projected_at: datetime | None
 
 
 class KnowledgeVaultStatusView(BaseModel):
@@ -771,6 +804,94 @@ async def acknowledge_obsidian_asset_export(
     return {"status": "synced"}
 
 
+@learning_asset_router.get(
+    "/{asset_id}/denoise-comparison",
+    response_model=AssetDenoiseComparisonView,
+)
+async def get_asset_denoise_comparison(
+    asset_id: str,
+    request: Request,
+) -> AssetDenoiseComparisonView:
+    identity: LearnerIdentity = request.state.learner_identity
+    async with get_engine().connect() as connection:
+        await _owned_asset(connection, identity.learner_id, asset_id)
+        source = (
+            (
+                await connection.execute(
+                    sa.select(
+                        tables.knowledge_source_records,
+                        tables.knowledge_source_payloads.c.content,
+                    )
+                    .join(
+                        tables.knowledge_source_payloads,
+                        tables.knowledge_source_payloads.c.source_record_id
+                        == tables.knowledge_source_records.c.source_record_id,
+                    )
+                    .where(
+                        tables.knowledge_source_records.c.learner_id == identity.learner_id,
+                        tables.knowledge_source_records.c.provider == "learning_asset_capture",
+                        tables.knowledge_source_records.c.source_key == f"asset:{asset_id}",
+                    )
+                    .limit(1)
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if source is None:
+            raise HTTPException(status_code=404, detail="asset_denoise_source_not_found")
+        projection = (
+            (
+                await connection.execute(
+                    sa.select(tables.learning_asset_content_projections)
+                    .where(
+                        tables.learning_asset_content_projections.c.asset_id == asset_id,
+                        tables.learning_asset_content_projections.c.learner_id
+                        == identity.learner_id,
+                        tables.learning_asset_content_projections.c.source_record_id
+                        == source["source_record_id"],
+                    )
+                    .order_by(tables.learning_asset_content_projections.c.created_at.desc())
+                    .limit(1)
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+    raw_capture = deserialize_asset_capture_source(str(source["content"]))
+    raw_content = render_raw_asset_capture(raw_capture)
+    retained_ids = (
+        [str(item) for item in projection["retained_segment_ids"]] if projection is not None else []
+    )
+    all_ids = [segment.segment_id for segment in raw_capture.segments]
+    denoised_content = (
+        str(projection["content"])
+        if projection is not None and projection["content"] is not None
+        else None
+    )
+    after_count = len(denoised_content or "")
+    before_count = len(raw_content)
+    return AssetDenoiseComparisonView(
+        asset_id=asset_id,
+        status="ready" if projection is not None else "pending",
+        raw_capture=raw_capture,
+        raw_content=raw_content,
+        denoised_content=denoised_content,
+        decision=str(projection["decision"]) if projection is not None else None,
+        reason_codes=(
+            [str(item) for item in projection["reason_codes"]] if projection is not None else []
+        ),
+        retained_segment_ids=retained_ids,
+        removed_segment_ids=[item for item in all_ids if item not in retained_ids],
+        before_character_count=before_count,
+        after_character_count=after_count,
+        reduction_ratio=(
+            round((before_count - after_count) / before_count, 4) if before_count else 0
+        ),
+        projected_at=projection["created_at"] if projection is not None else None,
+    )
+
+
 @learning_asset_router.get("/{asset_id}", response_model=LearningAssetView)
 async def get_learning_asset(asset_id: str, request: Request) -> LearningAssetView:
     identity: LearnerIdentity = request.state.learner_identity
@@ -788,6 +909,12 @@ async def create_learning_asset(
     identity: LearnerIdentity = request.state.learner_identity
     now = datetime.now(UTC)
     asset_id = f"asset_{uuid4().hex}"
+    projection = project_asset_capture(body.capture) if body.capture is not None else None
+    initial_content = (
+        projection.content
+        if projection is not None
+        else denoise_asset_content(body.initial_content)
+    )
     async with get_engine().begin() as connection:
         await connection.execute(
             tables.learning_asset_index.insert().values(
@@ -811,7 +938,7 @@ async def create_learning_asset(
                 evidence_status="pending_validation",
                 evidence_count=0,
                 last_verified_at=None,
-                next_review_at=None,
+                next_review_at=now if body.capture is not None else None,
                 starred=False,
                 sync_status="pending_export",
                 sync_error_code=None,
@@ -821,6 +948,15 @@ async def create_learning_asset(
                 version=1,
             )
         )
+        capture_source_record_id: str | None = None
+        if body.capture is not None:
+            capture_source_record_id, _ = await enqueue_asset_capture_organization(
+                connection,
+                learner_id=identity.learner_id,
+                asset_id=asset_id,
+                capture=body.capture,
+                captured_at=now,
+            )
         await connection.execute(
             tables.outbox_messages.insert().values(
                 message_id=uuid4(),
@@ -829,19 +965,28 @@ async def create_learning_asset(
                 payload={
                     "asset_id": asset_id,
                     "export_schema_version": "asset/v1",
-                    "initial_content": body.initial_content,
+                    "initial_content": initial_content,
+                    "capture_source_record_id": capture_source_record_id,
+                    "write_decision": (
+                        projection.model_dump(mode="json", exclude={"content"})
+                        if projection is not None
+                        else None
+                    ),
                 },
-                status="pending",
+                status="denoising" if body.capture is not None else "pending",
                 attempt_count=0,
                 occurred_at=now,
                 available_at=now,
                 processed_at=None,
             )
         )
+    if body.capture is not None:
+        async with get_engine().connect() as connection:
+            return _asset_view(await _owned_asset(connection, identity.learner_id, asset_id))
     exported = await _export_asset(
         identity.learner_id,
         asset_id,
-        initial_content=body.initial_content,
+        initial_content=initial_content,
     )
     if exported.sync_status == "synced":
         await _complete_asset_export_messages(asset_id)
@@ -972,9 +1117,23 @@ async def export_pending_asset(asset_id: str) -> str:
             .mappings()
             .one_or_none()
         )
+        payload = await connection.scalar(
+            sa.select(tables.outbox_messages.c.payload)
+            .where(
+                tables.outbox_messages.c.topic == "asset_export_requested",
+                tables.outbox_messages.c.aggregate_id == asset_id,
+                tables.outbox_messages.c.status.in_(("pending", "dispatching")),
+            )
+            .order_by(tables.outbox_messages.c.occurred_at)
+            .limit(1)
+        )
     if row is None:
         return "missing"
-    exported = await _export_asset(str(row["learner_id"]), asset_id)
+    exported = await _export_asset(
+        str(row["learner_id"]),
+        asset_id,
+        initial_content=(payload or {}).get("initial_content"),
+    )
     if exported.sync_status == "synced":
         await _complete_asset_export_messages(asset_id)
     return exported.sync_status

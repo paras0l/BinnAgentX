@@ -58,8 +58,33 @@ export interface LearningAssetInput {
   sourceType?: string;
   sourceTitle?: string;
   sourceTaskId?: string;
+  sourceAnnotationId?: string;
+  sourceInterventionId?: string;
   content?: string;
   note?: string;
+  capture?: LearningAssetCapture;
+}
+
+export type LearningAssetCaptureRole =
+  | "source_quote"
+  | "learner_interpretation"
+  | "agent_hint"
+  | "diagnosis"
+  | "reusable_rule"
+  | "example"
+  | "next_check";
+
+export interface LearningAssetCaptureSegment {
+  segmentId: string;
+  role: LearningAssetCaptureRole;
+  content: string;
+  origin: "source" | "learner" | "agent";
+  hintLevel?: 1 | 2 | 3 | 4;
+}
+
+export interface LearningAssetCapture {
+  schemaVersion: "learning-asset-capture/v1";
+  segments: LearningAssetCaptureSegment[];
 }
 
 export const EMPTY_LEARNING_ASSETS: LearningAssetsState = { schemaVersion: 2, items: [] };

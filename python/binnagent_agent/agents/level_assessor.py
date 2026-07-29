@@ -20,6 +20,9 @@ class LevelEvidenceSummary(BaseModel):
     annotation_count: int = Field(ge=0)
     grammar_attempts: int = Field(ge=0)
     grammar_resolved: int = Field(ge=0)
+    grammar_constructs: int = Field(default=0, ge=0)
+    grammar_stable_constructs: int = Field(default=0, ge=0)
+    grammar_productive_constructs: int = Field(default=0, ge=0)
     expression_attempts: int = Field(ge=0)
     difficulty_too_easy: int = Field(ge=0)
     difficulty_matched: int = Field(ge=0)
@@ -53,9 +56,15 @@ class LevelAssessmentAgent:
     def assess(self, evidence: LevelEvidenceSummary) -> LevelAssessmentOutput:
         completed = evidence.completed_tasks
         independence = evidence.independent_tasks / completed if completed else 0.0
-        grammar_rate = (
-            evidence.grammar_resolved / evidence.grammar_attempts
-            if evidence.grammar_attempts
+        grammar_breadth = min(evidence.grammar_constructs / 4, 1.0)
+        grammar_stability = (
+            evidence.grammar_stable_constructs / evidence.grammar_constructs
+            if evidence.grammar_constructs
+            else 0.0
+        )
+        grammar_productive = (
+            evidence.grammar_productive_constructs / evidence.grammar_constructs
+            if evidence.grammar_constructs
             else 0.0
         )
         feedback_total = (
@@ -72,7 +81,13 @@ class LevelAssessmentAgent:
 
         reading_score = 0.75 + 1.55 * independence + 0.35 * load_adjustment
         vocabulary_score = reading_score + min(evidence.annotation_count, 6) * 0.04
-        grammar_score = 0.65 + 1.35 * grammar_rate + 0.45 * independence
+        grammar_score = (
+            0.65
+            + 0.9 * grammar_breadth
+            + 0.55 * grammar_stability
+            + 0.5 * grammar_productive
+            + 0.25 * independence
+        )
         expression_score = (
             0.65
             + min(evidence.expression_attempts, 6) * 0.12
@@ -103,7 +118,10 @@ class LevelAssessmentAgent:
         reasons = [
             f"completed_tasks:{completed}",
             f"independence:{independence:.2f}",
-            f"grammar_resolution:{grammar_rate:.2f}",
+            "grammar_state:"
+            f"{evidence.grammar_constructs}/"
+            f"{evidence.grammar_stable_constructs}/"
+            f"{evidence.grammar_productive_constructs}",
             f"subjective_load:{load_adjustment:.2f}",
         ]
         if evidence.revision_count:

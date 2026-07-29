@@ -69,6 +69,8 @@ async def test_reading_grammar_challenge_hides_then_reveals_answer_and_restores_
 
         assert material["grammar_challenge"] == {
             "challenge_id": challenge.challenge_id,
+            "construction_id": challenge.construction_id,
+            "tested_facet": challenge.tested_facet.value,
             "status": "pending",
             "attempt_count": 0,
             "hint_revealed": False,
@@ -114,6 +116,13 @@ async def test_reading_grammar_challenge_hides_then_reveals_answer_and_restores_
             paragraph["paragraph_id"]: paragraph["text"]
             for paragraph in revealed.json()["paragraphs"]
         } == correct_paragraphs
+        async with get_engine().connect() as connection:
+            resolution_kind = await connection.scalar(
+                sa.select(tables.task_grammar_challenges.c.resolution_kind).where(
+                    tables.task_grammar_challenges.c.task_id == task_id
+                )
+            )
+        assert resolution_kind == "answer_revealed"
 
         resumed = await client.get(f"/learner/v1/runs/{run_id}/resume-workspace")
         assert resumed.status_code == 200, resumed.text

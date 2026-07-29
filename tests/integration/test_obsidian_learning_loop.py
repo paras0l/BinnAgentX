@@ -32,8 +32,143 @@ from binnagent_domain.learning.knowledge_organization import (
     CandidateValidationStatus,
     KnowledgeKind,
 )
+from binnagent_worker.asset_exporter import process_next_asset_export
 
 pytestmark = pytest.mark.integration
+
+
+@pytest.mark.asyncio
+async def test_structured_reading_capture_is_gated_and_enters_existing_organization_chain() -> None:
+    transport = httpx2.ASGITransport(app=create_app())
+    async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
+        created = await client.post(
+            "/learner/v1/assets",
+            json={
+                "kind": "reading_skill",
+                "title": "主句承载作者判断",
+                "source_type": "annotation",
+                "source_task_id": "task_structured_capture",
+                "capture": {
+                    "schema_version": "learning-asset-capture/v1",
+                    "segments": [
+                        {
+                            "segment_id": "quote",
+                            "role": "source_quote",
+                            "content": "The main clause carries the writer's claim.",
+                            "origin": "source",
+                        },
+                        {
+                            "segment_id": "learner",
+                            "role": "learner_interpretation",
+                            "content": (
+                                "The concession is background; the main clause is the claim."
+                            ),
+                            "origin": "learner",
+                        },
+                        {
+                            "segment_id": "ui-note",
+                            "role": "next_check",
+                            "content": "训练中主动记录的思考笔记。",
+                            "origin": "agent",
+                        },
+                    ],
+                },
+            },
+        )
+        assert created.status_code == 201, created.text
+        asset_id = created.json()["asset_id"]
+        assert created.json()["sync_status"] == "pending_export"
+        assert created.json()["next_review_at"] is not None
+
+        async with get_engine().connect() as connection:
+            message = (
+                (
+                    await connection.execute(
+                        sa.select(tables.outbox_messages).where(
+                            tables.outbox_messages.c.aggregate_id == asset_id
+                        )
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            source = (
+                (
+                    await connection.execute(
+                        sa.select(tables.knowledge_source_records).where(
+                            tables.knowledge_source_records.c.source_key == f"asset:{asset_id}"
+                        )
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            run = (
+                (
+                    await connection.execute(
+                        sa.select(tables.obsidian_organizer_runs).where(
+                            tables.obsidian_organizer_runs.c.trigger_key
+                            == f"asset_capture:{asset_id}"
+                        )
+                    )
+                )
+                .mappings()
+                .one()
+            )
+        assert message["payload"]["write_decision"]["decision"] == "KEEP"
+        assert "capture" not in message["payload"]
+        assert message["payload"]["capture_source_record_id"] == source["source_record_id"]
+        assert message["status"] == "denoising"
+        assert source["provider"] == "learning_asset_capture"
+        assert run["knowledge_status"] == "extracting"
+
+        assert await process_next_asset_export() is True
+        async with get_engine().connect() as connection:
+            refined_message = (
+                (
+                    await connection.execute(
+                        sa.select(tables.outbox_messages).where(
+                            tables.outbox_messages.c.aggregate_id == asset_id
+                        )
+                    )
+                )
+                .mappings()
+                .one()
+            )
+        refined_payload = refined_message["payload"]
+        assert refined_message["status"] == "pending"
+        assert refined_payload["write_gate_version"] == "learning-asset-write-gate-v1"
+        assert "## 原文证据" in refined_payload["initial_content"]
+        assert "## 我的解释" in refined_payload["initial_content"]
+
+        comparison = await client.get(f"/learner/v1/assets/{asset_id}/denoise-comparison")
+        assert comparison.status_code == 200, comparison.text
+        assert comparison.json()["status"] == "ready"
+        assert comparison.json()["raw_content"] != comparison.json()["denoised_content"]
+        assert comparison.json()["retained_segment_ids"] == ["quote", "learner"]
+
+        assert await process_next_knowledge_organization() is True
+        async with get_engine().connect() as connection:
+            organized_run = (
+                (
+                    await connection.execute(
+                        sa.select(tables.obsidian_organizer_runs).where(
+                            tables.obsidian_organizer_runs.c.trigger_key
+                            == f"asset_capture:{asset_id}"
+                        )
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            proposal_count = await connection.scalar(
+                sa.select(sa.func.count())
+                .select_from(tables.knowledge_change_proposals)
+                .where(tables.knowledge_change_proposals.c.run_id == organized_run["run_id"])
+            )
+        assert organized_run["knowledge_status"] == "awaiting_review"
+        assert proposal_count is not None
+        assert proposal_count >= 1
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -73,11 +208,14 @@ async def _clean() -> None:
             tables.learner_profile_snapshots,
             tables.idempotency_records,
             tables.agent_memory_events,
+            tables.learner_grammar_states,
+            tables.grammar_learning_evidence,
             tables.learning_evidence,
             tables.agent_working_memory,
             tables.knowledge_relations,
             tables.knowledge_change_proposals,
             tables.atomic_knowledge_candidates,
+            tables.learning_asset_content_projections,
             tables.knowledge_source_payloads,
             tables.knowledge_source_records,
             tables.obsidian_organizer_runs,
@@ -358,7 +496,7 @@ async def test_organizer_captures_atomic_source_and_requires_review_before_commi
         proposal = next(
             item
             for item in proposals.json()
-            if item["canonical_key"] == "grammar:concession:although"
+            if item["canonical_key"] == "clause.adverbial.concession.although.v1"
         )
         second_proposal = next(
             item
@@ -366,7 +504,7 @@ async def test_organizer_captures_atomic_source_and_requires_review_before_commi
             if item["canonical_key"] == "reading:main-clause:claim"
         )
         assert proposal["action"] == "CREATE"
-        assert proposal["canonical_key"] == "grammar:concession:although"
+        assert proposal["canonical_key"] == "clause.adverbial.concession.although.v1"
 
         reviewed = await client.post(
             f"/control/v1/knowledge-organization/proposals/{proposal['proposal_id']}/review",
@@ -935,6 +1073,7 @@ async def test_bidirectional_sync_personalized_reading_and_annotation_export(
             candidate["transfer_contract"]["objective_bundle_id"]
             == (candidate["objective_bundle"]["objective_bundle_id"])
         )
+        grammar_learner_id = candidate["objective_bundle"]["learner_id"]
         reviewed = await client.post(
             f"/control/v1/personalized-content/reviews/{reading.json()['material_id']}",
             headers=control_headers,
@@ -1055,6 +1194,25 @@ async def test_bidirectional_sync_personalized_reading_and_annotation_export(
         )
         assert hinted.status_code == 200, hinted.text
         assert hinted.json()["highest_hint_level"] == 1
+        grammar_hint = await client.post(
+            f"/learner/v1/tasks/{task['task_id']}/grammar-challenge/hint"
+        )
+        assert grammar_hint.status_code == 200, grammar_hint.text
+        async with get_engine().connect() as connection:
+            reviewed_grammar = await connection.scalar(
+                sa.select(tables.personalized_training_materials.c.grammar_annotations).where(
+                    tables.personalized_training_materials.c.material_id
+                    == reading.json()["material_id"]
+                )
+            )
+        assert isinstance(reviewed_grammar, list)
+        grammar_correction = reviewed_grammar[0]["correct_text"]
+        grammar_verified = await client.post(
+            f"/learner/v1/tasks/{task['task_id']}/grammar-challenge/verify",
+            json={"correction": grammar_correction},
+        )
+        assert grammar_verified.status_code == 200, grammar_verified.text
+        assert grammar_verified.json()["verification_correct"] is True
         ended = await client.post(
             f"/learner/v1/tasks/{task['task_id']}/end-early",
             headers={"Idempotency-Key": "personalized-reading-end"},
@@ -1179,6 +1337,58 @@ async def test_bidirectional_sync_personalized_reading_and_annotation_export(
         assert projected["evidence_count"] == 1
         assert projected["evidence_status"] == "hinted_usable"
         assert projected["next_review_at"] is not None
+        async with get_engine().connect() as connection:
+            grammar_evidence = (
+                (
+                    await connection.execute(
+                        sa.select(tables.grammar_learning_evidence).where(
+                            tables.grammar_learning_evidence.c.workflow_run_id
+                            == workspace["run"]["workflow_run_id"]
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+            grammar_state = (
+                (
+                    await connection.execute(
+                        sa.select(tables.learner_grammar_states).where(
+                            tables.learner_grammar_states.c.learner_id == grammar_learner_id,
+                            tables.learner_grammar_states.c.construction_id
+                            == "clause.adverbial.concession.although.v1",
+                            tables.learner_grammar_states.c.modality == "productive",
+                        )
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+            states_by_modality = {
+                str(row["modality"]): row
+                for row in (
+                    (
+                        await connection.execute(
+                            sa.select(tables.learner_grammar_states).where(
+                                tables.learner_grammar_states.c.learner_id == grammar_learner_id,
+                                tables.learner_grammar_states.c.construction_id
+                                == "clause.adverbial.concession.although.v1",
+                            )
+                        )
+                    )
+                    .mappings()
+                    .all()
+                )
+            }
+        assert {row["evidence_kind"] for row in grammar_evidence} == {
+            "supported_recognition",
+            "production_attempt_unverified",
+        }
+        assert states_by_modality["receptive"]["status"] == "supported"
+        assert states_by_modality["receptive"]["independent_context_count"] == 0
+        assert grammar_state is not None, grammar_evidence
+        assert grammar_state["status"] == "production_unverified"
+        assert grammar_state["independent_context_count"] == 0
 
         annotation = await client.post(
             "/learner/v1/assets",

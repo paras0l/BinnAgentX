@@ -107,13 +107,10 @@ function solveLayout(
   const measureLine = (fromCandidate: number, toCandidate: number): LineMetrics => {
     const from = candidates[fromCandidate]!.segmentIndex;
     const to = candidates[toCandidate]!.segmentIndex;
-    const effectiveEnd =
-      to > from && SPACE_SEGMENT.test(segments[to - 1] ?? "") ? to - 1 : to;
+    const effectiveEnd = to > from && SPACE_SEGMENT.test(segments[to - 1] ?? "") ? to - 1 : to;
     return {
-      naturalWidth:
-        (prefixWidths[effectiveEnd] ?? 0) - (prefixWidths[from] ?? 0),
-      spaceCount:
-        (prefixSpaces[effectiveEnd] ?? 0) - (prefixSpaces[from] ?? 0),
+      naturalWidth: (prefixWidths[effectiveEnd] ?? 0) - (prefixWidths[from] ?? 0),
+      spaceCount: (prefixSpaces[effectiveEnd] ?? 0) - (prefixSpaces[from] ?? 0),
     };
   };
 
@@ -141,9 +138,7 @@ function solveLayout(
         // Keep loose emergency lines ragged instead of stretching them into
         // distracting typographic rivers. They remain valid DP candidates.
         wordSpacing =
-          ratio <= MAX_RENDERED_ADJUSTMENT_RATIO
-            ? adjustment / lineMetrics.spaceCount
-            : 0;
+          ratio <= MAX_RENDERED_ADJUSTMENT_RATIO ? adjustment / lineMetrics.spaceCount : 0;
       } else {
         if (!allowEmergencyLines) continue;
         // A non-final line without glue cannot be justified. Keep it as an
@@ -157,8 +152,7 @@ function solveLayout(
       for (let previousFitness = 0; previousFitness < 4; previousFitness += 1) {
         const previousState = states[fromCandidate]![previousFitness];
         if (!previousState) continue;
-        const fitnessDemerits =
-          Math.abs(previousFitness - nextFitness) > 1 ? FITNESS_DEMERIT : 0;
+        const fitnessDemerits = Math.abs(previousFitness - nextFitness) > 1 ? FITNESS_DEMERIT : 0;
         const demerits = previousState.demerits + lineDemerits + fitnessDemerits;
         const current = states[toCandidate]![nextFitness];
         if (current && current.demerits <= demerits) continue;
@@ -204,11 +198,7 @@ function solveLayout(
   }
   lines.reverse();
 
-  if (
-    lines.length === 0 ||
-    lines[0]!.start !== 0 ||
-    lines[lines.length - 1]!.end !== text.length
-  ) {
+  if (lines.length === 0 || lines[0]!.start !== 0 || lines[lines.length - 1]!.end !== text.length) {
     return null;
   }
   return lines;

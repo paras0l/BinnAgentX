@@ -16,6 +16,8 @@ const material: ReadingMaterialView = {
   question: { question_id: "question_01", prompt: "Why?", options: [] },
   grammar_challenge: {
     challenge_id: "challenge_01",
+    construction_id: "clause.relative.defining.v1",
+    tested_facet: "form",
     status: "pending",
     attempt_count: 0,
     hint_revealed: false,

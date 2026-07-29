@@ -240,9 +240,13 @@ task_grammar_challenges = sa.Table(
     sa.Column("task_id", sa.String(128), primary_key=True),
     sa.Column("content_version_id", sa.String(128), nullable=False),
     sa.Column("challenge_id", sa.String(128), nullable=False),
+    sa.Column("construction_id", sa.String(180), nullable=True),
+    sa.Column("construction_version", sa.Integer(), nullable=True),
+    sa.Column("tested_facet", sa.String(16), nullable=True),
     sa.Column("hint_revealed", sa.Boolean(), nullable=False),
     sa.Column("attempt_count", sa.Integer(), nullable=False),
     sa.Column("resolved", sa.Boolean(), nullable=False),
+    sa.Column("resolution_kind", sa.String(32), nullable=True),
     sa.Column("last_submission_hash", sa.String(64), nullable=True),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
@@ -450,6 +454,39 @@ learning_evidence = sa.Table(
     sa.Column("detail", postgresql.JSONB(), nullable=False),
 )
 
+grammar_learning_evidence = sa.Table(
+    "grammar_learning_evidence",
+    metadata,
+    sa.Column("evidence_id", sa.String(128), primary_key=True),
+    sa.Column("learner_id", sa.String(128), nullable=False),
+    sa.Column("construction_id", sa.String(180), nullable=False),
+    sa.Column("construction_version", sa.Integer(), nullable=False),
+    sa.Column("facet", sa.String(16), nullable=False),
+    sa.Column("modality", sa.String(16), nullable=False),
+    sa.Column("evidence_kind", sa.String(48), nullable=False),
+    sa.Column("context_key", sa.String(256), nullable=False),
+    sa.Column("workflow_run_id", sa.String(128), nullable=True),
+    sa.Column("task_id", sa.String(128), nullable=True),
+    sa.Column("observed_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("detail", postgresql.JSONB(), nullable=False),
+)
+
+learner_grammar_states = sa.Table(
+    "learner_grammar_states",
+    metadata,
+    sa.Column("learner_id", sa.String(128), primary_key=True),
+    sa.Column("construction_id", sa.String(180), primary_key=True),
+    sa.Column("construction_version", sa.Integer(), primary_key=True),
+    sa.Column("facet", sa.String(16), primary_key=True),
+    sa.Column("modality", sa.String(16), primary_key=True),
+    sa.Column("status", sa.String(48), nullable=False),
+    sa.Column("evidence_count", sa.Integer(), nullable=False),
+    sa.Column("independent_context_count", sa.Integer(), nullable=False),
+    sa.Column("last_verified_at", sa.DateTime(timezone=True), nullable=True),
+    sa.Column("next_review_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+)
+
 agent_memory_events = sa.Table(
     "agent_memory_events",
     metadata,
@@ -529,6 +566,22 @@ knowledge_source_payloads = sa.Table(
     metadata,
     sa.Column("source_record_id", sa.String(128), primary_key=True),
     sa.Column("content", sa.Text(), nullable=False),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+)
+
+learning_asset_content_projections = sa.Table(
+    "learning_asset_content_projections",
+    metadata,
+    sa.Column("projection_id", sa.String(128), primary_key=True),
+    sa.Column("asset_id", sa.String(128), nullable=False),
+    sa.Column("learner_id", sa.String(128), nullable=False),
+    sa.Column("source_record_id", sa.String(128), nullable=False),
+    sa.Column("schema_version", sa.String(64), nullable=False),
+    sa.Column("decision", sa.String(16), nullable=False),
+    sa.Column("reason_codes", postgresql.JSONB(), nullable=False),
+    sa.Column("retained_segment_ids", postgresql.JSONB(), nullable=False),
+    sa.Column("content", sa.Text(), nullable=True),
+    sa.Column("content_hash", sa.String(64), nullable=True),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
 )
 

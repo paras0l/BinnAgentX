@@ -61,6 +61,8 @@ const resumableWorkspace = {
     },
     grammar_challenge: {
       challenge_id: "grammar_resume_0001",
+      construction_id: "sentence.core.subject_verb_agreement.v1",
+      tested_facet: "form",
       status: "pending",
       attempt_count: 0,
       hint_revealed: false,

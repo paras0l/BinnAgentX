@@ -5,11 +5,12 @@ from __future__ import annotations
 import hashlib
 from datetime import datetime
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import Field, model_validator
 
 from binnagent_domain.learning.content_quality import SourceSpan, StrictModel
+from binnagent_domain.learning.grammar_ontology import resolve_construction_from_text
 
 
 class KnowledgeKind(StrEnum):
@@ -84,6 +85,23 @@ class AtomicKnowledgeCandidate(StrictModel):
     confidence: Annotated[float, Field(ge=0, le=1)]
     validation_status: CandidateValidationStatus
     extractor_version: str = Field(min_length=1, max_length=80)
+
+    @model_validator(mode="before")
+    @classmethod
+    def bind_grammar_candidate_to_catalog(cls, value: Any) -> Any:
+        if not isinstance(value, dict) or value.get("knowledge_kind") != KnowledgeKind.GRAMMAR:
+            return value
+        migrated = dict(value)
+        construction_id = resolve_construction_from_text(
+            str(migrated.get("canonical_key", "")),
+            str(migrated.get("title", "")),
+            str(migrated.get("claim", "")),
+        )
+        if construction_id is not None:
+            migrated["canonical_key"] = construction_id
+        elif migrated.get("validation_status") != CandidateValidationStatus.REJECTED:
+            migrated["validation_status"] = CandidateValidationStatus.NEEDS_REVIEW
+        return migrated
 
 
 class ExistingAssetMatch(StrictModel):

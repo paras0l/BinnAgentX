@@ -875,6 +875,7 @@ function ActiveTaskWorkspace({
       try {
         const updated = await saveAnnotation(task, annotationKind, selection, explanation);
         onTaskChange(updated);
+        const savedAnnotation = updated.annotations.at(-1);
         const assetKind: LearningAssetKind =
           annotationKind === "vocabulary"
             ? "vocabulary"
@@ -914,6 +915,61 @@ function ActiveTaskWorkspace({
                 .join("\n")
             : explanation,
           sourceTitle: material.title,
+          sourceType: "annotation",
+          sourceTaskId: task.task_id,
+          sourceAnnotationId: savedAnnotation?.annotation_id,
+          capture: {
+            schemaVersion: "learning-asset-capture/v1",
+            segments: [
+              {
+                segmentId: "source-quote",
+                role: "source_quote",
+                content: selection.textQuote,
+                origin: "source",
+              },
+              {
+                segmentId: "learner-interpretation",
+                role: "learner_interpretation",
+                content: explanation,
+                origin: "learner",
+              },
+              ...(annotationAnalysis
+                ? [
+                    {
+                      segmentId: "diagnosis",
+                      role: "diagnosis" as const,
+                      content: annotationAnalysis.diagnosis,
+                      origin: "agent" as const,
+                    },
+                    {
+                      segmentId: "analysis-support",
+                      role: "agent_hint" as const,
+                      content: [
+                        annotationAnalysis.vocabulary_note
+                          ? `语境义与用法：${annotationAnalysis.vocabulary_note}`
+                          : null,
+                        annotationAnalysis.translation
+                          ? `选区翻译：${annotationAnalysis.translation}`
+                          : null,
+                        annotationAnalysis.grammar_structure.length > 0
+                          ? `语法结构：${annotationAnalysis.grammar_structure.join("；")}`
+                          : null,
+                        `拆解：${annotationAnalysis.breakdown.join("；")}`,
+                      ]
+                        .filter((item): item is string => Boolean(item))
+                        .join("\n"),
+                      origin: "agent" as const,
+                    },
+                    {
+                      segmentId: "next-check",
+                      role: "next_check" as const,
+                      content: annotationAnalysis.next_check,
+                      origin: "agent" as const,
+                    },
+                  ]
+                : []),
+            ],
+          },
         });
         setShowSavedAnnotations(true);
         switchWorkspaceTab("annotations");
@@ -1121,6 +1177,27 @@ function ActiveTaskWorkspace({
             content: intervention.delivered_content,
             note: "回到自己的判断，按这个帮助层级形成一个新的亲自输出版本。",
             sourceTitle: material.title,
+            sourceType: "intervention",
+            sourceTaskId: task.task_id,
+            sourceInterventionId: intervention.intervention_id,
+            capture: {
+              schemaVersion: "learning-asset-capture/v1",
+              segments: [
+                {
+                  segmentId: `agent-hint-h${hintLevel}`,
+                  role: "agent_hint",
+                  content: intervention.delivered_content,
+                  origin: "agent",
+                  hintLevel,
+                },
+                {
+                  segmentId: "next-check",
+                  role: "next_check",
+                  content: "换到另一处原文，用同一检查动作形成自己的新判断。",
+                  origin: "agent",
+                },
+              ],
+            },
           });
           if (hintLevel >= 3) {
             addExplanationTemporaryTask({
@@ -2412,6 +2489,19 @@ function ActiveTaskWorkspace({
                               content: workspaceNote.trim(),
                               note: "训练中主动记录的思考笔记。",
                               sourceTitle: material.title,
+                              sourceType: "task",
+                              sourceTaskId: task.task_id,
+                              capture: {
+                                schemaVersion: "learning-asset-capture/v1",
+                                segments: [
+                                  {
+                                    segmentId: "learner-note",
+                                    role: "learner_interpretation",
+                                    content: workspaceNote.trim(),
+                                    origin: "learner",
+                                  },
+                                ],
+                              },
                             });
                             setNoteCaptured(true);
                           }}

@@ -26,6 +26,7 @@ from binnagent_domain.learning.content_quality import (
     TransferContract,
     stable_content_hash,
 )
+from binnagent_domain.learning.grammar_ontology import GrammarFacet
 from binnagent_domain.learning.knowledge_organization import (
     AtomicKnowledgeCandidate,
     CandidateValidationStatus,
@@ -122,11 +123,17 @@ def _grammar() -> GrammarAnalysisArtifact:
     )
     return GrammarAnalysisArtifact(
         artifact=_artifact("grammar_fault_matrix", "grammar_annotation"),
-        structure_key="concession_clause",
+        construction_id="clause.adverbial.concession.although.v1",
+        construction_version=1,
+        target_facets=(GrammarFacet.MEANING,),
         span=span,
+        form="although + finite subordinate clause, linked to a main clause",
+        meaning="Acknowledges a fact before an unexpected main assertion.",
+        use="Marks concession and counter-expectation.",
         explanation="Although introduces a concession before the main claim.",
         parser_id="fixture",
         parser_version="v1",
+        parser_evidence=("advcl + mark(although)",),
         confidence=0.95,
         status="review_required",
     )

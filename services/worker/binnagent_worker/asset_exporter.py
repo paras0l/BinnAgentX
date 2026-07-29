@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 import sqlalchemy as sa
+from binnagent_api.asset_capture_service import refine_pending_asset_capture
 from binnagent_api.database import dispose_engine, get_engine
 from binnagent_api.learning_asset_routes import export_pending_asset
 from binnagent_api.settings import get_settings
@@ -38,7 +39,7 @@ async def process_next_asset_export() -> bool:
                     sa.select(tables.outbox_messages)
                     .where(
                         tables.outbox_messages.c.topic == "asset_export_requested",
-                        tables.outbox_messages.c.status == "pending",
+                        tables.outbox_messages.c.status.in_(("pending", "denoising")),
                         tables.outbox_messages.c.available_at <= now,
                     )
                     .order_by(tables.outbox_messages.c.occurred_at)
@@ -61,6 +62,14 @@ async def process_next_asset_export() -> bool:
         )
 
     try:
+        refinement = await refine_pending_asset_capture(
+            message_id=UUID(str(message_id)),
+            asset_id=asset_id,
+            payload=dict(message["payload"]),
+        )
+        if refinement == "filtered":
+            await _finalize_message(UUID(str(message_id)), "filtered", attempt_count)
+            return True
         result = await export_pending_asset(asset_id)
     except Exception:  # keep the outbox recoverable even when a bridge is unavailable
         logger.exception("asset export crashed: %s", asset_id)
@@ -71,7 +80,7 @@ async def process_next_asset_export() -> bool:
 
 async def _finalize_message(message_id: UUID, result: str, attempt_count: int) -> None:
     now = _utc_now()
-    if result == "synced" or result == "missing":
+    if result in {"synced", "missing", "filtered"}:
         values = {"status": "processed", "processed_at": now, "available_at": now}
     else:
         delay_seconds = 20 if result == "pending_export" else min(300, 5 * attempt_count)

@@ -7,6 +7,10 @@ import json
 from enum import StrEnum
 from typing import Annotated, Protocol
 
+from binnagent_domain.learning.grammar_ontology import (
+    load_grammar_catalog,
+    resolve_construction_from_text,
+)
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
@@ -86,6 +90,13 @@ class SyntaxProviderOutput(_StrictModel):
     confidence: Annotated[float, Field(ge=0, le=1)]
 
 
+class SyntaxConstructionCandidate(_StrictModel):
+    construction_id: str = Field(pattern=r"^[a-z][a-z0-9_.]+\.v[1-9][0-9]*$")
+    construction_version: Annotated[int, Field(ge=1)]
+    evidence_labels: tuple[str, ...] = Field(min_length=1)
+    confidence: Annotated[float, Field(ge=0, le=1)]
+
+
 class SyntaxAnalysisRequest(_StrictModel):
     selected_text: str = Field(min_length=1, max_length=5000)
     paragraph_context: str = Field(min_length=1, max_length=10000)
@@ -117,6 +128,7 @@ class SyntaxAnalysisResult(_StrictModel):
     provider_version: str
     cache_key: str = Field(pattern=r"^[0-9a-f]{64}$")
     structures: tuple[TextOffset, ...] = ()
+    construction_candidates: tuple[SyntaxConstructionCandidate, ...] = ()
     translation: str | None = None
     translation_alignment: tuple[TranslationAlignment, ...] = ()
     alternatives: tuple[str, ...] = ()
@@ -241,6 +253,7 @@ def analyze_syntax(
         return SyntaxAnalysisResult.model_validate(cached)
 
     output = provider.parse(request)
+    construction_candidates = map_syntax_constructions(output)
     offsets_valid = all(
         _offset_matches(offset, request.selected_text) for offset in output.structures
     )
@@ -266,6 +279,7 @@ def analyze_syntax(
             provider_version=provider.provider_version,
             cache_key=key,
             structures=output.structures,
+            construction_candidates=construction_candidates,
             alternatives=output.alternatives,
             confidence=output.confidence,
             reason_code="translation_alignment_unverified",
@@ -277,6 +291,7 @@ def analyze_syntax(
             provider_version=provider.provider_version,
             cache_key=key,
             structures=output.structures,
+            construction_candidates=construction_candidates,
             translation=output.translation,
             translation_alignment=output.translation_alignment,
             alternatives=output.alternatives,
@@ -290,6 +305,7 @@ def analyze_syntax(
             provider_version=provider.provider_version,
             cache_key=key,
             structures=output.structures,
+            construction_candidates=construction_candidates,
             translation=output.translation,
             translation_alignment=output.translation_alignment,
             alternatives=output.alternatives,
@@ -298,6 +314,27 @@ def analyze_syntax(
         )
     cache.put(key, result.model_dump(mode="json"))
     return result
+
+
+def map_syntax_constructions(
+    output: SyntaxProviderOutput,
+) -> tuple[SyntaxConstructionCandidate, ...]:
+    """Map reviewed parser labels to catalog IDs without inventing unknown structures."""
+
+    evidence_by_id: dict[str, list[str]] = {}
+    for structure in output.structures:
+        construction_id = resolve_construction_from_text(structure.label, structure.text_quote)
+        if construction_id is not None:
+            evidence_by_id.setdefault(construction_id, []).append(structure.label)
+    return tuple(
+        SyntaxConstructionCandidate(
+            construction_id=construction_id,
+            construction_version=load_grammar_catalog().by_id(construction_id).version,
+            evidence_labels=tuple(dict.fromkeys(labels)),
+            confidence=output.confidence,
+        )
+        for construction_id, labels in sorted(evidence_by_id.items())
+    )
 
 
 def _offset_matches(offset: TextOffset, selected_text: str) -> bool:

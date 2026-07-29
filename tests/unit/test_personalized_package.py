@@ -111,6 +111,11 @@ def test_personalized_package_has_exact_evidence_and_connected_transfer() -> Non
 
     assert grammar[0].status == "review_required"
     assert grammar[0].parser_id == "model_candidate_unverified"
+    assert grammar[0].construction_id == "clause.adverbial.concession.although.v1"
+    assert {role.role for role in grammar[0].role_spans} == {
+        "concessive_clause",
+        "main_clause",
+    }
     assert len(assessment.grammar_annotations[0].correct_text) == len(
         assessment.grammar_annotations[0].incorrect_text
     )
@@ -120,6 +125,7 @@ def test_personalized_package_has_exact_evidence_and_connected_transfer() -> Non
     )
     assert persisted_annotation["analysis"]["confidence"] == 0.5
     assert transfer.objective_bundle_id == objective.objective_bundle_id
+    assert grammar[0].construction_id in transfer.required_transfer_targets
     assert set(transfer.reading_evidence_refs) == {item.artifact.artifact_id for item in questions}
     persisted_task = persisted_expression(
         objective=objective,
@@ -128,6 +134,7 @@ def test_personalized_package_has_exact_evidence_and_connected_transfer() -> Non
         draft=assessment.transfer,
     )
     assert persisted_task["target_argument_move"] == "concession"
+    assert grammar[0].construction_id in persisted_task["required_target_ids"]
     assert persisted_task["situation"] not in paragraphs
     reports = structural_quality_reports(state)
     assert [report.result for report in reports] == [

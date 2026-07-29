@@ -6458,6 +6458,122 @@ textarea:disabled {
   margin-left: 8px;
 }
 
+.asset-comparison-backdrop {
+  position: fixed;
+  z-index: 80;
+  display: grid;
+  padding: 28px;
+  background: rgb(21 31 25 / 48%);
+  inset: 0;
+  place-items: center;
+}
+
+.asset-comparison-dialog {
+  width: min(1080px, 96vw);
+  max-height: 90vh;
+  overflow: auto;
+  border: 1px solid #d9ddd7;
+  border-radius: 18px;
+  padding: 22px;
+  background: #fbfcf8;
+  box-shadow: 0 24px 70px rgb(20 35 25 / 22%);
+}
+
+.asset-comparison-dialog > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.asset-comparison-dialog > header h2 {
+  margin: 3px 0 0;
+  color: #263c30;
+  font-size: 20px;
+}
+
+.asset-comparison-dialog > header button {
+  border: 0;
+  padding: 6px;
+  color: #526259;
+  background: transparent;
+}
+
+.asset-comparison-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 18px 0 12px;
+}
+
+.asset-comparison-summary span {
+  border-radius: 999px;
+  padding: 6px 10px;
+  color: #3f5c4b;
+  background: #e8efe9;
+  font-size: 11px;
+}
+
+.asset-comparison-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.asset-comparison-columns article {
+  min-width: 0;
+  border: 1px solid #dfe3dc;
+  border-radius: 12px;
+  padding: 14px;
+  background: #fff;
+}
+
+.asset-comparison-columns h3 {
+  margin: 0 0 10px;
+  color: #476052;
+  font-size: 12px;
+}
+
+.asset-comparison-columns pre {
+  min-height: 260px;
+  max-height: 48vh;
+  overflow: auto;
+  margin: 0;
+  color: #28372f;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.asset-comparison-dialog > footer {
+  display: grid;
+  gap: 5px;
+  margin-top: 14px;
+  color: #59665f;
+  font-size: 11px;
+}
+
+.asset-comparison-dialog > footer small {
+  color: #858d88;
+}
+
+.asset-comparison-error {
+  margin: 18px 0 0;
+  color: #8a433b;
+}
+
+@media (max-width: 760px) {
+  .asset-comparison-backdrop {
+    padding: 12px;
+  }
+
+  .asset-comparison-columns {
+    grid-template-columns: 1fr;
+  }
+}
+
 .asset-empty {
   display: grid;
   min-height: 360px;

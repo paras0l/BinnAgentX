@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any, cast
 
+from binnagent_domain.learning.grammar_ontology import load_grammar_catalog
 from binnagent_evaluation.content_integrity import validate_content_pack
 from jsonschema import Draft202012Validator
 from referencing import Registry, Resource
@@ -62,6 +63,18 @@ def test_priority_feedback_example_follows_model_output_contract() -> None:
 
 def test_content_pack_schema_hashes_counts_and_evidence_spans() -> None:
     assert validate_content_pack(REPOSITORY_ROOT) == []
+
+
+def test_grammar_catalog_follows_schema_and_runtime_graph_rules() -> None:
+    schema = read_json(
+        REPOSITORY_ROOT / "contracts/grammar-ontology/v1/grammar-catalog.schema.json"
+    )
+    catalog = read_json(
+        REPOSITORY_ROOT / "python/binnagent_domain/learning/data/grammar-catalog.v1.json"
+    )
+    assert isinstance(schema, dict)
+    assert_valid(catalog, schema)
+    assert load_grammar_catalog().model_dump(mode="json") == catalog
 
 
 def test_fixed_scenario_suite_is_complete_and_unique() -> None:

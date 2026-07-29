@@ -3,6 +3,7 @@
 from binnagent_domain.learning.content_quality import (
     ContentArtifact,
     GrammarAnalysisArtifact,
+    GrammarRoleSpan,
     LearningObjectiveBundle,
     PersonalizedLearningPackage,
     QualityIssueCode,
@@ -19,6 +20,24 @@ from binnagent_domain.learning.evidence import (
     LearningStateProjection,
     project_learning_state,
 )
+from binnagent_domain.learning.grammar_evidence import (
+    GrammarEvidence,
+    GrammarEvidenceKind,
+    GrammarStateProjection,
+    GrammarStateStatus,
+    project_grammar_state,
+)
+from binnagent_domain.learning.grammar_ontology import (
+    GrammarCatalog,
+    GrammarConstruction,
+    GrammarFacet,
+    GrammarModality,
+    GrammarRelation,
+    GrammarRelationType,
+    load_grammar_catalog,
+    resolve_construction_from_text,
+    resolve_construction_id,
+)
 from binnagent_domain.learning.knowledge_organization import (
     AtomicKnowledgeCandidate,
     KnowledgeChangeProposal,
@@ -32,6 +51,17 @@ __all__ = [
     "ContentArtifact",
     "EvidenceStatus",
     "GrammarAnalysisArtifact",
+    "GrammarCatalog",
+    "GrammarConstruction",
+    "GrammarEvidence",
+    "GrammarEvidenceKind",
+    "GrammarFacet",
+    "GrammarModality",
+    "GrammarRelation",
+    "GrammarRelationType",
+    "GrammarRoleSpan",
+    "GrammarStateProjection",
+    "GrammarStateStatus",
     "KnowledgeChangeProposal",
     "KnowledgeRelation",
     "KnowledgeSourceRecord",
@@ -47,6 +77,10 @@ __all__ = [
     "ReviewCandidate",
     "SourceSpan",
     "TransferContract",
+    "load_grammar_catalog",
+    "project_grammar_state",
     "project_learning_state",
+    "resolve_construction_from_text",
+    "resolve_construction_id",
     "select_review_candidates",
 ]

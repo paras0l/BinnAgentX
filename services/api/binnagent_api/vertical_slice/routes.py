@@ -341,7 +341,7 @@ async def reveal_grammar_hint(task_id: str) -> GrammarChallengeUpdateView:
             connection,
             task.task_id,
             task.current_material.content_version_id,
-            challenge.challenge_id,
+            challenge,
         )
         return await _grammar_challenge_update(connection, task, challenge, state)
 

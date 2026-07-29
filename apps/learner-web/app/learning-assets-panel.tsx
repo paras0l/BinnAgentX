@@ -3,6 +3,7 @@
 import { useDeferredValue, useMemo, useState } from "react";
 import {
   ArrowsClockwise,
+  ArrowsLeftRight,
   Books,
   CheckCircle,
   CloudArrowUp,
@@ -23,7 +24,9 @@ import type {
   LearningAssetsState,
 } from "../lib/learning-assets-storage";
 import {
+  type AssetDenoiseComparison,
   createObsidianPluginConnection,
+  getAssetDenoiseComparison,
   type KnowledgeVaultStatus,
   type ObsidianPluginConnection,
   type ObsidianPluginSyncStatus,
@@ -334,6 +337,10 @@ export function LearningAssetsPanel({
   const [isOrganizingInbox, setIsOrganizingInbox] = useState(false);
   const [organizerNotice, setOrganizerNotice] = useState<string | null>(null);
   const [organizerQueued, setOrganizerQueued] = useState(false);
+  const [comparison, setComparison] = useState<AssetDenoiseComparison | null>(null);
+  const [comparisonTitle, setComparisonTitle] = useState("");
+  const [comparisonError, setComparisonError] = useState<string | null>(null);
+  const [comparisonLoadingAssetId, setComparisonLoadingAssetId] = useState<string | null>(null);
   const [obsidianVaultName, setObsidianVaultName] = useState(loadObsidianVaultName);
   const [draft, setDraft] = useState<LearningAssetInput>({
     kind: "vocabulary",
@@ -393,13 +400,27 @@ export function LearningAssetsPanel({
     }
   };
 
+  const openDenoiseComparison = async (asset: LearningAsset) => {
+    setComparisonLoadingAssetId(asset.assetId);
+    setComparisonError(null);
+    setComparisonTitle(asset.title);
+    try {
+      setComparison(await getAssetDenoiseComparison(asset.assetId));
+    } catch {
+      setComparison(null);
+      setComparisonError("这条资产没有结构化去噪副本，或投影仍在生成。");
+    } finally {
+      setComparisonLoadingAssetId(null);
+    }
+  };
+
   return (
     <main className="assets-shell">
       <header className="assets-heading" data-ui-anchor="workspace-header">
         <div>
           <p className="eyebrow">学习资产 · 元数据索引</p>
           <h1>把读过的痕迹，连到你的 Obsidian 笔记</h1>
-          <p>这里仅展示来源、证据和同步状态；详细知识内容由 Obsidian 管理。</p>
+          <p>这里展示来源、证据和同步状态；结构化资产可按需对照去噪前后副本。</p>
         </div>
         <div className="assets-heading-actions">
           <button
@@ -730,6 +751,16 @@ export function LearningAssetsPanel({
                     </small>
                   </div>
                   <footer>
+                    {["annotation", "intervention", "task"].includes(item.sourceType) ? (
+                      <button
+                        type="button"
+                        onClick={() => void openDenoiseComparison(item)}
+                        disabled={comparisonLoadingAssetId === item.assetId}
+                      >
+                        <ArrowsLeftRight size={15} />{" "}
+                        {comparisonLoadingAssetId === item.assetId ? "读取对照…" : "对照去噪"}
+                      </button>
+                    ) : null}
                     {item.syncStatus === "synced" ? (
                       <button type="button" onClick={() => onOpen(item)}>
                         <LinkSimple size={15} /> 在 Obsidian 中打开
@@ -790,6 +821,64 @@ export function LearningAssetsPanel({
           onSaveVault={saveObsidianVaultName}
           onRefresh={onRefreshVaultStatus}
         />
+      ) : null}
+      {comparison || comparisonError ? (
+        <div className="asset-comparison-backdrop" role="presentation">
+          <section
+            className="asset-comparison-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="asset-comparison-title"
+          >
+            <header>
+              <div>
+                <p className="step-label">去噪前后对照</p>
+                <h2 id="asset-comparison-title">{comparisonTitle}</h2>
+              </div>
+              <button
+                type="button"
+                aria-label="关闭去噪对照"
+                onClick={() => {
+                  setComparison(null);
+                  setComparisonError(null);
+                }}
+              >
+                <X size={18} />
+              </button>
+            </header>
+            {comparisonError ? <p className="asset-comparison-error">{comparisonError}</p> : null}
+            {comparison ? (
+              <>
+                <div className="asset-comparison-summary">
+                  <span>决策：{comparison.decision ?? "处理中"}</span>
+                  <span>
+                    字符：{comparison.before_character_count} → {comparison.after_character_count}
+                  </span>
+                  <span>缩减：{Math.round(comparison.reduction_ratio * 100)}%</span>
+                </div>
+                <div className="asset-comparison-columns">
+                  <article>
+                    <h3>去噪前 · 隔离副本</h3>
+                    <pre>{comparison.raw_content}</pre>
+                  </article>
+                  <article>
+                    <h3>去噪后 · 导出投影</h3>
+                    <pre>{comparison.denoised_content ?? "投影仍在生成。"}</pre>
+                  </article>
+                </div>
+                <footer>
+                  <span>
+                    保留 {comparison.retained_segment_ids.length} 段
+                    {comparison.removed_segment_ids.length
+                      ? ` · 移除 ${comparison.removed_segment_ids.join("、")}`
+                      : " · 未移除结构段"}
+                  </span>
+                  <small>{comparison.reason_codes.join(" · ")}</small>
+                </footer>
+              </>
+            ) : null}
+          </section>
+        </div>
       ) : null}
     </main>
   );

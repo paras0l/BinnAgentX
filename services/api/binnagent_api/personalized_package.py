@@ -10,6 +10,7 @@ from binnagent_domain.learning.content_quality import (
     DifficultyConstraints,
     ExpressionTaskArtifact,
     GrammarAnalysisArtifact,
+    GrammarRoleSpan,
     LearningObjectiveBundle,
     QualityIssueCode,
     QualityReport,
@@ -19,9 +20,14 @@ from binnagent_domain.learning.content_quality import (
     ReadingQuestionArtifact,
     RequiredEvidence,
     SourceSpan,
+    TargetGrammarStructure,
     TransferContract,
     stable_content_hash,
     validate_source_span,
+)
+from binnagent_domain.learning.grammar_ontology import (
+    GrammarFacet,
+    load_grammar_catalog,
 )
 
 from binnagent_api.model_adapters import (
@@ -47,10 +53,30 @@ def build_objective_bundle(
     level = str(adaptation_profile.get("overall_level", "developing"))
     discourse_target = "concession"
     reading_target = "evidence_boundary"
+    construction_id = "clause.adverbial.concession.although.v1"
+    construction = load_grammar_catalog().by_id(construction_id)
+    goal_evidence = goal.strip() or "Learner needs a reviewed concession target."
+    grammar_target = TargetGrammarStructure(
+        target_id=construction_id,
+        construction_id=construction_id,
+        construction_version=construction.version,
+        target_facets=(GrammarFacet.MEANING, GrammarFacet.USE),
+        learner_gap="Needs evidence of recognizing and transferring concession.",
+        evidence=(
+            SourceSpan(
+                source_id="personalization_goal",
+                source_version=stable_content_hash(goal_evidence),
+                start=0,
+                end=len(goal_evidence),
+                text_quote=goal_evidence,
+            ),
+        ),
+    )
     return LearningObjectiveBundle(
         objective_bundle_id=f"objective_{material_id}",
         learner_id=learner_id,
         source_asset_ids=tuple(dict.fromkeys(source_asset_ids)),
+        target_grammar_structures=(grammar_target,),
         target_discourse_moves=(discourse_target,),
         reading_skill_targets=(reading_target,),
         difficulty_constraints=DifficultyConstraints(
@@ -62,6 +88,7 @@ def build_objective_bundle(
         required_evidence=(
             RequiredEvidence(target_id=discourse_target, evidence_kind="discourse"),
             RequiredEvidence(target_id=reading_target, evidence_kind="reading_skill"),
+            RequiredEvidence(target_id=construction_id, evidence_kind="grammar"),
         ),
         uncertainty=(),
         version=1,
@@ -105,7 +132,6 @@ def deterministic_assessment(
         (index for index, paragraph in enumerate(paragraphs) if "Although " in paragraph),
         1,
     )
-    grammar_text = _sentence_with(paragraphs[grammar_index], "Although ")
     target = objective.target_discourse_moves[0]
     return PersonalizedAssessmentOutput(
         questions=[
@@ -220,9 +246,10 @@ def deterministic_assessment(
         grammar_annotations=[
             PersonalizedGrammarOutput(
                 paragraph_index=grammar_index,
-                structure_key="concession_clause",
-                correct_text=grammar_text,
-                incorrect_text=grammar_text.replace("Although", "Whenever", 1),
+                construction_id="clause.adverbial.concession.although.v1",
+                target_facets=[GrammarFacet.MEANING, GrammarFacet.USE],
+                correct_text="Although",
+                incorrect_text="Whenever",
                 error_type="subordinator_logic",
                 hint="Decide whether the dependent clause expresses cause or concession.",
                 explanation=(
@@ -335,19 +362,39 @@ def build_grammar_artifacts(
     article_artifact = ContentArtifact.model_validate(article["artifact"])
     paragraphs = [str(value) for value in article["paragraphs"]]
     results: list[GrammarAnalysisArtifact] = []
+    allowed_constructions = {
+        target.construction_id for target in objective.target_grammar_structures
+    }
     for index, draft in enumerate(assessment.grammar_annotations, start=1):
+        if draft.construction_id not in allowed_constructions:
+            raise ValueError(f"grammar_construction_outside_objective:{index}")
         if len(draft.correct_text) != len(draft.incorrect_text):
             raise ValueError(f"grammar_replacement_length_mismatch:{index}")
         paragraph = _paragraph(paragraphs, draft.paragraph_index)
-        start = paragraph.find(draft.correct_text)
-        if start < 0:
+        challenge_start = paragraph.find(draft.correct_text)
+        if challenge_start < 0:
             raise ValueError(f"grammar_span_not_in_article:{index}")
+        if paragraph.count(draft.correct_text) != 1:
+            raise ValueError(f"grammar_replacement_not_unique:{index}")
+        start, analysis_text = _sentence_containing(paragraph, challenge_start)
         span = SourceSpan(
             source_id=f"personalized_p_{draft.paragraph_index + 1:02d}",
             source_version=article_artifact.content_hash,
             start=start,
-            end=start + len(draft.correct_text),
-            text_quote=draft.correct_text,
+            end=start + len(analysis_text),
+            text_quote=analysis_text,
+        )
+        construction = load_grammar_catalog().by_id(draft.construction_id)
+        role_spans = (
+            _concession_role_spans(
+                paragraph=paragraph,
+                sentence_start=start,
+                sentence=analysis_text,
+                source_id=span.source_id,
+                source_version=span.source_version,
+            )
+            if draft.construction_id == "clause.adverbial.concession.although.v1"
+            else ()
         )
         results.append(
             GrammarAnalysisArtifact(
@@ -359,18 +406,26 @@ def build_grammar_artifacts(
                     generation_inputs_hash=stable_content_hash(
                         {
                             "article_hash": article_artifact.content_hash,
-                            "structure": draft.structure_key,
+                            "construction_id": draft.construction_id,
+                            "construction_version": construction.version,
                         }
                     ),
                     content_hash=stable_content_hash(draft),
                     source_spans=(span,),
                     producer_version="personalized-assessment-v1",
                 ),
-                structure_key=draft.structure_key,
+                construction_id=draft.construction_id,
+                construction_version=construction.version,
+                target_facets=tuple(draft.target_facets),
                 span=span,
+                role_spans=role_spans,
+                form=construction.form,
+                meaning=construction.meaning,
+                use=construction.use,
                 explanation=draft.explanation,
                 parser_id="model_candidate_unverified",
                 parser_version="v1",
+                parser_evidence=construction.parser_signatures,
                 confidence=0.5,
                 status="review_required",
                 alternatives=(),
@@ -388,9 +443,17 @@ def build_transfer_artifacts(
     assessment: PersonalizedAssessmentOutput,
 ) -> tuple[TransferContract, ExpressionTaskArtifact]:
     article_artifact = ContentArtifact.model_validate(article["artifact"])
-    target_ids = objective.target_discourse_moves or objective.reading_skill_targets
-    if assessment.transfer.target_argument_move not in target_ids:
+    discourse_targets = objective.target_discourse_moves or objective.reading_skill_targets
+    if assessment.transfer.target_argument_move not in discourse_targets:
         raise ValueError("transfer_task_target_mismatch")
+    target_ids = tuple(
+        dict.fromkeys(
+            (
+                *discourse_targets,
+                *(target.construction_id for target in objective.target_grammar_structures),
+            )
+        )
+    )
     reading_refs = tuple(question.artifact.artifact_id for question in questions)
     transfer_id = f"{material_id}_transfer"
     transfer = TransferContract(
@@ -523,6 +586,9 @@ def persisted_grammar(
         "correct_text": draft.correct_text,
         "incorrect_text": draft.incorrect_text,
         "error_type": draft.error_type,
+        "construction_id": annotation.construction_id,
+        "construction_version": annotation.construction_version,
+        "tested_facet": annotation.target_facets[0].value,
         "hint": draft.hint,
         "analysis": annotation.model_dump(mode="json"),
     }
@@ -581,9 +647,59 @@ def _evidence_excerpt(paragraph: str) -> str:
     return sentence
 
 
-def _sentence_with(paragraph: str, marker: str) -> str:
-    start = paragraph.find(marker)
-    if start < 0:
-        return _evidence_excerpt(paragraph)
-    end = paragraph.find(".", start)
-    return paragraph[start:] if end < 0 else paragraph[start : end + 1]
+def _sentence_containing(paragraph: str, offset: int) -> tuple[int, str]:
+    start = paragraph.rfind(".", 0, offset)
+    start = 0 if start < 0 else start + 1
+    while start < len(paragraph) and paragraph[start].isspace():
+        start += 1
+    end = paragraph.find(".", offset)
+    end = len(paragraph) if end < 0 else end + 1
+    sentence = paragraph[start:end]
+    if not sentence:
+        raise ValueError("grammar_analysis_sentence_missing")
+    return start, sentence
+
+
+def _concession_role_spans(
+    *,
+    paragraph: str,
+    sentence_start: int,
+    sentence: str,
+    source_id: str,
+    source_version: str,
+) -> tuple[GrammarRoleSpan, ...]:
+    comma = sentence.find(",")
+    if comma < 0:
+        return ()
+    subordinate = sentence[:comma]
+    main_local_start = comma + 1
+    while main_local_start < len(sentence) and sentence[main_local_start].isspace():
+        main_local_start += 1
+    main = sentence[main_local_start:]
+    if not subordinate or not main:
+        return ()
+    roles = (
+        GrammarRoleSpan(
+            role="concessive_clause",
+            span=SourceSpan(
+                source_id=source_id,
+                source_version=source_version,
+                start=sentence_start,
+                end=sentence_start + len(subordinate),
+                text_quote=subordinate,
+            ),
+        ),
+        GrammarRoleSpan(
+            role="main_clause",
+            span=SourceSpan(
+                source_id=source_id,
+                source_version=source_version,
+                start=sentence_start + main_local_start,
+                end=sentence_start + main_local_start + len(main),
+                text_quote=main,
+            ),
+        ),
+    )
+    if all(validate_source_span(role.span, paragraph) for role in roles):
+        return roles
+    raise ValueError("grammar_role_span_invalid")

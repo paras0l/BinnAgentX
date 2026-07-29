@@ -140,3 +140,6 @@ def test_syntax_low_confidence_is_review_required_not_resolved() -> None:
 
     assert result.status is AnalysisStatus.REVIEW_REQUIRED
     assert result.reason_code == "syntax_confidence_below_threshold"
+    assert result.construction_candidates[0].construction_id == (
+        "clause.adverbial.concession.although.v1"
+    )
