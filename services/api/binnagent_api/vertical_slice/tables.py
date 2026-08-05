@@ -232,6 +232,7 @@ task_annotations = sa.Table(
     sa.Column("text_quote", sa.Text(), nullable=False),
     sa.Column("text_hash", sa.String(64), nullable=False),
     sa.Column("user_explanation", sa.Text(), nullable=False),
+    sa.Column("analysis_snapshot", postgresql.JSONB(), nullable=True),
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
 )
 task_grammar_challenges = sa.Table(
@@ -487,6 +488,19 @@ learner_grammar_states = sa.Table(
     sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
 )
 
+learner_vocabulary_states = sa.Table(
+    "learner_vocabulary_states",
+    metadata,
+    sa.Column("learner_id", sa.String(128), primary_key=True),
+    sa.Column("dictionary_version", sa.String(64), primary_key=True),
+    sa.Column("word_sequence", sa.Integer(), primary_key=True),
+    sa.Column("headword", sa.String(80), nullable=False),
+    sa.Column("learning_count", sa.Integer(), nullable=False),
+    sa.Column("first_learned_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("last_learned_at", sa.DateTime(timezone=True), nullable=False),
+    sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+)
+
 agent_memory_events = sa.Table(
     "agent_memory_events",
     metadata,
@@ -654,6 +668,7 @@ personalized_training_materials = sa.Table(
     sa.Column("paragraphs", postgresql.JSONB(), nullable=False),
     sa.Column("focus_points", postgresql.JSONB(), nullable=False),
     sa.Column("source_context_ids", postgresql.JSONB(), nullable=False),
+    sa.Column("source_kind", sa.String(32), nullable=False),
     sa.Column("status", sa.String(32), nullable=False),
     sa.Column("generation_attempt_count", sa.Integer(), nullable=False),
     sa.Column("generation_error_code", sa.String(128), nullable=True),

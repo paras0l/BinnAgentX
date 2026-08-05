@@ -616,20 +616,77 @@ test("first experience opens the reading and output workspace", async ({ page })
   await page.route(
     "**/api/learner/v1/tasks/task_browser_0001/annotations/analyze",
     async (route) => {
+      const requestBody = route.request().postDataJSON() as {
+        analysis_mode?: string;
+        follow_up?: { question: string };
+      };
+      const intensive = requestBody.analysis_mode === "intensive_reading";
       await route.fulfill({
         status: 200,
         contentType: "application/json",
         body: JSON.stringify({
           analysis_id: "annotation_analysis_browser_0001",
+          analysis_status: intensive ? "review_required" : "abstained",
+          confidence: intensive ? 0.82 : null,
+          provider_ref: intensive ? "model:e2e" : null,
           focus: "syntax",
           selection_scope: "sentence_or_paragraph",
           translation: "一家社区图书馆改变了最繁忙时段自习室的共享方式。",
           vocabulary_note: null,
+          learning_count: null,
           grammar_structure: [
             "主干：A neighborhood library changed how...",
             "宾语从句：how its study rooms were shared",
             "时间状语：during the busiest hour",
           ],
+          sentence_components: intensive
+            ? [
+                {
+                  role: "subject",
+                  start: 0,
+                  end: 22,
+                  text_quote: "A neighborhood library",
+                  explanation: "changed 的动作发出者。",
+                },
+              ]
+            : [],
+          grammar_points: [],
+          collocations: [],
+          familiar_word_senses: [],
+          translation_review: intensive
+            ? {
+                summary: "主干方向正确，但要保留 how 从句表达的共享方式。",
+                strengths: ["已经识别出图书馆是动作发出者。"],
+                issues: [
+                  {
+                    kind: "scope",
+                    source_quote: "how its study rooms were shared",
+                    learner_excerpt: "共享自习室",
+                    explanation: "how 引导的内容是 changed 的宾语，重点是共享方式如何改变。",
+                    suggestion: "把“共享方式”保留为 changed 的对象。",
+                  },
+                ],
+              }
+            : null,
+          knowledge_cards: intensive
+            ? [
+                {
+                  category: "grammar",
+                  title: "how 引导的宾语从句",
+                  source_quote: "how its study rooms were shared",
+                  rule: "how 从句可以说明动作涉及的方式。",
+                  explanation: "这里整个从句作 changed 的宾语。",
+                  check_question: "changed 在本句改变的究竟是什么？",
+                },
+              ]
+            : [],
+          follow_up_answer: requestBody.follow_up
+            ? {
+                answer: "因为 how 从句整体回答 changed 改变了什么，而不是只修饰 rooms。",
+                evidence_quotes: ["changed how its study rooms were shared"],
+                next_questions: ["如何快速找到这个宾语从句的边界？"],
+              }
+            : null,
           diagnosis: "这个卡点更像是主干和修饰层级混在了一起。",
           breakdown: ["先找谓语和主语。", "暂时拿掉修饰语。", "再逐层放回原句。"],
           next_check: "去掉修饰后，你能否说出谁做了什么？",
@@ -794,15 +851,30 @@ test("first experience opens the reading and output workspace", async ({ page })
   await expect(page.getByRole("tab", { name: /临时任务.*0.*0/ })).toBeVisible();
   await expect(page.getByText(/正确答案|完整解析/)).toHaveCount(0);
 
-  await page.getByRole("button", { name: "加入临时任务" }).click();
-  await expect(page.getByRole("heading", { name: "把突然出现的练习先接住" })).toBeVisible();
+  const readingActions = page.getByRole("toolbar", { name: "阅读快捷操作" });
+  await readingActions.getByRole("button", { name: "切换正文字号，当前标准" }).click();
+  await expect(
+    readingActions.getByRole("button", { name: "切换正文字号，当前较大" }),
+  ).toBeVisible();
+  await expect(page.locator(".reading-copy")).toHaveClass(/reading-scale-large/);
+  await readingActions.getByRole("button", { name: "进入专注阅读" }).click();
+  await expect(page.getByRole("heading", { name: "A Quiet Hour at the Library" })).toBeHidden();
+  await expect(readingActions.getByRole("button", { name: "退出专注阅读" })).toBeVisible();
+  await readingActions.getByRole("button", { name: "退出专注阅读" }).click();
+  await expect(page.getByRole("heading", { name: "A Quiet Hour at the Library" })).toBeVisible();
+
+  await page.getByRole("button", { name: "新建临时任务" }).click();
+  await expect(page.getByRole("heading", { name: "自主加练" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "整句精读" })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "标注自查" })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "方法迁移" })).toHaveCount(0);
   await expect(page.getByRole("list", { name: "临时任务列表" }).getByRole("listitem")).toHaveCount(
     1,
   );
   await page.getByLabel("临时任务 1 的回答").fill("规则变化让更多学生使用现有空间。");
   await page.getByRole("button", { name: "完成并查看自检" }).click();
   await expect(page.getByText("迁移尝试已记录")).toBeVisible();
-  await page.getByRole("button", { name: "+ 新增一个临时任务" }).click();
+  await page.getByRole("button", { name: "+ 新增临时任务" }).click();
   await expect(page.getByRole("list", { name: "临时任务列表" }).getByRole("listitem")).toHaveCount(
     2,
   );
@@ -810,7 +882,70 @@ test("first experience opens the reading and output workspace", async ({ page })
   await page.getByLabel("临时任务 2 的回答").fill("只有开放时段覆盖晚间，自习空间才真正可用。");
   await page.getByRole("button", { name: "完成并查看自检" }).click();
   await expect(page.getByRole("tab", { name: /临时任务.*已完成 2 个，共 2 个/ })).toBeVisible();
-  await page.getByRole("button", { name: "返回主任务" }).click();
+  await page.getByRole("tab", { name: "本步任务" }).click();
+
+  const intensiveParagraph = page.locator('[data-paragraph-id="calibration_a_p1"]');
+  await intensiveParagraph.evaluate((element) => {
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    const textNode = walker.nextNode();
+    if (!textNode) throw new Error("Expected paragraph text node");
+    const range = document.createRange();
+    range.setStart(textNode, 0);
+    range.setEnd(textNode, Math.min(24, textNode.textContent?.length ?? 0));
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  });
+  await intensiveParagraph.dispatchEvent("mouseup");
+  await page.getByRole("button", { name: "仍没看懂" }).click();
+  await expect(page.getByRole("heading", { name: "整句精读" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /先自己拆，再核对/ })).toBeVisible();
+  await expect(page.getByRole("tab", { name: /临时任务.*已完成 2 个，共 3 个/ })).toBeVisible();
+
+  const intensiveSentence = page.getByLabel("当前精读完整句");
+  await intensiveSentence.evaluate((element) => {
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT);
+    const textNode = walker.nextNode();
+    if (!textNode) throw new Error("Expected intensive sentence text node");
+    const range = document.createRange();
+    range.setStart(textNode, 0);
+    range.setEnd(textNode, 22);
+    const selection = window.getSelection();
+    selection?.removeAllRanges();
+    selection?.addRange(range);
+  });
+  await intensiveSentence.dispatchEvent("mouseup");
+  await page.getByRole("button", { name: "主语", exact: true }).click();
+  await page.getByLabel("我的整句翻译").fill("一家社区图书馆改变了自习室的共享方式。");
+  await page.getByRole("button", { name: "查看识别内容" }).click();
+  await expect(page.getByRole("heading", { name: "翻译诊断" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "知识卡片" })).toBeVisible();
+  await expect(page.getByRole("group", { name: "句子成分参考划分" })).toBeVisible();
+  const subjectReferenceMark = page.getByRole("button", {
+    name: /主语：A neighborhood library，点击追问/,
+  });
+  await subjectReferenceMark.hover();
+  await expect(subjectReferenceMark.locator("small")).toBeVisible();
+  await page.getByRole("button", { name: /how 引导的宾语从句/ }).click();
+  await page.getByLabel("围绕这处继续问").fill("为什么整个 how 从句都是宾语？");
+  await page.getByRole("button", { name: "发送追问" }).click();
+  await expect(page.getByText(/how 从句整体回答 changed 改变了什么/)).toBeVisible();
+
+  await page.getByRole("button", { name: "学习资产" }).click();
+  await page.getByRole("button", { name: "继续当前训练" }).click();
+  await expect(page.getByRole("heading", { name: /先自己拆，再核对/ })).toBeVisible();
+  await page.getByRole("button", { name: "返回全文" }).click();
+  await page.getByRole("tab", { name: /临时任务.*已完成 3 个，共 3 个/ }).click();
+  await expect(page.getByText(/how 从句整体回答 changed 改变了什么/)).toHaveCount(0);
+  const intensiveTemporaryTask = page.getByRole("button", {
+    name: /整句精读：第 1 段/,
+  });
+  await intensiveTemporaryTask.click();
+  await intensiveTemporaryTask.click();
+  await expect(page.getByRole("heading", { name: /先自己拆，再核对/ })).toBeVisible();
+  await expect(page.getByText(/how 从句整体回答 changed 改变了什么/)).toBeVisible();
+  await page.getByRole("button", { name: "返回全文" }).click();
+  await page.getByRole("tab", { name: "本步任务" }).click();
 
   await page.getByRole("button", { name: /不知道怎么想/ }).click();
   await expect(page.getByText("方法示例，不对应当前题目；不会给出当前答案。")).toBeVisible();
@@ -840,13 +975,17 @@ test("first experience opens the reading and output workspace", async ({ page })
   await expect(page.getByText("下一步自查", { exact: true })).toBeVisible();
   await expect(page.getByText("分析指引（已拒答）")).toBeVisible();
   await expect(page.getByText(/本地保守分析|模型暂不可用/)).toHaveCount(0);
-  await expect(page.getByRole("tab", { name: /临时任务.*已完成 2 个，共 3 个/ })).toBeVisible();
+  await expect(page.getByRole("tab", { name: /临时任务.*已完成 3 个，共 4 个/ })).toBeVisible();
   await page.getByRole("button", { name: "保存标注与分析" }).click();
 
   await expect(page.getByText("1 条 · 原文中的痕迹也已保留")).toBeVisible();
+  await page.getByRole("button", { name: /语法重点 第 1 段/ }).click();
   await expect(page.getByText(/请优先给出当前选区的完整中文翻译/)).toBeVisible();
   await expect(page.getByRole("button", { name: /语法重点.*标记/ }).first()).toBeVisible();
   await page.getByRole("button", { name: "返回本步任务" }).click();
+  await page.getByRole("tab", { name: /临时任务.*共 4 个/ }).click();
+  await expect(page.getByRole("heading", { name: "标注自查" })).toBeVisible();
+  await page.getByRole("tab", { name: "本步任务" }).click();
 
   await page.getByRole("radio", { name: /B It helped/ }).check();
   await page.getByLabel(/^我的解释/).fill("The change helped more students use the rooms.");

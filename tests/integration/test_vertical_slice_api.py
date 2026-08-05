@@ -92,6 +92,7 @@ async def _clean() -> None:
     ordered = [
         tables.learner_sessions,
         tables.learner_preferences,
+        tables.learner_vocabulary_states,
         tables.experience_code_redemptions,
         tables.email_verification_challenges,
         tables.audit_events,
@@ -589,6 +590,7 @@ async def test_stale_write_returns_only_public_conflict_details() -> None:
                     "text_quote": quote,
                 },
                 "user_explanation": "It supports the claim.",
+                "analysis": None,
                 "created_at": annotation_payload["annotations"][0]["created_at"],
             }
         ]
@@ -672,6 +674,7 @@ async def test_annotation_question_can_request_audited_ai_analysis_without_mutat
         assert payload["selection_scope"] == "sentence_or_paragraph"
         assert payload["translation"] is None
         assert payload["vocabulary_note"] is None
+        assert payload["learning_count"] is None
         assert len(payload["grammar_structure"]) == 3
         assert payload["source"] == "local_fallback"
         assert payload["analysis_status"] == "abstained"
@@ -714,6 +717,22 @@ async def test_annotation_question_can_request_audited_ai_analysis_without_mutat
         assert unchanged.json()["version"] == task["version"]
         assert unchanged.json()["annotation_count"] == 0
 
+        saved = await client.post(
+            f"/learner/v1/tasks/{task['task_id']}/annotations",
+            headers={"Idempotency-Key": "annotation-with-analysis-0001"},
+            json={
+                "expected_version": task["version"],
+                "kind": "grammar",
+                "span": request_body["span"],
+                "user_explanation": "我想核对这处长句结构。",
+                "analysis": payload,
+            },
+        )
+        assert saved.status_code == 200, saved.text
+        saved_analysis = saved.json()["annotations"][0]["analysis"]
+        assert saved_analysis["diagnosis"] == payload["diagnosis"]
+        assert saved_analysis["next_check"] == payload["next_check"]
+
     async with get_engine().connect() as connection:
         invocation = (
             (
@@ -728,6 +747,182 @@ async def test_annotation_question_can_request_audited_ai_analysis_without_mutat
         )
         assert invocation["purpose"] == "annotation_confusion_analysis"
         assert invocation["is_remote"] is False
+
+
+@pytest.mark.asyncio
+async def test_intensive_reading_requires_translation_and_component_attempts() -> None:
+    transport = httpx2.ASGITransport(app=create_app())
+    async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
+        task = await _seed_task(
+            TaskType.MATCHED_READING,
+            exam_track=ExamTrack.ENGLISH_2,
+            self_reported_level=SelfReportedLevel.WEAK,
+        )
+        material = content_catalog.learner_item("matched_reading_01_v1")
+        paragraph = material["paragraphs"][1]
+        paragraph_text = str(paragraph["text"])
+        quote = "Useful effort can reveal exactly where understanding breaks down"
+        start = paragraph_text.index(quote)
+        request_body = {
+            "expected_version": task["version"],
+            "span": {
+                "paragraph_id": paragraph["paragraph_id"],
+                "start": start,
+                "end": start + len(quote),
+                "text_quote": quote,
+                "text_hash": sha256(quote.encode()).hexdigest(),
+            },
+            "learner_question": "请核对我的整句翻译和自主成分标记。",
+            "analysis_mode": "intensive_reading",
+        }
+        endpoint = f"/learner/v1/tasks/{task['task_id']}/annotations/analyze"
+
+        missing_attempt = await client.post(endpoint, json=request_body)
+        assert missing_attempt.status_code == 422, missing_attempt.text
+        assert missing_attempt.json()["reason"] == "intensive_reading_attempt_required"
+
+        invalid_mark = await client.post(
+            endpoint,
+            json={
+                **request_body,
+                "learner_translation": "有效的努力能揭示理解究竟在哪里中断。",
+                "learner_component_marks": [
+                    {"role": "subject", "start": 0, "end": 6, "text_quote": "Invalid"}
+                ],
+            },
+        )
+        assert invalid_mark.status_code == 422, invalid_mark.text
+        assert invalid_mark.json()["reason"] == "intensive_reading_component_span_invalid"
+
+        valid_attempt = await client.post(
+            endpoint,
+            json={
+                **request_body,
+                "learner_translation": "有效的努力能揭示理解究竟在哪里中断。",
+                "learner_component_marks": [
+                    {"role": "subject", "start": 0, "end": 13, "text_quote": "Useful effort"}
+                ],
+            },
+        )
+        assert valid_attempt.status_code == 200, valid_attempt.text
+        payload = valid_attempt.json()
+        assert payload["sentence_components"] == []
+        assert payload["grammar_points"] == []
+        assert payload["collocations"] == []
+        assert payload["familiar_word_senses"] == []
+        assert payload["translation_review"]["issues"] == []
+        assert payload["knowledge_cards"] == []
+        assert payload["follow_up_answer"] is None
+
+        follow_up = await client.post(
+            endpoint,
+            json={
+                **request_body,
+                "learner_translation": "有效的努力能揭示理解究竟在哪里中断。",
+                "learner_component_marks": [
+                    {"role": "subject", "start": 0, "end": 13, "text_quote": "Useful effort"}
+                ],
+                "follow_up": {
+                    "target_kind": "component_comparison",
+                    "target_label": "主语边界",
+                    "target_content": "Useful effort",
+                    "question": "为什么主语边界到 effort 结束?",
+                },
+            },
+        )
+        assert follow_up.status_code == 200, follow_up.text
+        follow_up_payload = follow_up.json()["follow_up_answer"]
+        assert follow_up_payload is not None
+        assert follow_up_payload["evidence_quotes"] == [quote]
+
+        unchanged = await client.get(f"/learner/v1/tasks/{task['task_id']}")
+        assert unchanged.json()["version"] == task["version"]
+
+
+@pytest.mark.asyncio
+async def test_word_annotation_uses_local_5530_dictionary_without_model_tokens() -> None:
+    transport = httpx2.ASGITransport(app=create_app())
+    async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
+        task = await _seed_task(
+            TaskType.MATCHED_READING,
+            exam_track=ExamTrack.ENGLISH_2,
+            self_reported_level=SelfReportedLevel.WEAK,
+        )
+        material = content_catalog.learner_item("matched_reading_01_v1")
+        paragraph = material["paragraphs"][1]
+        paragraph_text = str(paragraph["text"])
+        quote = "effort"
+        start = paragraph_text.index(quote)
+
+        request_body = {
+            "expected_version": task["version"],
+            "span": {
+                "paragraph_id": paragraph["paragraph_id"],
+                "start": start,
+                "end": start + len(quote),
+                "text_quote": quote,
+                "text_hash": sha256(quote.encode()).hexdigest(),
+            },
+            "learner_question": "这个生词是什么意思?",
+        }
+        endpoint = f"/learner/v1/tasks/{task['task_id']}/annotations/analyze"
+        analysis = await client.post(endpoint, json=request_body)
+
+        assert analysis.status_code == 200, analysis.text
+        payload = analysis.json()
+        assert payload["analysis_status"] == "resolved"
+        assert payload["focus"] == "vocabulary"
+        assert payload["source"] == "local_dictionary"
+        assert payload["reason_code"] == "annotation_analysis_dictionary_hit"
+        assert payload["provider_ref"].startswith("dictionary:netem-5530-v1:")
+        assert "核心义与考研用法" in payload["vocabulary_note"]
+        assert payload["learning_count"] == 1
+
+        second = await client.post(
+            endpoint,
+            json={**request_body, "learner_question": "再看一次这个词的常用搭配。"},
+        )
+        assert second.status_code == 200, second.text
+        assert second.json()["learning_count"] == 2
+
+        replayed = await client.post(endpoint, json=request_body)
+        assert replayed.status_code == 200, replayed.text
+        assert replayed.json()["learning_count"] == 2
+
+    async with get_engine().connect() as connection:
+        invocations = (
+            (
+                await connection.execute(
+                    sa.select(tables.model_invocations)
+                    .where(tables.model_invocations.c.task_id == task["task_id"])
+                    .order_by(tables.model_invocations.c.created_at)
+                )
+            )
+            .mappings()
+            .all()
+        )
+        workflow = (
+            (
+                await connection.execute(
+                    sa.select(tables.workflow_runs).where(
+                        tables.workflow_runs.c.workflow_run_id
+                        == task["task_id"].replace("task_", "workflow_run_")
+                    )
+                )
+            )
+            .mappings()
+            .one()
+        )
+        vocabulary_state = (
+            (await connection.execute(sa.select(tables.learner_vocabulary_states))).mappings().one()
+        )
+        assert len(invocations) == 2
+        assert all(item["outcome"] == "validated_local_resource" for item in invocations)
+        assert all(item["is_remote"] is False for item in invocations)
+        assert all(item["actual_cost_usd"] == 0 for item in invocations)
+        assert vocabulary_state["headword"] == "effort"
+        assert vocabulary_state["learning_count"] == 2
+        assert workflow["model_call_count"] == 0
 
 
 @pytest.mark.asyncio

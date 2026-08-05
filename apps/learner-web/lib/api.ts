@@ -356,6 +356,7 @@ export interface PersonalizedTrainingMaterial {
   paragraphs: string[];
   focus_points: string[];
   source_context_count: number;
+  source_kind: "agent_generated" | "imported";
   training_eligible: boolean;
   start_block_reason:
     | "calibration_required"
@@ -370,10 +371,12 @@ export interface PersonalizedTrainingMaterial {
     | "semantic_reviewed"
     | "rejected"
     | "unverified_legacy";
+  failure_reason: string | null;
   status:
     | "requested"
     | "generating"
     | "validating"
+    | "awaiting_review"
     | "ready"
     | "in_progress"
     | "completed"
@@ -397,6 +400,12 @@ export interface PersonalizedMaterialGenerationInput {
   >;
 }
 
+export interface ImportedTrainingArticleInput {
+  title: string;
+  content: string;
+  goal: string;
+}
+
 export function listTrainingMaterials(): Promise<PersonalizedTrainingMaterial[]> {
   return request<PersonalizedTrainingMaterial[]>("/v1/training-materials");
 }
@@ -405,6 +414,15 @@ export function generatePersonalizedTrainingMaterial(
   input: PersonalizedMaterialGenerationInput,
 ): Promise<PersonalizedTrainingMaterial> {
   return request<PersonalizedTrainingMaterial>("/v1/training-materials/personalized", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function importTrainingArticle(
+  input: ImportedTrainingArticleInput,
+): Promise<PersonalizedTrainingMaterial> {
+  return request<PersonalizedTrainingMaterial>("/v1/training-materials/imported", {
     method: "POST",
     body: JSON.stringify(input),
   });
@@ -533,6 +551,7 @@ export async function saveAnnotation(
   kind: AnnotationKind,
   selection: TextSelection,
   explanation: string,
+  analysis: AnnotationAnalysisView | null = null,
 ): Promise<LearnerTaskView> {
   return command(`/v1/tasks/${task.task_id}/annotations`, "save_annotation", {
     expected_version: task.version,
@@ -545,6 +564,7 @@ export async function saveAnnotation(
       text_hash: await sha256Text(selection.textQuote),
     },
     user_explanation: explanation,
+    analysis,
   });
 }
 
@@ -552,6 +572,21 @@ export async function analyzeAnnotation(
   task: LearnerTaskView,
   selection: TextSelection,
   learnerQuestion: string,
+  intensiveContext?: {
+    learnerTranslation: string;
+    learnerComponentMarks: Array<{
+      role: string;
+      start: number;
+      end: number;
+      textQuote: string;
+    }>;
+    followUp?: {
+      targetKind: "translation_issue" | "knowledge_card" | "component_comparison" | "explanation";
+      targetLabel: string;
+      targetContent: string;
+      question: string;
+    };
+  },
 ): Promise<AnnotationAnalysisView> {
   return request(`/v1/tasks/${task.task_id}/annotations/analyze`, {
     method: "POST",
@@ -565,6 +600,28 @@ export async function analyzeAnnotation(
         text_hash: await sha256Text(selection.textQuote),
       },
       learner_question: learnerQuestion,
+      ...(intensiveContext
+        ? {
+            analysis_mode: "intensive_reading",
+            learner_translation: intensiveContext.learnerTranslation,
+            learner_component_marks: intensiveContext.learnerComponentMarks.map((mark) => ({
+              role: mark.role,
+              start: mark.start,
+              end: mark.end,
+              text_quote: mark.textQuote,
+            })),
+            ...(intensiveContext.followUp
+              ? {
+                  follow_up: {
+                    target_kind: intensiveContext.followUp.targetKind,
+                    target_label: intensiveContext.followUp.targetLabel,
+                    target_content: intensiveContext.followUp.targetContent,
+                    question: intensiveContext.followUp.question,
+                  },
+                }
+              : {}),
+          }
+        : {}),
     }),
   });
 }

@@ -7,6 +7,7 @@ import {
   dismissCalibrationSummary,
   loadExperience,
   loadLearnerPreferences,
+  recordTemporaryTask,
   saveExperienceProfile,
 } from "./experience-storage";
 
@@ -71,6 +72,20 @@ describe("learner experience storage", () => {
     if (stored.preferences) stored.preferences.skin = "sakura";
     localStorage.setItem(key, JSON.stringify(stored));
 
+    expect(loadExperience(learnerId)?.preferences.skin).toBe("ragdoll");
+  });
+
+  it("increments temporary tasks from current state without restoring a stale skin", () => {
+    const stored = saveExperienceProfile(learnerId, profile);
+    const current = {
+      ...stored,
+      preferences: { ...stored.preferences, skin: "ragdoll" as const },
+    };
+
+    const next = recordTemporaryTask(learnerId, current);
+
+    expect(next?.temporaryTasksCompleted).toBe(1);
+    expect(next?.preferences.skin).toBe("ragdoll");
     expect(loadExperience(learnerId)?.preferences.skin).toBe("ragdoll");
   });
 });

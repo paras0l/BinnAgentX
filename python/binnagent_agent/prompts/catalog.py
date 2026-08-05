@@ -53,7 +53,7 @@ DEFAULT_PROMPT_REGISTRY = PromptRegistry(
                 "learner_question",
                 "output_schema",
             ),
-            model_policy={"temperature": 0.1, "max_tokens": 1200},
+            model_policy={"temperature": 0.1, "max_tokens": 2400},
         ),
         PromptDefinition(
             prompt_id="expression.priority_feedback",

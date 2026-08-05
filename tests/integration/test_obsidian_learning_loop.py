@@ -387,6 +387,55 @@ async def test_personalized_material_requires_matching_obsidian_context() -> Non
 
 
 @pytest.mark.asyncio
+async def test_imported_article_skips_article_generation_and_uses_existing_pipeline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def reject_article_generation(*args: object, **kwargs: object) -> None:
+        raise AssertionError("imported article must not call the article generator")
+
+    monkeypatch.setattr(
+        "binnagent_api.personalized_material_service.generate_personalized_reading",
+        reject_article_generation,
+    )
+    paragraphs = [
+        "A careful reader distinguishes a claim from the evidence offered for it.",
+        "That distinction matters when an argument includes a concession.",
+        "The reader can then transfer the same operation to an unfamiliar text.",
+    ]
+    transport = httpx2.ASGITransport(app=create_app())
+    async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
+        imported = await client.post(
+            "/learner/v1/training-materials/imported",
+            json={
+                "title": "A Reader's Transfer",
+                "content": "\n\n".join(paragraphs),
+                "goal": "练习主旨判断",
+            },
+        )
+        assert imported.status_code == 202, imported.text
+        payload = imported.json()
+        assert payload["source_kind"] == "imported"
+        assert payload["paragraphs"] == paragraphs
+        assert payload["status"] == "requested"
+
+        result = await process_personalized_material(payload["material_id"])
+        async with get_engine().connect() as connection:
+            generation_error = await connection.scalar(
+                sa.select(tables.personalized_training_materials.c.generation_error_code).where(
+                    tables.personalized_training_materials.c.material_id == payload["material_id"]
+                )
+            )
+        assert result == "ready", generation_error
+        queued = await client.get("/learner/v1/training-materials")
+        ready = next(
+            item for item in queued.json() if item["material_id"] == payload["material_id"]
+        )
+        assert ready["source_kind"] == "imported"
+        assert ready["paragraphs"] == paragraphs
+        assert ready["quality_status"] == "semantic_reviewed"
+
+
+@pytest.mark.asyncio
 async def test_organizer_captures_atomic_source_and_requires_review_before_commit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1441,6 +1490,7 @@ async def test_bidirectional_sync_personalized_reading_and_annotation_export(
             item for item in failed_queue.json() if item["material_id"] == due_material_id
         )
         assert failed["status"] == "generation_failed"
+        assert failed["failure_reason"] == "个性化材料生成失败, 已达到最大尝试次数"
         assert await enqueue_due_personalized_material() is False
 
         retried = await client.post(f"/learner/v1/training-materials/{due_material_id}/retry")

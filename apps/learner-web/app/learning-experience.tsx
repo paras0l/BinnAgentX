@@ -39,6 +39,8 @@ import {
   getKnowledgeVaultStatus,
   getObsidianPluginSyncStatus,
   generatePersonalizedTrainingMaterial,
+  importTrainingArticle,
+  type ImportedTrainingArticleInput,
   type PersonalizedMaterialGenerationInput,
   LearnerApiError,
   listLearningAssets,
@@ -250,15 +252,21 @@ export function LearningExperience({
 
   useEffect(() => {
     const pending = trainingMaterials.some((material) =>
-      ["requested", "generating", "validating"].includes(material.status),
+      ["requested", "generating", "validating", "awaiting_review"].includes(material.status),
     );
     if (!pending) return;
-    const timer = window.setInterval(() => {
+    let active = true;
+    const timer = window.setTimeout(() => {
       void listTrainingMaterials()
-        .then(setTrainingMaterials)
+        .then((materials) => {
+          if (active) setTrainingMaterials(materials);
+        })
         .catch(() => undefined);
     }, 2000);
-    return () => window.clearInterval(timer);
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
   }, [trainingMaterials]);
 
   const refreshVaultStatus = useCallback(() => {
@@ -480,7 +488,7 @@ export function LearningExperience({
   );
 
   const completeTemporaryTask = useCallback(() => {
-    setExperience(recordTemporaryTask(identity.learner_id));
+    setExperience((current) => recordTemporaryTask(identity.learner_id, current));
   }, [identity.learner_id]);
 
   const captureLearningAsset = useCallback((input: LearningAssetInput) => {
@@ -498,6 +506,20 @@ export function LearningExperience({
     setIsGeneratingMaterial(true);
     setError(null);
     void generatePersonalizedTrainingMaterial(input)
+      .then((material) => {
+        setTrainingMaterials((current) => [
+          material,
+          ...current.filter((item) => item.material_id !== material.material_id),
+        ]);
+      })
+      .catch((reason: unknown) => setError(errorMessage(reason)))
+      .finally(() => setIsGeneratingMaterial(false));
+  }, []);
+
+  const importArticle = useCallback((input: ImportedTrainingArticleInput) => {
+    setIsGeneratingMaterial(true);
+    setError(null);
+    void importTrainingArticle(input)
       .then((material) => {
         setTrainingMaterials((current) => [
           material,
@@ -720,7 +742,11 @@ export function LearningExperience({
   } else if (workspace && surface === "training") {
     content = (
       <LearningWorkspace
-        key={workspace.task?.task_id ?? workspace.run.stage}
+        key={
+          workspace.task
+            ? `${workspace.task.task_id}:${workspace.task.current_content_version_id}`
+            : workspace.run.stage
+        }
         workspace={workspace}
         onWorkspaceChange={replaceWorkspace}
         onTaskChange={replaceTask}
@@ -754,6 +780,7 @@ export function LearningExperience({
         obsidianConfigured={Boolean(pluginSyncStatus?.paired && pluginSyncStatus.last_synced_at)}
         isGeneratingMaterial={isGeneratingMaterial}
         onGenerateMaterial={generateTrainingMaterial}
+        onImportArticle={importArticle}
         onRetryMaterial={retryTrainingMaterial}
         onConfigureObsidian={() => {
           setConfigureObsidianRequested(true);
@@ -1096,6 +1123,7 @@ interface LearningHomeProps {
   onContinueSession: (session: CompletedSessionRecord) => void;
   onStartFirst: () => void;
   onGenerateMaterial: (input: PersonalizedMaterialGenerationInput) => void;
+  onImportArticle: (input: ImportedTrainingArticleInput) => void;
   onRetryMaterial: (material: PersonalizedTrainingMaterial) => void;
   onConfigureObsidian: () => void;
   onOpenTrainingMaterial: (material: PersonalizedTrainingMaterial) => void;
@@ -1124,6 +1152,7 @@ function LearningHome({
   onContinueSession,
   onStartFirst,
   onGenerateMaterial,
+  onImportArticle,
   onRetryMaterial,
   onConfigureObsidian,
   onOpenTrainingMaterial,
@@ -1249,6 +1278,7 @@ function LearningHome({
           statusLabel: hasResumableTask ? "进行中" : "系统推荐",
         }}
         onGenerate={onGenerateMaterial}
+        onImport={onImportArticle}
         onConfigureObsidian={onConfigureObsidian}
         onOpenSystemTask={openSystemTask}
         onOpenMaterial={onOpenTrainingMaterial}

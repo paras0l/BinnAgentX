@@ -30,12 +30,138 @@ class PriorityFeedbackOutput(BaseModel):
     replacement_text: None = None
 
 
+class AnchoredSentenceInsightOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text_quote: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=240),
+    ]
+    explanation: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=8, max_length=500),
+    ]
+
+
+class SentenceComponentOutput(AnchoredSentenceInsightOutput):
+    role: Literal[
+        "subject",
+        "predicate",
+        "object",
+        "predicative",
+        "attributive",
+        "adverbial",
+        "complement",
+        "appositive",
+        "connector",
+    ]
+    start: Annotated[int, Field(ge=0)]
+    end: Annotated[int, Field(ge=1)]
+
+
+class TranslationReviewIssueOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["word_meaning", "scope", "logic", "omission", "tone", "structure"]
+    source_quote: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=240),
+    ]
+    learner_excerpt: (
+        Annotated[
+            str,
+            StringConstraints(strip_whitespace=True, min_length=1, max_length=240),
+        ]
+        | None
+    ) = None
+    explanation: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=8, max_length=500),
+    ]
+    suggestion: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=4, max_length=300),
+    ]
+
+
+class TranslationReviewOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    summary: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=12, max_length=500),
+    ]
+    strengths: Annotated[
+        list[
+            Annotated[
+                str,
+                StringConstraints(strip_whitespace=True, min_length=4, max_length=240),
+            ]
+        ],
+        Field(default_factory=list, max_length=4),
+    ]
+    issues: Annotated[list[TranslationReviewIssueOutput], Field(default_factory=list, max_length=4)]
+
+
+class KnowledgeCardOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    category: Literal["grammar", "collocation", "vocabulary", "translation"]
+    title: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=2, max_length=80),
+    ]
+    source_quote: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=240),
+    ]
+    rule: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=4, max_length=400),
+    ]
+    explanation: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=8, max_length=500),
+    ]
+    check_question: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=8, max_length=300),
+    ]
+
+
+class FollowUpAnswerOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    answer: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=8, max_length=800),
+    ]
+    evidence_quotes: Annotated[
+        list[
+            Annotated[
+                str,
+                StringConstraints(strip_whitespace=True, min_length=1, max_length=240),
+            ]
+        ],
+        Field(default_factory=list, max_length=3),
+    ]
+    next_questions: Annotated[
+        list[
+            Annotated[
+                str,
+                StringConstraints(strip_whitespace=True, min_length=4, max_length=200),
+            ]
+        ],
+        Field(default_factory=list, max_length=3),
+    ]
+
+
 class AnnotationAnalysisOutput(BaseModel):
     """Validated model payload for a learner-requested reading-span analysis."""
 
     model_config = ConfigDict(extra="forbid")
 
-    schema_version: Literal["1.1.0"]
+    schema_version: Literal["1.1.0", "1.2.0", "1.3.0"]
     selection_scope: Literal["word_or_phrase", "sentence_or_paragraph"]
     focus: Literal["vocabulary", "syntax", "reference", "logic", "context", "mixed"]
     translation: (
@@ -61,6 +187,21 @@ class AnnotationAnalysisOutput(BaseModel):
         ],
         Field(max_length=6),
     ]
+    sentence_components: Annotated[
+        list[SentenceComponentOutput], Field(default_factory=list, max_length=16)
+    ]
+    grammar_points: Annotated[
+        list[AnchoredSentenceInsightOutput], Field(default_factory=list, max_length=8)
+    ]
+    collocations: Annotated[
+        list[AnchoredSentenceInsightOutput], Field(default_factory=list, max_length=8)
+    ]
+    familiar_word_senses: Annotated[
+        list[AnchoredSentenceInsightOutput], Field(default_factory=list, max_length=8)
+    ]
+    translation_review: TranslationReviewOutput | None = None
+    knowledge_cards: Annotated[list[KnowledgeCardOutput], Field(default_factory=list, max_length=8)]
+    follow_up_answer: FollowUpAnswerOutput | None = None
     diagnosis: Annotated[
         str,
         StringConstraints(strip_whitespace=True, min_length=12, max_length=400),
@@ -185,6 +326,15 @@ class AnnotationAnalysisRequest:
     fallback_translation: str | None = None
     fallback_vocabulary_note: str | None = None
     fallback_grammar_structure: tuple[str, ...] = ()
+    analysis_mode: Literal["standard", "intensive_reading"] = "standard"
+    learner_translation: str | None = None
+    learner_component_marks: tuple[tuple[str, int, int, str], ...] = ()
+    follow_up_target_kind: str | None = None
+    follow_up_target_label: str | None = None
+    follow_up_target_content: str | None = None
+    follow_up_question: str | None = None
+    dictionary_vocabulary_note: str | None = None
+    dictionary_provider_ref: str | None = None
     learner_memory: tuple[tuple[str, str], ...] = ()
 
 
@@ -231,6 +381,7 @@ class ExpressionReviewAdapter(Protocol):
 class GatewayOutcome(StrEnum):
     VALIDATED_FIXTURE = "validated_fixture"
     VALIDATED_MODEL = "validated_model"
+    VALIDATED_LOCAL_RESOURCE = "validated_local_resource"
     REMOTE_DISABLED_FALLBACK = "remote_disabled_fallback"
     BUDGET_FALLBACK = "budget_fallback"
     TIMEOUT_FALLBACK = "timeout_fallback"
@@ -262,6 +413,7 @@ class GatewayResult:
         return self.outcome not in {
             GatewayOutcome.VALIDATED_FIXTURE,
             GatewayOutcome.VALIDATED_MODEL,
+            GatewayOutcome.VALIDATED_LOCAL_RESOURCE,
         }
 
 
@@ -290,14 +442,40 @@ class DeterministicAnnotationAnalysisAdapter:
     estimated_cost_usd = Decimal("0")
 
     async def generate(self, request: AnnotationAnalysisRequest) -> ModelAdapterResponse:
+        intensive = request.analysis_mode == "intensive_reading"
+        evidence_quote = request.selected_text.strip()[:240]
         return ModelAdapterResponse(
             payload={
-                "schema_version": "1.1.0",
+                "schema_version": "1.3.0" if intensive else "1.1.0",
                 "selection_scope": request.selection_scope,
                 "focus": request.fallback_focus,
                 "translation": request.fallback_translation,
                 "vocabulary_note": request.fallback_vocabulary_note,
                 "grammar_structure": list(request.fallback_grammar_structure),
+                "translation_review": (
+                    {
+                        "summary": (
+                            "已记录你的译文; 当前本地分析只提供核对步骤, 暂不把译文差异判定为错误。"
+                        ),
+                        "strengths": [],
+                        "issues": [],
+                    }
+                    if intensive
+                    else None
+                ),
+                "knowledge_cards": [],
+                "follow_up_answer": (
+                    {
+                        "answer": (
+                            "当前没有足够可靠的模型结果继续判断这处问题。"
+                            "请先回到原句核对词序、成分边界和修饰关系。"
+                        ),
+                        "evidence_quotes": [evidence_quote] if evidence_quote else [],
+                        "next_questions": ["这处判断能否直接回到原句范围验证?"],
+                    }
+                    if request.follow_up_question
+                    else None
+                ),
                 "diagnosis": request.fallback_diagnosis,
                 "breakdown": list(request.fallback_breakdown),
                 "next_check": request.fallback_next_check,
@@ -506,6 +684,13 @@ class AnnotationAnalysisResult:
     translation: str | None
     vocabulary_note: str | None
     grammar_structure: tuple[str, ...]
+    sentence_components: tuple[tuple[str, int, int, str, str], ...]
+    grammar_points: tuple[tuple[str, str], ...]
+    collocations: tuple[tuple[str, str], ...]
+    familiar_word_senses: tuple[tuple[str, str], ...]
+    translation_review: TranslationReviewOutput | None
+    knowledge_cards: tuple[KnowledgeCardOutput, ...]
+    follow_up_answer: FollowUpAnswerOutput | None
     diagnosis: str
     breakdown: tuple[str, ...]
     next_check: str
@@ -524,11 +709,12 @@ class AnnotationAnalysisResult:
         return self.outcome not in {
             GatewayOutcome.VALIDATED_FIXTURE,
             GatewayOutcome.VALIDATED_MODEL,
+            GatewayOutcome.VALIDATED_LOCAL_RESOURCE,
         }
 
 
 class AnnotationAnalysisGateway:
-    prompt_version = "prompt_annotation_confusion_analysis_v2"
+    prompt_version = "prompt_annotation_confusion_analysis_v3"
 
     def __init__(
         self,
@@ -550,6 +736,12 @@ class AnnotationAnalysisGateway:
         request: AnnotationAnalysisRequest,
         budget: ModelBudget,
     ) -> AnnotationAnalysisResult:
+        if (
+            request.selection_scope == "word_or_phrase"
+            and request.dictionary_vocabulary_note is not None
+            and request.dictionary_provider_ref is not None
+        ):
+            return self._dictionary_result(request)
         if self._adapter.is_remote and not self._allow_remote:
             return self._fallback(
                 request,
@@ -611,12 +803,27 @@ class AnnotationAnalysisGateway:
             )
 
         output_matches_scope = output.selection_scope == request.selection_scope
-        output_has_primary_help = (
-            output.vocabulary_note is not None
-            if request.selection_scope == "word_or_phrase"
-            else output.translation is not None and len(output.grammar_structure) > 0
+        if request.selection_scope == "word_or_phrase":
+            output_has_primary_help = output.vocabulary_note is not None
+        elif request.analysis_mode == "intensive_reading":
+            # Intensive reading deliberately allows every recognition category to be empty.
+            # A reference translation is enough to validate the response after the learner's
+            # own translation and component marks have already passed the API gate.
+            output_has_primary_help = (
+                output.translation is not None and output.translation_review is not None
+            )
+        else:
+            output_has_primary_help = (
+                output.translation is not None and len(output.grammar_structure) > 0
+            )
+        follow_up_matches = (
+            request.follow_up_question is None or output.follow_up_answer is not None
         )
-        if not output_matches_scope or (self._adapter.is_remote and not output_has_primary_help):
+        if (
+            not output_matches_scope
+            or (self._adapter.is_remote and not output_has_primary_help)
+            or (self._adapter.is_remote and not follow_up_matches)
+        ):
             return self._fallback(
                 request,
                 GatewayOutcome.INVALID_OUTPUT_FALLBACK,
@@ -644,11 +851,80 @@ class AnnotationAnalysisGateway:
                 output.translation or "",
                 output.vocabulary_note or "",
                 *output.grammar_structure,
+                *(
+                    f"{item.role}:{item.text_quote}:{item.explanation}"
+                    for item in output.sentence_components
+                ),
+                *(
+                    f"grammar:{item.text_quote}:{item.explanation}"
+                    for item in output.grammar_points
+                ),
+                *(
+                    f"collocation:{item.text_quote}:{item.explanation}"
+                    for item in output.collocations
+                ),
+                *(
+                    f"sense:{item.text_quote}:{item.explanation}"
+                    for item in output.familiar_word_senses
+                ),
+                *(
+                    f"translation-issue:{item.kind}:{item.source_quote}:{item.explanation}"
+                    for item in (
+                        output.translation_review.issues if output.translation_review else []
+                    )
+                ),
+                *(
+                    f"knowledge:{item.category}:{item.source_quote}:{item.rule}"
+                    for item in output.knowledge_cards
+                ),
+                output.follow_up_answer.answer if output.follow_up_answer else "",
                 output.diagnosis,
                 *output.breakdown,
                 output.next_check,
             ]
         )
+        sentence_components = tuple(
+            (item.role, item.start, item.end, item.text_quote, item.explanation)
+            for item in output.sentence_components
+            if item.end <= len(request.selected_text)
+            and request.selected_text[item.start : item.end] == item.text_quote
+        )
+
+        def anchored(
+            items: list[AnchoredSentenceInsightOutput],
+        ) -> tuple[tuple[str, str], ...]:
+            return tuple(
+                (item.text_quote, item.explanation)
+                for item in items
+                if item.text_quote in request.selected_text
+            )
+
+        translation_review = output.translation_review
+        if translation_review is not None:
+            translation_review = translation_review.model_copy(
+                update={
+                    "issues": [
+                        item
+                        for item in translation_review.issues
+                        if item.source_quote in request.selected_text
+                    ]
+                }
+            )
+        knowledge_cards = tuple(
+            item for item in output.knowledge_cards if item.source_quote in request.selected_text
+        )
+        follow_up_answer = output.follow_up_answer
+        if follow_up_answer is not None:
+            follow_up_answer = follow_up_answer.model_copy(
+                update={
+                    "evidence_quotes": [
+                        quote
+                        for quote in follow_up_answer.evidence_quotes
+                        if quote in request.selected_text
+                    ]
+                }
+            )
+
         return AnnotationAnalysisResult(
             adapter=self._adapter.name,
             prompt_version=response.prompt_version or self.prompt_version,
@@ -667,6 +943,13 @@ class AnnotationAnalysisGateway:
             translation=output.translation,
             vocabulary_note=output.vocabulary_note,
             grammar_structure=tuple(output.grammar_structure),
+            sentence_components=sentence_components,
+            grammar_points=anchored(output.grammar_points),
+            collocations=anchored(output.collocations),
+            familiar_word_senses=anchored(output.familiar_word_senses),
+            translation_review=translation_review,
+            knowledge_cards=knowledge_cards,
+            follow_up_answer=follow_up_answer,
             diagnosis=output.diagnosis,
             breakdown=tuple(output.breakdown),
             next_check=output.next_check,
@@ -678,6 +961,57 @@ class AnnotationAnalysisGateway:
             evidence_start=evidence_start,
             evidence_end=evidence_end,
             evidence_hash=self._hash(output.evidence_quote),
+            rejection_code=None,
+        )
+
+    def _dictionary_result(
+        self,
+        request: AnnotationAnalysisRequest,
+    ) -> AnnotationAnalysisResult:
+        note = request.dictionary_vocabulary_note
+        provider_ref = request.dictionary_provider_ref
+        assert note is not None
+        assert provider_ref is not None
+        evidence_quote = request.selected_text.strip()[:240]
+        evidence_start = request.paragraph_context.find(evidence_quote)
+        serialized = "\n".join(
+            [
+                "vocabulary",
+                request.selection_scope,
+                note,
+                request.fallback_diagnosis,
+                *request.fallback_breakdown,
+                request.fallback_next_check,
+            ]
+        )
+        return AnnotationAnalysisResult(
+            adapter="netem_5530_dictionary",
+            prompt_version=provider_ref,
+            outcome=GatewayOutcome.VALIDATED_LOCAL_RESOURCE,
+            reason_code="annotation_analysis_dictionary_hit",
+            focus="vocabulary",
+            selection_scope=request.selection_scope,
+            translation=None,
+            vocabulary_note=note,
+            grammar_structure=(),
+            sentence_components=(),
+            grammar_points=(),
+            collocations=(),
+            familiar_word_senses=(),
+            translation_review=None,
+            knowledge_cards=(),
+            follow_up_answer=None,
+            diagnosis=request.fallback_diagnosis,
+            breakdown=request.fallback_breakdown,
+            next_check=request.fallback_next_check,
+            output_hash=self._hash(serialized),
+            used_remote_call=False,
+            estimated_cost_usd=Decimal("0"),
+            actual_cost_usd=Decimal("0"),
+            latency_ms=0,
+            evidence_start=evidence_start if evidence_start >= 0 else None,
+            evidence_end=(evidence_start + len(evidence_quote) if evidence_start >= 0 else None),
+            evidence_hash=(self._hash(evidence_quote) if evidence_start >= 0 else None),
             rejection_code=None,
         )
 
@@ -708,7 +1042,31 @@ class AnnotationAnalysisGateway:
                 request.fallback_diagnosis,
                 *request.fallback_breakdown,
                 request.fallback_next_check,
+                request.follow_up_question or "",
             ]
+        )
+        translation_review = (
+            TranslationReviewOutput(
+                summary="已记录你的译文; 当前降级结果只提供核对步骤, 暂不把译文差异判定为错误。",
+                strengths=[],
+                issues=[],
+            )
+            if request.analysis_mode == "intensive_reading"
+            else None
+        )
+        evidence_quote = request.selected_text.strip()[:240]
+        target_label = request.follow_up_target_label or "这个问题"
+        follow_up_answer = (
+            FollowUpAnswerOutput(
+                answer=(
+                    f"当前没有足够可靠的模型结果进一步判断“{target_label}”。"
+                    "请先依据下方原句范围核对成分边界和修饰关系。"
+                ),
+                evidence_quotes=[evidence_quote] if evidence_quote else [],
+                next_questions=["这处判断能否直接回到原句的词序和范围验证?"],
+            )
+            if request.follow_up_question
+            else None
         )
         return AnnotationAnalysisResult(
             adapter=self._adapter.name,
@@ -720,6 +1078,13 @@ class AnnotationAnalysisGateway:
             translation=request.fallback_translation,
             vocabulary_note=request.fallback_vocabulary_note,
             grammar_structure=request.fallback_grammar_structure,
+            sentence_components=(),
+            grammar_points=(),
+            collocations=(),
+            familiar_word_senses=(),
+            translation_review=translation_review,
+            knowledge_cards=(),
+            follow_up_answer=follow_up_answer,
             diagnosis=request.fallback_diagnosis,
             breakdown=request.fallback_breakdown,
             next_check=request.fallback_next_check,

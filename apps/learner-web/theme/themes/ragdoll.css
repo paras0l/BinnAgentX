@@ -365,21 +365,6 @@
   box-shadow: 0 5px 12px rgb(116 63 88 / 8%);
 }
 
-:root[data-theme="ragdoll"] .reading-viewbar {
-  border-color: #dec6d0;
-  background: rgb(255 250 248 / 84%);
-}
-
-:root[data-theme="ragdoll"] .reading-viewbar button {
-  border-color: #ead8df;
-  color: #765465;
-}
-
-:root[data-theme="ragdoll"] .reading-viewbar button:is(:hover, .active) {
-  color: #763a55;
-  background: #f7e4ec;
-}
-
 :root[data-theme="ragdoll"] [data-ui-anchor="app-shell"] .workspace-footer {
   border-color: var(--theme-line-strong);
   color: var(--theme-ink-muted);

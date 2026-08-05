@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from typing import Literal
 from uuid import uuid4
@@ -30,6 +31,7 @@ class PersonalizedTrainingMaterialView(BaseModel):
     paragraphs: list[str]
     focus_points: list[str]
     source_context_count: int
+    source_kind: Literal["agent_generated", "imported"]
     training_eligible: bool
     start_block_reason: (
         Literal[
@@ -42,6 +44,7 @@ class PersonalizedTrainingMaterialView(BaseModel):
     )
     status: str
     quality_status: str
+    failure_reason: str | None
     started_at: datetime | None
     completed_at: datetime | None
     created_at: datetime
@@ -75,11 +78,41 @@ class PersonalizedMaterialGenerationRequest(BaseModel):
         return list(dict.fromkeys(values))
 
 
+class ImportedArticleRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, max_length=160)
+    content: str = Field(min_length=1, max_length=30_000)
+    goal: str = Field(default="理解文章并完成读写迁移", max_length=240)
+
+    @field_validator("title")
+    @classmethod
+    def normalized_title(cls, value: str) -> str:
+        normalized = " ".join(value.strip().split())
+        if not normalized:
+            raise ValueError("imported_article_text_required")
+        return normalized
+
+    @field_validator("goal")
+    @classmethod
+    def normalized_goal(cls, value: str) -> str:
+        return " ".join(value.strip().split()) or "理解文章并完成读写迁移"
+
+    @field_validator("content")
+    @classmethod
+    def normalized_content(cls, value: str) -> str:
+        normalized = value.replace("\r\n", "\n").replace("\r", "\n").strip()
+        if not normalized:
+            raise ValueError("imported_article_content_required")
+        return normalized
+
+
 def _material_view(
     row: sa.RowMapping,
     *,
     has_completed_run: bool,
     active_workflow_run_id: str | None,
+    failure_reason: str | None = None,
 ) -> PersonalizedTrainingMaterialView:
     owns_active_run = (
         active_workflow_run_id is not None
@@ -127,15 +160,57 @@ def _material_view(
         paragraphs=list(row["paragraphs"]),
         focus_points=list(row["focus_points"]),
         source_context_count=len(row["source_context_ids"]),
+        source_kind=str(row["source_kind"]),
         training_eligible=training_eligible,
         start_block_reason=start_block_reason,
         status=str(row["status"]),
         quality_status=str(row["quality_status"]),
+        failure_reason=failure_reason,
         started_at=row["started_at"],
         completed_at=row["completed_at"],
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
+
+
+async def _latest_failure_reasons(
+    connection: AsyncConnection,
+    material_ids: list[str],
+) -> dict[str, str]:
+    """Return learner-safe terminal failure details without adding per-card queries."""
+    if not material_ids:
+        return {}
+    events = (
+        (
+            await connection.execute(
+                sa.select(
+                    tables.personalized_material_events.c.material_id,
+                    tables.personalized_material_events.c.event_type,
+                    tables.personalized_material_events.c.message,
+                    tables.personalized_material_events.c.detail,
+                )
+                .where(
+                    tables.personalized_material_events.c.material_id.in_(material_ids),
+                    tables.personalized_material_events.c.event_type.in_(
+                        ("semantic_review_rejected", "generation_failed")
+                    ),
+                )
+                .order_by(tables.personalized_material_events.c.occurred_at.desc())
+            )
+        )
+        .mappings()
+        .all()
+    )
+    reasons: dict[str, str] = {}
+    for event in events:
+        material_id = str(event["material_id"])
+        if material_id in reasons:
+            continue
+        detail = event["detail"] if isinstance(event["detail"], dict) else {}
+        reason = detail.get("reason") if event["event_type"] == "semantic_review_rejected" else None
+        learner_reason = " ".join(str(reason or event["message"]).split())
+        reasons[material_id] = learner_reason[:600]
+    return reasons
 
 
 async def _owned_material(
@@ -186,11 +261,16 @@ async def list_training_materials(request: Request) -> list[PersonalizedTraining
             .mappings()
             .all()
         )
+        failure_reasons = await _latest_failure_reasons(
+            connection,
+            [str(row["material_id"]) for row in rows],
+        )
     return [
         _material_view(
             row,
             has_completed_run=has_completed_run,
             active_workflow_run_id=active_workflow_run_id,
+            failure_reason=failure_reasons.get(str(row["material_id"])),
         )
         for row in rows
     ]
@@ -267,6 +347,7 @@ async def generate_personalized_training_material(
                 paragraphs=[],
                 focus_points=[f"目标: {generation.goal}"],
                 source_context_ids=[memory.memory_id for memory in memories],
+                source_kind="agent_generated",
                 status="requested",
                 generation_attempt_count=0,
                 generation_error_code=None,
@@ -327,6 +408,86 @@ async def generate_personalized_training_material(
             "last_material_id": material_id,
         },
     )
+    return _material_view(
+        row,
+        has_completed_run=has_completed_run,
+        active_workflow_run_id=active_workflow_run_id,
+    )
+
+
+@training_material_router.post(
+    "/imported",
+    response_model=PersonalizedTrainingMaterialView,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def import_training_article(
+    request: Request,
+    body: ImportedArticleRequest,
+) -> PersonalizedTrainingMaterialView:
+    """Queue supplied article text for the existing assessment and training workflow."""
+    identity: LearnerIdentity = request.state.learner_identity
+    paragraphs = [
+        " ".join(block.split()) for block in re.split(r"\n\s*\n", body.content) if block.strip()
+    ]
+    if not paragraphs:
+        raise HTTPException(status_code=422, detail="imported_article_content_required")
+    if not 3 <= len(paragraphs) <= 6 or any(len(paragraph) > 5_000 for paragraph in paragraphs):
+        raise HTTPException(status_code=422, detail="imported_article_paragraphs_invalid")
+
+    now = datetime.now(UTC)
+    material_id = f"training_material_{uuid4().hex}"
+    focus_points = [f"目标: {body.goal}", "来源: 学习者导入文章"]
+    async with get_engine().begin() as connection:
+        await connection.execute(
+            tables.personalized_training_materials.insert().values(
+                material_id=material_id,
+                learner_id=identity.learner_id,
+                title=body.title,
+                paragraphs=paragraphs,
+                focus_points=focus_points,
+                source_context_ids=[],
+                source_kind="imported",
+                status="requested",
+                generation_attempt_count=0,
+                generation_error_code=None,
+                next_generation_attempt_at=now,
+                claimed_by=None,
+                lease_expires_at=None,
+                requested_goal=body.goal,
+                requested_kinds=[],
+                evidence_target_asset_ids=[],
+                quality_status="not_evaluated",
+                quality_reports=[],
+                objective_bundle={},
+                question_bank=[],
+                grammar_annotations=[],
+                transfer_contract=None,
+                expression_task=None,
+                runtime_kind="langgraph",
+                graph_thread_id=stable_thread_id("personalized-content", material_id),
+                graph_version=GRAPH_VERSION,
+                started_at=None,
+                completed_at=None,
+                active_workflow_run_id=None,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        await connection.execute(
+            tables.personalized_material_events.insert().values(
+                material_id=material_id,
+                event_type="article_imported",
+                stage="requested",
+                attempt=None,
+                message="学习者已导入文章, 进入既有材料处理流程",
+                detail={"paragraph_count": len(paragraphs)},
+                occurred_at=now,
+            )
+        )
+        row = await _owned_material(connection, identity.learner_id, material_id)
+        has_completed_run, active_workflow_run_id = await _training_state(
+            connection, identity.learner_id
+        )
     return _material_view(
         row,
         has_completed_run=has_completed_run,

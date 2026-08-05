@@ -346,6 +346,7 @@ class VerticalSliceRepository:
                     text_quote=item.span.text_quote,
                     text_hash=item.span.text_hash,
                     user_explanation=item.user_explanation,
+                    analysis_snapshot=item.analysis_snapshot,
                     created_at=item.created_at,
                 )
             )
@@ -608,6 +609,7 @@ def _annotation(row: sa.RowMapping) -> Annotation:
             text_hash=row["text_hash"],
         ),
         user_explanation=row["user_explanation"],
+        analysis_snapshot=row["analysis_snapshot"],
         created_at=row["created_at"],
     )
 

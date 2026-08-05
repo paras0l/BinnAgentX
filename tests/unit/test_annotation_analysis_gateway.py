@@ -1,3 +1,4 @@
+from dataclasses import replace
 from decimal import Decimal
 
 import pytest
@@ -65,8 +66,10 @@ class StubRemoteAnalysisAdapter:
 
     def __init__(self, payload: object) -> None:
         self.payload = payload
+        self.calls = 0
 
     async def generate(self, _: AnnotationAnalysisRequest) -> ModelAdapterResponse:
+        self.calls += 1
         return ModelAdapterResponse(payload=self.payload, actual_cost_usd=Decimal("0.04"))
 
 
@@ -118,6 +121,169 @@ async def test_valid_remote_analysis_requires_evidence_from_paragraph() -> None:
 
 
 @pytest.mark.asyncio
+async def test_intensive_analysis_keeps_only_relevant_sentence_anchored_items() -> None:
+    payload = valid_payload()
+    payload.update(
+        {
+            "schema_version": "1.2.0",
+            "grammar_structure": [],
+            "sentence_components": [
+                {
+                    "role": "subject",
+                    "start": 4,
+                    "end": 10,
+                    "text_quote": "effort",
+                    "explanation": "The head noun of the selected phrase.",
+                },
+                {
+                    "role": "object",
+                    "start": 0,
+                    "end": 3,
+                    "text_quote": "not",
+                    "explanation": "This quote does not match the selected sentence.",
+                },
+            ],
+            "grammar_points": [
+                {
+                    "text_quote": "needed to understand sentence structure",
+                    "explanation": "A reduced relative clause modifying effort.",
+                }
+            ],
+            "collocations": [
+                {
+                    "text_quote": "invented collocation",
+                    "explanation": "This is not anchored in the sentence.",
+                }
+            ],
+            "familiar_word_senses": [],
+            "translation_review": {
+                "summary": (
+                    "The learner found the head noun and now needs to retain the modifier scope."
+                ),
+                "strengths": ["The semantic center is present in the translation."],
+                "issues": [],
+            },
+        }
+    )
+    intensive_request = replace(
+        request(),
+        analysis_mode="intensive_reading",
+        learner_translation="理解句子结构所需要付出的努力",
+        learner_component_marks=(("subject", 4, 10, "effort"),),
+    )
+
+    result = await AnnotationAnalysisGateway(
+        StubRemoteAnalysisAdapter(payload), timeout_seconds=1, allow_remote=True
+    ).generate(intensive_request, budget())
+
+    assert result.outcome is GatewayOutcome.VALIDATED_MODEL
+    assert result.grammar_structure == ()
+    assert result.sentence_components == (
+        (
+            "subject",
+            4,
+            10,
+            "effort",
+            "The head noun of the selected phrase.",
+        ),
+    )
+    assert result.grammar_points == (
+        (
+            "needed to understand sentence structure",
+            "A reduced relative clause modifying effort.",
+        ),
+    )
+    assert result.collocations == ()
+    assert result.familiar_word_senses == ()
+
+
+@pytest.mark.asyncio
+async def test_intensive_agent_validates_translation_review_cards_and_follow_up_evidence() -> None:
+    payload = valid_payload()
+    payload.update(
+        {
+            "schema_version": "1.3.0",
+            "grammar_structure": [],
+            "translation_review": {
+                "summary": (
+                    "The translation gets the head noun right but should retain the modifier scope."
+                ),
+                "strengths": ["The learner identified effort as the semantic center."],
+                "issues": [
+                    {
+                        "kind": "scope",
+                        "source_quote": "needed to understand sentence structure",
+                        "learner_excerpt": "理解句子结构",
+                        "explanation": (
+                            "The reduced clause modifies effort rather than the whole sentence."
+                        ),
+                        "suggestion": "Keep the needed-to modifier attached to effort.",
+                    },
+                    {
+                        "kind": "logic",
+                        "source_quote": "not in sentence",
+                        "learner_excerpt": None,
+                        "explanation": (
+                            "This item must be filtered because its quote is not anchored."
+                        ),
+                        "suggestion": "Do not show it.",
+                    },
+                ],
+            },
+            "knowledge_cards": [
+                {
+                    "category": "grammar",
+                    "title": "Reduced relative clause",
+                    "source_quote": "needed to understand sentence structure",
+                    "rule": "A past participle phrase can postmodify a noun.",
+                    "explanation": "Here needed... narrows the kind of effort.",
+                    "check_question": "Which noun does needed modify here?",
+                },
+                {
+                    "category": "collocation",
+                    "title": "Invalid card",
+                    "source_quote": "invented collocation",
+                    "rule": "This card is not grounded.",
+                    "explanation": "It must not reach the learner.",
+                    "check_question": "Can this quote be found in the sentence?",
+                },
+            ],
+            "follow_up_answer": {
+                "answer": (
+                    "The boundary ends after structure because the whole phrase modifies effort."
+                ),
+                "evidence_quotes": [
+                    "needed to understand sentence structure",
+                    "invented evidence",
+                ],
+                "next_questions": ["What is the shortest noun phrase here?"],
+            },
+        }
+    )
+    intensive_request = replace(
+        request(),
+        analysis_mode="intensive_reading",
+        learner_translation="理解句子结构所需要付出的努力",
+        learner_component_marks=(("subject", 4, 10, "effort"),),
+        follow_up_target_kind="component_comparison",
+        follow_up_target_label="边界不同",
+        follow_up_target_content="effort / needed to understand sentence structure",
+        follow_up_question="为什么候选边界到这里结束?",
+    )
+
+    result = await AnnotationAnalysisGateway(
+        StubRemoteAnalysisAdapter(payload), timeout_seconds=1, allow_remote=True
+    ).generate(intensive_request, budget())
+
+    assert result.outcome is GatewayOutcome.VALIDATED_MODEL
+    assert result.translation_review is not None
+    assert len(result.translation_review.issues) == 1
+    assert [card.title for card in result.knowledge_cards] == ["Reduced relative clause"]
+    assert result.follow_up_answer is not None
+    assert result.follow_up_answer.evidence_quotes == ["needed to understand sentence structure"]
+
+
+@pytest.mark.asyncio
 async def test_word_selection_requires_vocabulary_help_instead_of_sentence_translation() -> None:
     payload = {
         "schema_version": "1.1.0",
@@ -141,6 +307,35 @@ async def test_word_selection_requires_vocabulary_help_instead_of_sentence_trans
     assert result.translation is None
     assert result.vocabulary_note is not None
     assert result.grammar_structure == ()
+
+
+@pytest.mark.asyncio
+async def test_dictionary_hit_skips_remote_adapter_and_model_budget() -> None:
+    adapter = StubRemoteAnalysisAdapter(valid_payload())
+    result = await AnnotationAnalysisGateway(
+        adapter,
+        timeout_seconds=1,
+        allow_remote=True,
+    ).generate(
+        replace(
+            vocabulary_request(),
+            dictionary_vocabulary_note="发音: capacity; 核心义: 容量; 搭配: add capacity。",
+            dictionary_provider_ref="netem-5530-v1:1040",
+        ),
+        ModelBudget(
+            call_count=3,
+            cost_usd=Decimal("0.20"),
+            max_calls=3,
+            max_cost_usd=Decimal("0.20"),
+        ),
+    )
+
+    assert result.outcome is GatewayOutcome.VALIDATED_LOCAL_RESOURCE
+    assert result.reason_code == "annotation_analysis_dictionary_hit"
+    assert result.adapter == "netem_5530_dictionary"
+    assert result.used_remote_call is False
+    assert result.actual_cost_usd == 0
+    assert adapter.calls == 0
 
 
 @pytest.mark.asyncio

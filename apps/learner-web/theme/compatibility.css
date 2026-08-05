@@ -72,14 +72,7 @@
   box-shadow: var(--theme-shadow-sm);
 }
 
-[data-ui-anchor="app-shell"]
-  :is(
-    .asset-group-tabs,
-    .workspace-tabs,
-    .reading-viewbar,
-    .annotation-color-legend,
-    .temporary-task-summary
-  ) {
+[data-ui-anchor="app-shell"] :is(.asset-group-tabs, .workspace-tabs, .annotation-color-legend) {
   border-color: var(--theme-line);
   background: var(--theme-surface-soft);
 }
@@ -89,7 +82,6 @@
     .asset-group-tabs button,
     .asset-kind-list > button,
     .workspace-tabs button,
-    .reading-viewbar button,
     .asset-star-filter,
     .annotation-types button
   ) {
@@ -102,7 +94,6 @@
     .asset-group-tabs button.selected,
     .asset-kind-list > button:is(:hover, .selected),
     .workspace-tabs button[aria-selected="true"],
-    .reading-viewbar button:is(:hover, .active),
     .asset-star-filter.selected
   ) {
   border-color: var(--theme-line-strong);
@@ -187,12 +178,6 @@
   color: var(--theme-ink);
   background: var(--theme-popover-background);
   box-shadow: var(--theme-shadow-md);
-}
-
-[data-ui-anchor="app-shell"] .temporary-task-panel {
-  border-color: var(--theme-line-strong);
-  color: var(--theme-ink);
-  background: var(--theme-popover-background);
 }
 
 [data-ui-anchor="app-shell"] .workspace-splitter > span {

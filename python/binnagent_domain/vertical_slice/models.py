@@ -141,6 +141,7 @@ class Annotation:
     kind: AnnotationKind
     span: TextSpan
     user_explanation: str
+    analysis_snapshot: dict[str, object] | None
     created_at: datetime
 
 

@@ -124,6 +124,7 @@ class LearningTask:
             kind=command.kind,
             span=span,
             user_explanation=explanation,
+            analysis_snapshot=command.analysis_snapshot,
             created_at=command.now,
         )
         task = self._advance(

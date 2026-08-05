@@ -6,6 +6,41 @@ export type AnalysisSelectionScope = "word_or_phrase" | "sentence_or_paragraph";
 const ENGLISH_TOKEN_PATTERN = /[A-Za-z]+(?:['’-][A-Za-z]+)*/gu;
 const SENTENCE_END_PATTERN = /[.!?](?:["')\]]*)/gu;
 
+export interface NormalizedAnnotationSelection {
+  start: number;
+  end: number;
+  textQuote: string;
+}
+
+export interface AnnotationDisplayText {
+  leadingWhitespace: string;
+  annotatedText: string;
+  trailingWhitespace: string;
+}
+
+export function normalizeAnnotationSelection(
+  textQuote: string,
+  start: number,
+): NormalizedAnnotationSelection {
+  const leadingWhitespaceLength = textQuote.length - textQuote.trimStart().length;
+  const normalizedTextQuote = textQuote.trim();
+  const normalizedStart = start + leadingWhitespaceLength;
+  return {
+    start: normalizedStart,
+    end: normalizedStart + normalizedTextQuote.length,
+    textQuote: normalizedTextQuote,
+  };
+}
+
+export function splitAnnotationDisplayText(value: string): AnnotationDisplayText {
+  const normalized = normalizeAnnotationSelection(value, 0);
+  return {
+    leadingWhitespace: value.slice(0, normalized.start),
+    annotatedText: normalized.textQuote,
+    trailingWhitespace: value.slice(normalized.end),
+  };
+}
+
 export function classifySelection(text: string, paragraphText = ""): SelectionScale {
   const normalized = text.trim();
   const paragraph = paragraphText.trim();

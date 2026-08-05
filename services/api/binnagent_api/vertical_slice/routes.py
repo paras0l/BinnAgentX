@@ -128,6 +128,10 @@ from binnagent_api.vertical_slice.schemas import (
     RevisionView,
     VersionedCommandRequest,
 )
+from binnagent_api.vocabulary_dictionary import (
+    netem_vocabulary_dictionary,
+    record_vocabulary_learning,
+)
 
 learner_router = APIRouter(prefix="/v1", tags=["vertical-slice"])
 control_router = APIRouter(prefix="/v1", tags=["vertical-slice-control"])
@@ -423,6 +427,11 @@ async def add_annotation(
                 kind=body.kind,
                 span=span,
                 user_explanation=body.user_explanation,
+                analysis_snapshot=(
+                    AnnotationAnalysisView.model_validate(body.analysis).model_dump(mode="json")
+                    if body.analysis is not None
+                    else None
+                ),
                 now=datetime.now(UTC),
             )
         )
@@ -462,6 +471,27 @@ async def analyze_annotation(
             )
 
         span = TextSpan(**body.span.model_dump())
+        if body.analysis_mode == "intensive_reading":
+            if not body.learner_translation or not body.learner_component_marks:
+                raise DomainError(
+                    PublicErrorCode.SAVE_NOT_CONFIRMED,
+                    "intensive_reading_attempt_required",
+                )
+            for mark in body.learner_component_marks:
+                if (
+                    mark.end <= mark.start
+                    or mark.end > len(span.text_quote)
+                    or span.text_quote[mark.start : mark.end] != mark.text_quote
+                ):
+                    raise DomainError(
+                        PublicErrorCode.SAVE_NOT_CONFIRMED,
+                        "intensive_reading_component_span_invalid",
+                    )
+        elif body.follow_up is not None:
+            raise DomainError(
+                PublicErrorCode.SAVE_NOT_CONFIRMED,
+                "intensive_reading_follow_up_requires_context",
+            )
         content_version_id = task.current_material.content_version_id
         personalized_row = await material_row_for_task(connection, task)
         if personalized_row is not None:
@@ -476,6 +506,11 @@ async def analyze_annotation(
             learner_question=body.learner_question,
             selected_text=span.text_quote,
             paragraph_context=paragraph_context,
+        )
+        dictionary_entry = (
+            netem_vocabulary_dictionary().lookup(span.text_quote)
+            if plan.selection_scope == "word_or_phrase"
+            else None
         )
         settings = get_settings()
         budget_row = (
@@ -492,16 +527,34 @@ async def analyze_annotation(
         )
         gateway = AnnotationAnalysisGateway(
             annotation_analysis_adapter(settings),
-            timeout_seconds=settings.model_timeout_seconds,
+            timeout_seconds=settings.annotation_analysis_timeout_seconds,
             allow_remote=bool(settings.enable_remote_model_calls),
         )
-        request_digest = _request_hash(body)
+        if dictionary_entry is not None:
+            analysis_cache_variant = dictionary_entry.provider_ref
+        elif settings.model_adapter == "deepseek":
+            analysis_cache_variant = f"deepseek:{settings.deepseek_chat_model}"
+        elif settings.model_adapter == "longcat":
+            analysis_cache_variant = f"longcat:{settings.longcat_chat_model}"
+        elif settings.model_adapter == "ollama":
+            analysis_cache_variant = f"ollama:{settings.ollama_chat_model}"
+        else:
+            analysis_cache_variant = settings.model_adapter
+        request_digest = sha256(
+            (
+                f"{_request_hash(body)}:netem-5530-v1:intensive-agent-v1:{analysis_cache_variant}"
+            ).encode()
+        ).hexdigest()
 
         async def invoke_annotation_model(tool_runtime: ToolContext) -> ToolResult[object]:
-            memories = await _recall_agent_memory(
-                tool_runtime,
-                agent_name="reading.analyze_selection.v1",
-                query=f"{span.text_quote}\n{body.learner_question}",
+            memories = (
+                ()
+                if dictionary_entry is not None
+                else await _recall_agent_memory(
+                    tool_runtime,
+                    agent_name="reading.analyze_selection.v1",
+                    query=f"{span.text_quote}\n{body.learner_question}",
+                )
             )
             gateway_result = await gateway.generate(
                 GatewayAnnotationAnalysisRequest(
@@ -512,6 +565,24 @@ async def analyze_annotation(
                     paragraph_context=paragraph_context,
                     selection_scope=plan.selection_scope,
                     learner_question=body.learner_question,
+                    analysis_mode=body.analysis_mode,
+                    learner_translation=body.learner_translation,
+                    learner_component_marks=tuple(
+                        (mark.role, mark.start, mark.end, mark.text_quote)
+                        for mark in body.learner_component_marks
+                    ),
+                    follow_up_target_kind=(
+                        body.follow_up.target_kind if body.follow_up is not None else None
+                    ),
+                    follow_up_target_label=(
+                        body.follow_up.target_label if body.follow_up is not None else None
+                    ),
+                    follow_up_target_content=(
+                        body.follow_up.target_content if body.follow_up is not None else None
+                    ),
+                    follow_up_question=(
+                        body.follow_up.question if body.follow_up is not None else None
+                    ),
                     fallback_focus=plan.fallback_focus,
                     fallback_diagnosis=plan.fallback_diagnosis,
                     fallback_breakdown=plan.fallback_breakdown,
@@ -519,13 +590,19 @@ async def analyze_annotation(
                     fallback_translation=plan.fallback_translation,
                     fallback_vocabulary_note=plan.fallback_vocabulary_note,
                     fallback_grammar_structure=plan.fallback_grammar_structure,
+                    dictionary_vocabulary_note=(
+                        dictionary_entry.note if dictionary_entry is not None else None
+                    ),
+                    dictionary_provider_ref=(
+                        dictionary_entry.provider_ref if dictionary_entry is not None else None
+                    ),
                     learner_memory=tuple((memory.title, memory.content) for memory in memories),
                 ),
                 ModelBudget(
                     call_count=int(budget_row["model_call_count"]),
                     cost_usd=Decimal(str(budget_row["cost_usd"])),
-                    max_calls=settings.model_max_calls_per_slice,
-                    max_cost_usd=settings.model_max_cost_usd_per_slice,
+                    max_calls=settings.annotation_analysis_max_calls_per_slice,
+                    max_cost_usd=settings.annotation_analysis_max_cost_usd_per_slice,
                 ),
             )
             return ToolResult(
@@ -543,7 +620,7 @@ async def analyze_annotation(
             expected_task_version=body.expected_version,
             tool_name=tool_name,
             request_digest=request_digest,
-            timeout_seconds=settings.model_timeout_seconds,
+            timeout_seconds=settings.annotation_analysis_timeout_seconds,
         )
         cached_response = await _reserve_model_invocation(
             connection,
@@ -552,6 +629,16 @@ async def analyze_annotation(
             request_hash=request_digest,
         )
         if cached_response is not None:
+            cached_response["learning_count"] = (
+                await record_vocabulary_learning(
+                    connection,
+                    learner_id=identity.learner_id,
+                    entry=dictionary_entry,
+                    increment=False,
+                )
+                if dictionary_entry is not None
+                else None
+            )
             cached_response.setdefault(
                 "analysis_status",
                 "review_required" if cached_response.get("source") == "model" else "abstained",
@@ -595,37 +682,100 @@ async def analyze_annotation(
                     updated_at=now,
                 )
             )
+        learning_count = (
+            await record_vocabulary_learning(
+                connection,
+                learner_id=identity.learner_id,
+                entry=dictionary_entry,
+                increment=True,
+            )
+            if result.outcome is GatewayOutcome.VALIDATED_LOCAL_RESOURCE
+            and dictionary_entry is not None
+            else None
+        )
 
         response = AnnotationAnalysisView(
             analysis_id=_id("annotation_analysis"),
             analysis_status=(
-                "review_required"
-                if result.outcome is GatewayOutcome.VALIDATED_MODEL
-                else "abstained"
+                "resolved"
+                if result.outcome is GatewayOutcome.VALIDATED_LOCAL_RESOURCE
+                else (
+                    "review_required"
+                    if result.outcome is GatewayOutcome.VALIDATED_MODEL
+                    else "abstained"
+                )
             ),
             confidence=None,
             provider_ref=(
-                f"model:{result.adapter}:{result.prompt_version}"
-                if result.outcome is GatewayOutcome.VALIDATED_MODEL
-                else None
+                f"dictionary:{result.prompt_version}"
+                if result.outcome is GatewayOutcome.VALIDATED_LOCAL_RESOURCE
+                else (
+                    f"model:{result.adapter}:{result.prompt_version}"
+                    if result.outcome is GatewayOutcome.VALIDATED_MODEL
+                    else None
+                )
             ),
             focus=result.focus,
             selection_scope=result.selection_scope,
             translation=result.translation,
             vocabulary_note=result.vocabulary_note,
+            learning_count=learning_count,
             grammar_structure=list(result.grammar_structure),
+            sentence_components=[
+                {
+                    "role": role,
+                    "start": start,
+                    "end": end,
+                    "text_quote": text_quote,
+                    "explanation": explanation,
+                }
+                for role, start, end, text_quote, explanation in result.sentence_components
+            ],
+            grammar_points=[
+                {"text_quote": text_quote, "explanation": explanation}
+                for text_quote, explanation in result.grammar_points
+            ],
+            collocations=[
+                {"text_quote": text_quote, "explanation": explanation}
+                for text_quote, explanation in result.collocations
+            ],
+            familiar_word_senses=[
+                {"text_quote": text_quote, "explanation": explanation}
+                for text_quote, explanation in result.familiar_word_senses
+            ],
+            translation_review=(
+                result.translation_review.model_dump(mode="json")
+                if result.translation_review is not None
+                else None
+            ),
+            knowledge_cards=[card.model_dump(mode="json") for card in result.knowledge_cards],
+            follow_up_answer=(
+                result.follow_up_answer.model_dump(mode="json")
+                if result.follow_up_answer is not None
+                else None
+            ),
             diagnosis=result.diagnosis,
             breakdown=list(result.breakdown),
             next_check=result.next_check,
             source=(
-                "model" if result.outcome is GatewayOutcome.VALIDATED_MODEL else "local_fallback"
+                "local_dictionary"
+                if result.outcome is GatewayOutcome.VALIDATED_LOCAL_RESOURCE
+                else (
+                    "model"
+                    if result.outcome is GatewayOutcome.VALIDATED_MODEL
+                    else "local_fallback"
+                )
             ),
             reason_code=result.reason_code,
             boundary_note=(
-                "当前结果尚未经过已冻结词典或句法 Provider 验证, 只能作为分析建议；"
-                "低置信度结果不会写成已确认知识。"
-                if result.outcome is GatewayOutcome.VALIDATED_MODEL
-                else "当前仅提供分析步骤, 未完成可靠词义或句法解析；不回答题目、不代读全文。"
+                "释义来自已冻结的考研5530词典；具体语境义仍需结合原句的词性、搭配和逻辑判断。"
+                if result.outcome is GatewayOutcome.VALIDATED_LOCAL_RESOURCE
+                else (
+                    "当前结果尚未经过已冻结词典或句法 Provider 验证, 只能作为分析建议；"
+                    "低置信度结果不会写成已确认知识。"
+                    if result.outcome is GatewayOutcome.VALIDATED_MODEL
+                    else "当前仅提供分析步骤, 未完成可靠词义或句法解析；不回答题目、不代读全文。"
+                )
             ),
         )
         await _complete_model_invocation(
@@ -1502,6 +1652,11 @@ def learner_task_view(task: LearningTask, replayed: bool = False) -> LearnerTask
                     text_quote=item.span.text_quote,
                 ),
                 user_explanation=item.user_explanation,
+                analysis=(
+                    AnnotationAnalysisView.model_validate(item.analysis_snapshot)
+                    if item.analysis_snapshot is not None
+                    else None
+                ),
                 created_at=item.created_at,
             )
             for item in current_annotations

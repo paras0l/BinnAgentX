@@ -159,8 +159,11 @@ export function saveExperienceProfile(
   return state;
 }
 
-export function recordTemporaryTask(learnerId: string): LearnerExperienceState | null {
-  const current = loadExperience(learnerId);
+export function recordTemporaryTask(
+  learnerId: string,
+  currentState?: LearnerExperienceState | null,
+): LearnerExperienceState | null {
+  const current = currentState ?? loadExperience(learnerId);
   if (!current) return null;
   const state = {
     ...current,

@@ -377,7 +377,6 @@
 }
 
 .training-frame .account-navigation button svg,
-.reading-viewbar button svg,
 .reading-command-dock button svg {
   transition:
     transform 180ms cubic-bezier(0.22, 1, 0.36, 1),
@@ -385,13 +384,8 @@
 }
 
 .training-frame .account-navigation button:hover svg,
-.reading-viewbar button:hover svg,
 .reading-command-dock button:hover svg {
   transform: translateY(-1px);
-}
-
-.reading-viewbar {
-  animation: calm-control-settle 360ms 120ms cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 .reading-command-dock {

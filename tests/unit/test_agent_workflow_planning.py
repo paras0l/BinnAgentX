@@ -21,6 +21,9 @@ def test_context_workflow_plans_word_analysis_without_http_state() -> None:
 
     assert plan.selection_scope == "word_or_phrase"
     assert plan.fallback_focus == "vocabulary"
+    assert plan.fallback_next_check == (
+        "请用一个更具体的中文短语替换“account for”，并说明放回原句后为什么仍然连贯。"  # noqa: RUF001
+    )
 
 
 def test_expression_workflow_deduplicates_memory() -> None:

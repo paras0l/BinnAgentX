@@ -6,11 +6,14 @@ import {
   clearResumeRunId,
   loadDraft,
   loadResumeRunId,
+  loadTemporaryTaskWorkspace,
   loadWorkspaceNote,
   saveDraft,
   saveResumeRunId,
+  saveTemporaryTaskWorkspace,
   saveWorkspaceNote,
 } from "./draft-storage";
+import { DEFAULT_COMPONENT_STYLES } from "./intensive-reading";
 
 const workspace = {
   task: {
@@ -20,7 +23,10 @@ const workspace = {
 } as LearnerWorkspaceView;
 
 describe("versioned local recovery", () => {
-  beforeEach(() => localStorage.clear());
+  beforeEach(() => {
+    localStorage.clear();
+    sessionStorage.clear();
+  });
 
   it("stores only the run pointer needed for resume", () => {
     saveResumeRunId("learner_test_0001", "workflow_run_frontend_0001");
@@ -71,5 +77,57 @@ describe("versioned local recovery", () => {
       "规则变化",
     );
     expect(loadWorkspaceNote("task_frontend_0001", "calibration_reading_b_v1")).toBeNull();
+  });
+
+  it("restores temporary tasks across navigation within the same task version", () => {
+    expect(
+      saveTemporaryTaskWorkspace({
+        schemaVersion: 1,
+        taskId: "task_frontend_0001",
+        contentVersionId: "calibration_reading_a_v1",
+        tasks: [
+          {
+            id: "temporary-1",
+            promptIndex: 0,
+            answer: "我的翻译",
+            completed: false,
+            taskType: "intensive_reading",
+            sourceKey: "intensive-reading:task_frontend_0001:p1:0:12",
+            intensiveSessionId: "session-1",
+          },
+        ],
+        expandedTaskId: "temporary-1",
+        intensiveSessions: {
+          "session-1": {
+            id: "session-1",
+            taskItemId: "temporary-1",
+            sentence: {
+              paragraphId: "p1",
+              start: 0,
+              end: 12,
+              textQuote: "Useful effort",
+              usedParagraphFallback: false,
+            },
+            paragraphNumber: 1,
+            phase: "attempt",
+            translation: "有效的努力",
+            marks: [],
+            styles: { ...DEFAULT_COMPONENT_STYLES },
+            analysis: null,
+            analysisError: null,
+            followUps: [],
+          },
+        },
+        activeIntensiveSessionId: "session-1",
+        taskCounter: 1,
+        updatedAt: "2026-08-04T00:00:00Z",
+      }),
+    ).toBe(true);
+
+    const restored = loadTemporaryTaskWorkspace("task_frontend_0001", "calibration_reading_a_v1");
+    expect(restored?.tasks).toHaveLength(1);
+    expect(restored?.tasks[0]?.taskType).toBe("intensive_reading");
+    expect(restored?.intensiveSessions["session-1"]?.translation).toBe("有效的努力");
+    expect(loadTemporaryTaskWorkspace("task_frontend_0001", "calibration_reading_b_v1")).toBeNull();
   });
 });

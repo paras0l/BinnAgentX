@@ -59,10 +59,12 @@ from binnagent_api.model_adapters import (
 from binnagent_api.personalized_package import (
     build_article,
     build_grammar_artifacts,
+    build_imported_article,
     build_objective_bundle,
     build_question_artifacts,
     build_transfer_artifacts,
     deterministic_assessment,
+    imported_article_targets,
     persisted_expression,
     persisted_grammar,
     persisted_question,
@@ -201,6 +203,7 @@ async def enqueue_due_personalized_material() -> bool:
                 paragraphs=[],
                 focus_points=["目标: 验证已到复习节点的知识"],
                 source_context_ids=context_ids,
+                source_kind="agent_generated",
                 status="requested",
                 generation_attempt_count=0,
                 generation_error_code=None,
@@ -607,12 +610,29 @@ async def _generate_langgraph_with_claim(
     adaptation_profile: dict[str, Any],
 ) -> str:
     material_id = str(row["material_id"])
+    imported_targets = (
+        imported_article_targets([str(value) for value in row["paragraphs"]])
+        if row.get("source_kind") == "imported"
+        else None
+    )
     objective = build_objective_bundle(
         material_id=material_id,
         learner_id=str(row["learner_id"]),
-        source_asset_ids=[str(value["asset_id"]) for value in context_rows],
+        source_asset_ids=(
+            [f"{material_id}_imported_article"]
+            if row.get("source_kind") == "imported"
+            else [str(value["asset_id"]) for value in context_rows]
+        ),
         goal=str(row["requested_goal"]),
         adaptation_profile=adaptation_profile,
+        **(
+            {
+                "construction_id": imported_targets[0],
+                "discourse_target": imported_targets[1],
+            }
+            if imported_targets is not None
+            else {}
+        ),
     )
     await _persist_objective(row, objective)
     try:
@@ -668,6 +688,14 @@ def _build_personalized_material_graph(
         objective: LearningObjectiveBundle,
         key: str,
     ) -> dict[str, Any]:
+        if row.get("source_kind") == "imported":
+            return build_imported_article(
+                material_id=material_id,
+                objective=objective,
+                title=str(row["title"]),
+                paragraphs=[str(value) for value in row["paragraphs"]],
+                focus_points=[str(value) for value in row["focus_points"]],
+            )
         revision = _revision_from_key(key)
         output = await _cached_personalized_reading(
             material_id=material_id,

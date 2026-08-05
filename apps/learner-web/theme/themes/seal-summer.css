@@ -645,7 +645,12 @@
 }
 
 :root[data-theme="seal-summer"]
-  :is(.temporary-task-empty, .expression-board-empty, .empty-annotations)::before {
+  :is(
+    .temporary-task-empty,
+    .temporary-task-empty-inline,
+    .expression-board-empty,
+    .empty-annotations
+  )::before {
   position: absolute;
   top: 8px;
   left: 50%;
@@ -656,6 +661,11 @@
   transform: translateX(-50%);
   pointer-events: none;
   content: "";
+}
+
+:root[data-theme="seal-summer"] .temporary-task-empty-inline {
+  position: relative;
+  padding-top: 116px;
 }
 
 :root[data-theme="seal-summer"] .onboarding-intro {
@@ -1519,7 +1529,7 @@
 
 :root[data-theme="seal-summer"][data-collector-mode="night"]
   .training-frame
-  :is(.reading-viewbar, .reading-command-dock, .selection-toolbar, .context-locator) {
+  :is(.reading-command-dock, .selection-toolbar, .context-locator) {
   border-color: #356d75;
   color: #dff4f0;
   background: rgb(10 39 51 / 94%);
@@ -1530,7 +1540,7 @@
 
 :root[data-theme="seal-summer"][data-collector-mode="night"]
   .training-frame
-  :is(.reading-viewbar, .reading-command-dock, .selection-toolbar)
+  :is(.reading-command-dock, .selection-toolbar)
   button {
   border-color: #315a64;
   color: #bcd8d6;
@@ -1539,7 +1549,7 @@
 
 :root[data-theme="seal-summer"][data-collector-mode="night"]
   .training-frame
-  :is(.reading-viewbar, .reading-command-dock, .selection-toolbar)
+  :is(.reading-command-dock, .selection-toolbar)
   button:is(:hover, .active) {
   color: #f1fffc;
   background: #17414c;

@@ -1,8 +1,10 @@
 import type { LearnerWorkspaceView } from "./contracts";
+import type { IntensiveReadingSession } from "./intensive-reading";
 
 const RESUME_PREFIX = "binnagent:learner-resume:v1:";
 const DRAFT_PREFIX = "binnagent:learner-draft:v1:";
 const NOTE_PREFIX = "binnagent:workspace-note:v1:";
+const TEMPORARY_TASK_PREFIX = "binnagent:temporary-task-workspace:v1:";
 
 export interface LocalDraft {
   schemaVersion: 1;
@@ -18,6 +20,38 @@ export interface WorkspaceNote {
   taskId: string;
   contentVersionId: string;
   text: string;
+  updatedAt: string;
+}
+
+export interface StoredTemporaryTaskCopy {
+  title: string;
+  prompt: string;
+  selfCheck: string;
+  targetText?: string;
+  sourceText?: string;
+  answerHint?: string;
+}
+
+export interface StoredTemporaryTaskItem {
+  id: string;
+  promptIndex: number;
+  answer: string;
+  completed: boolean;
+  taskType?: "intensive_reading" | "annotation_review" | "method_transfer" | "self_practice";
+  sourceKey?: string;
+  copy?: StoredTemporaryTaskCopy;
+  intensiveSessionId?: string;
+}
+
+export interface TemporaryTaskWorkspaceSnapshot {
+  schemaVersion: 1;
+  taskId: string;
+  contentVersionId: string;
+  tasks: StoredTemporaryTaskItem[];
+  expandedTaskId: string | null;
+  intensiveSessions: Record<string, IntensiveReadingSession>;
+  activeIntensiveSessionId: string | null;
+  taskCounter: number;
   updatedAt: string;
 }
 
@@ -117,6 +151,74 @@ export function loadWorkspaceNote(taskId: string, contentVersionId: string): Wor
 export function saveWorkspaceNote(note: WorkspaceNote): boolean {
   try {
     localStorage.setItem(`${NOTE_PREFIX}${note.taskId}`, JSON.stringify(note));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function loadTemporaryTaskWorkspace(
+  taskId: string,
+  contentVersionId: string,
+): TemporaryTaskWorkspaceSnapshot | null {
+  try {
+    const raw = sessionStorage.getItem(`${TEMPORARY_TASK_PREFIX}${taskId}`);
+    if (!raw) return null;
+    const value = JSON.parse(raw) as Partial<TemporaryTaskWorkspaceSnapshot>;
+    if (
+      value.schemaVersion !== 1 ||
+      value.taskId !== taskId ||
+      value.contentVersionId !== contentVersionId ||
+      !Array.isArray(value.tasks) ||
+      !value.intensiveSessions ||
+      typeof value.intensiveSessions !== "object" ||
+      typeof value.taskCounter !== "number" ||
+      !Number.isInteger(value.taskCounter) ||
+      value.taskCounter < 0 ||
+      typeof value.updatedAt !== "string"
+    ) {
+      return null;
+    }
+    const intensiveSessions = Object.fromEntries(
+      Object.entries(value.intensiveSessions).map(([sessionId, session]) => [
+        sessionId,
+        {
+          ...session,
+          followUps: Array.isArray(session.followUps)
+            ? session.followUps.map((thread) =>
+                thread.status === "asking"
+                  ? {
+                      ...thread,
+                      status: "failed" as const,
+                      error: "上次追问因离开页面中断，请重新发送。",
+                    }
+                  : thread,
+              )
+            : [],
+          ...(session.phase === "analyzing"
+            ? {
+                phase: "attempt" as const,
+                analysisError: "上次识别因离开页面中断，请重试。",
+              }
+            : {}),
+        },
+      ]),
+    );
+    return {
+      ...(value as TemporaryTaskWorkspaceSnapshot),
+      intensiveSessions,
+      expandedTaskId: typeof value.expandedTaskId === "string" ? value.expandedTaskId : null,
+      activeIntensiveSessionId:
+        typeof value.activeIntensiveSessionId === "string" ? value.activeIntensiveSessionId : null,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function saveTemporaryTaskWorkspace(snapshot: TemporaryTaskWorkspaceSnapshot): boolean {
+  try {
+    sessionStorage.setItem(`${TEMPORARY_TASK_PREFIX}${snapshot.taskId}`, JSON.stringify(snapshot));
     return true;
   } catch {
     return false;

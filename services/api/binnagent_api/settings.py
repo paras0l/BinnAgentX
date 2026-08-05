@@ -104,6 +104,10 @@ class Settings(BaseSettings):
     model_max_cost_usd_per_slice: Decimal = Decimal("0.20")
     model_estimated_cost_usd: Decimal = Decimal("0.02")
     model_max_tokens: int = 900
+    annotation_analysis_timeout_seconds: int = 45
+    annotation_analysis_max_tokens: int = 2400
+    annotation_analysis_max_calls_per_slice: int = 20
+    annotation_analysis_max_cost_usd_per_slice: Decimal = Decimal("1.00")
     expression_review_timeout_seconds: int = 30
     expression_review_max_tokens: int = 2000
     content_generation_timeout_seconds: int = 180
@@ -124,7 +128,7 @@ class Settings(BaseSettings):
         "DEEPSEEK_API_KEY", "DEEPSEEK_API_KEY", default=None
     )
     deepseek_chat_model: str = compatible_field(
-        "DEEPSEEK_CHAT_MODEL", "DEEPSEEK_CHAT_MODEL", default="deepseek-v4-flash"
+        "DEEPSEEK_CHAT_MODEL", "DEEPSEEK_CHAT_MODEL", default="deepseek-chat"
     )
     longcat_base_url: str = compatible_field(
         "LONGCAT_BASE_URL", "LONGCAT_BASE_URL", default="https://api.longcat.chat/openai"

@@ -35,6 +35,7 @@ export interface AnnotationView {
     text_quote: string;
   };
   user_explanation: string;
+  analysis: AnnotationAnalysisView | null;
   created_at: string;
 }
 
@@ -47,11 +48,55 @@ export interface AnnotationAnalysisView {
   selection_scope: "word_or_phrase" | "sentence_or_paragraph";
   translation: string | null;
   vocabulary_note: string | null;
+  learning_count: number | null;
   grammar_structure: string[];
+  sentence_components: Array<{
+    role:
+      | "subject"
+      | "predicate"
+      | "object"
+      | "predicative"
+      | "attributive"
+      | "adverbial"
+      | "complement"
+      | "appositive"
+      | "connector";
+    start: number;
+    end: number;
+    text_quote: string;
+    explanation: string;
+  }>;
+  grammar_points: Array<{ text_quote: string; explanation: string }>;
+  collocations: Array<{ text_quote: string; explanation: string }>;
+  familiar_word_senses: Array<{ text_quote: string; explanation: string }>;
+  translation_review?: {
+    summary: string;
+    strengths: string[];
+    issues: Array<{
+      kind: "word_meaning" | "scope" | "logic" | "omission" | "tone" | "structure";
+      source_quote: string;
+      learner_excerpt: string | null;
+      explanation: string;
+      suggestion: string;
+    }>;
+  } | null;
+  knowledge_cards?: Array<{
+    category: "grammar" | "collocation" | "vocabulary" | "translation";
+    title: string;
+    source_quote: string;
+    rule: string;
+    explanation: string;
+    check_question: string;
+  }>;
+  follow_up_answer?: {
+    answer: string;
+    evidence_quotes: string[];
+    next_questions: string[];
+  } | null;
   diagnosis: string;
   breakdown: string[];
   next_check: string;
-  source: "model" | "local_fallback";
+  source: "model" | "local_dictionary" | "local_fallback";
   reason_code: string;
   boundary_note: string;
 }

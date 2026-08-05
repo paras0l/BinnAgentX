@@ -3,11 +3,33 @@ import { describe, expect, it } from "vitest";
 import {
   classifySelection,
   defaultAnalysisQuestion,
+  normalizeAnnotationSelection,
   recommendedAnnotationKind,
   selectionScope,
+  splitAnnotationDisplayText,
 } from "./annotation-selection";
 
 describe("annotation selection routing", () => {
+  it("removes accidentally selected surrounding spaces without shifting the word", () => {
+    const paragraph = "Sixth grade is an exciting year.";
+    const rawStart = paragraph.indexOf("exciting") - 1;
+    const selection = normalizeAnnotationSelection(" exciting ", rawStart);
+
+    expect(selection).toEqual({
+      start: paragraph.indexOf("exciting"),
+      end: paragraph.indexOf("exciting") + "exciting".length,
+      textQuote: "exciting",
+    });
+    expect(
+      `${paragraph.slice(0, selection.start)}[${selection.textQuote}]${paragraph.slice(selection.end)}`,
+    ).toBe("Sixth grade is an [exciting] year.");
+    expect(splitAnnotationDisplayText("exciting ")).toEqual({
+      leadingWhitespace: "",
+      annotatedText: "exciting",
+      trailingWhitespace: " ",
+    });
+  });
+
   it("routes a word and a short phrase to vocabulary help", () => {
     for (const text of ["capacity", "existing space"]) {
       const scale = classifySelection(text);

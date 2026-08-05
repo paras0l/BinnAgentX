@@ -6,7 +6,6 @@ import { createPortal } from "react-dom";
 import { prepareWithSegments as preparePretext } from "@chenglou/pretext";
 import {
   ArrowLineUp,
-  BookOpen,
   CheckCircle,
   DotsSixVertical,
   Lock,
@@ -57,8 +56,10 @@ import type {
 import {
   clearDraft,
   loadDraft,
+  loadTemporaryTaskWorkspace,
   loadWorkspaceNote,
   saveDraft,
+  saveTemporaryTaskWorkspace,
   saveWorkspaceNote,
 } from "../lib/draft-storage";
 import {
@@ -74,12 +75,23 @@ import type {
 import {
   classifySelection,
   defaultAnalysisQuestion,
+  normalizeAnnotationSelection,
   recommendedAnnotationKind,
   selectionScope,
+  splitAnnotationDisplayText,
   type SelectionScale,
 } from "../lib/annotation-selection";
 import { locateContextMatches, type ContextMatch } from "../lib/context-locator";
+import {
+  DEFAULT_COMPONENT_STYLES,
+  resolveIntensiveSentence,
+  type ComponentStyleMap,
+  type IntensiveFollowUpTarget,
+  type IntensiveReadingSession,
+  type SentenceComponentMark,
+} from "../lib/intensive-reading";
 import { ExpressionLab, type LabTab } from "./expression-lab";
+import { IntensiveReadingPane, IntensiveTemporaryTaskBody } from "./intensive-reading-pane";
 import { layoutKnuthPlassParagraph, type KnuthPlassLine } from "./knuth-plass-layout";
 import {
   defaultExpressionTabLayout,
@@ -157,18 +169,27 @@ interface TemporaryTaskItem {
   promptIndex: number;
   answer: string;
   completed: boolean;
+  taskType?: TemporaryTaskType;
   sourceKey?: string;
   copy?: TemporaryTaskCopy;
+  intensiveSessionId?: string;
 }
+
+type TemporaryTaskType =
+  "intensive_reading" | "annotation_review" | "method_transfer" | "self_practice";
 
 interface TemporaryTaskCopy {
   title: string;
   prompt: string;
   selfCheck: string;
+  targetText?: string;
+  sourceText?: string;
+  answerHint?: string;
 }
 
 interface ExplanationTemporaryTask extends TemporaryTaskCopy {
   sourceKey: string;
+  taskType: "annotation_review" | "method_transfer";
 }
 
 type WorkspaceTab = "task" | "annotations" | "temporary" | "notes";
@@ -426,6 +447,9 @@ function ActiveTaskWorkspace({
   const isReading = material.content_type !== "micro_expression";
   const restoredAttempt = attemptDraft(task.attempts.at(-1), isReading);
   const [stored] = useState(() => loadDraft(workspace));
+  const [storedTemporaryWorkspace] = useState(() =>
+    loadTemporaryTaskWorkspace(task.task_id, task.current_content_version_id),
+  );
   const initialLatestAttempt = task.attempts.at(-1);
   const initialLatestIntervention = task.interventions.at(-1);
   const canRestoreLocalDraft =
@@ -476,9 +500,25 @@ function ActiveTaskWorkspace({
   const [inlineAssistanceFocus, setInlineAssistanceFocus] = useState<
     "meaning" | "structure" | "logic" | "evidence" | null
   >(null);
-  const [temporaryTasks, setTemporaryTasks] = useState<TemporaryTaskItem[]>([]);
-  const [expandedTemporaryTaskId, setExpandedTemporaryTaskId] = useState<string | null>(null);
-  const temporaryTaskSourceKeysRef = useRef(new Set<string>());
+  const [temporaryTasks, setTemporaryTasks] = useState<TemporaryTaskItem[]>(
+    storedTemporaryWorkspace?.tasks ?? [],
+  );
+  const [expandedTemporaryTaskId, setExpandedTemporaryTaskId] = useState<string | null>(
+    storedTemporaryWorkspace?.expandedTaskId ?? null,
+  );
+  const [intensiveSessions, setIntensiveSessions] = useState<
+    Record<string, IntensiveReadingSession>
+  >(storedTemporaryWorkspace?.intensiveSessions ?? {});
+  const [activeIntensiveSessionId, setActiveIntensiveSessionId] = useState<string | null>(
+    storedTemporaryWorkspace?.activeIntensiveSessionId ?? null,
+  );
+  const temporaryTaskSourceKeysRef = useRef(
+    new Set(
+      (storedTemporaryWorkspace?.tasks ?? []).flatMap((item) =>
+        item.sourceKey ? [item.sourceKey] : [],
+      ),
+    ),
+  );
   const [storedWorkspaceNote] = useState(() =>
     loadWorkspaceNote(task.task_id, task.current_content_version_id),
   );
@@ -507,12 +547,36 @@ function ActiveTaskWorkspace({
   const annotationExplanationRef = useRef<HTMLTextAreaElement>(null);
   const earlyEndTriggerRef = useRef<HTMLButtonElement>(null);
   const earlyEndConfirmRef = useRef<HTMLElement>(null);
-  const temporaryTaskCounterRef = useRef(0);
+  const temporaryTaskCounterRef = useRef(storedTemporaryWorkspace?.taskCounter ?? 0);
+  const activeIntensiveSession = activeIntensiveSessionId
+    ? (intensiveSessions[activeIntensiveSessionId] ?? null)
+    : null;
 
   useEffect(() => {
     if (isReading) return;
     saveExpressionTabLayout(expressionTabStorageKey, expressionTabLayout);
   }, [expressionTabLayout, expressionTabStorageKey, isReading]);
+
+  useEffect(() => {
+    saveTemporaryTaskWorkspace({
+      schemaVersion: 1,
+      taskId: task.task_id,
+      contentVersionId: task.current_content_version_id,
+      tasks: temporaryTasks,
+      expandedTaskId: expandedTemporaryTaskId,
+      intensiveSessions,
+      activeIntensiveSessionId,
+      taskCounter: temporaryTaskCounterRef.current,
+      updatedAt: new Date().toISOString(),
+    });
+  }, [
+    activeIntensiveSessionId,
+    expandedTemporaryTaskId,
+    intensiveSessions,
+    task.current_content_version_id,
+    task.task_id,
+    temporaryTasks,
+  ]);
 
   useLayoutEffect(() => {
     cacheSnapshotRef.current = { choice, text, workspaceNote, saveState, noteSaveState };
@@ -661,20 +725,24 @@ function ActiveTaskWorkspace({
       setProgressMessage("首版标记需要限制在同一段落内，请缩小选区。");
       return;
     }
-    const textQuote = range.toString();
-    if (!textQuote.trim() || textQuote.length > 1000) return;
+    const rawTextQuote = range.toString();
     const prefix = range.cloneRange();
     prefix.selectNodeContents(startParagraph);
     prefix.setEnd(range.startContainer, range.startOffset);
-    const start = prefix.toString().length;
+    const normalizedSelection = normalizeAnnotationSelection(
+      rawTextQuote,
+      prefix.toString().length,
+    );
+    if (!normalizedSelection.textQuote || normalizedSelection.textQuote.length > 1000) return;
     const selectionRect = range.getBoundingClientRect();
-    const scale = classifySelection(textQuote, startParagraph.textContent ?? "");
+    const scale = classifySelection(
+      normalizedSelection.textQuote,
+      startParagraph.textContent ?? "",
+    );
     const recommendedKind = recommendedAnnotationKind(scale);
     setSelection({
       paragraphId: startParagraph.dataset.paragraphId ?? "",
-      start,
-      end: start + textQuote.length,
-      textQuote,
+      ...normalizedSelection,
     });
     setAnnotationAnalysis(null);
     setAnnotationAnalysisError(null);
@@ -782,6 +850,7 @@ function ActiveTaskWorkspace({
       promptIndex: taskNumber - 1,
       answer: "",
       completed: false,
+      taskType: explanationTask?.taskType ?? "self_practice",
       sourceKey: explanationTask?.sourceKey,
       copy: explanationTask,
     };
@@ -805,6 +874,229 @@ function ActiveTaskWorkspace({
     const taskNumber = createTemporaryTask(explanationTask);
     if (taskNumber !== null) {
       setProgressMessage(`讲解已生成，并加入临时任务 ${taskNumber} 供你立即迁移。`);
+    }
+  };
+
+  const updateIntensiveSession = (
+    sessionId: string,
+    update: (session: IntensiveReadingSession) => IntensiveReadingSession,
+  ) => {
+    setIntensiveSessions((current) => {
+      const session = current[sessionId];
+      return session ? { ...current, [sessionId]: update(session) } : current;
+    });
+  };
+
+  const enterIntensiveReading = (sessionId: string) => {
+    const session = intensiveSessions[sessionId];
+    if (!session) return;
+    setActiveIntensiveSessionId(sessionId);
+    setExpandedTemporaryTaskId(session.taskItemId);
+    switchWorkspaceTab("temporary");
+    setProgressMessage("已回到这句的精读任务，之前的翻译和标记仍保留。");
+  };
+
+  const toggleTemporaryTask = (taskId: string) => {
+    if (expandedTemporaryTaskId === taskId) {
+      setExpandedTemporaryTaskId(null);
+      return;
+    }
+    const taskItem = temporaryTasks.find((item) => item.id === taskId);
+    if (taskItem?.intensiveSessionId) {
+      enterIntensiveReading(taskItem.intensiveSessionId);
+      return;
+    }
+    setExpandedTemporaryTaskId(taskId);
+  };
+
+  const startIntensiveReading = () => {
+    if (!selection || !isReading) return;
+    if (!preferences.temporaryTasksEnabled) {
+      chooseAnnotationKind("uncertain");
+      return;
+    }
+    const readingMaterial = material as ReadingMaterialView;
+    const paragraphIndex = readingMaterial.paragraphs.findIndex(
+      (paragraph) => paragraph.paragraph_id === selection.paragraphId,
+    );
+    const paragraph = readingMaterial.paragraphs[paragraphIndex];
+    if (!paragraph) return;
+    const sentence = resolveIntensiveSentence(
+      paragraph.paragraph_id,
+      paragraph.text,
+      selection.start,
+      selection.end,
+    );
+    const sourceKey = `intensive-reading:${task.task_id}:${sentence.paragraphId}:${sentence.start}:${sentence.end}`;
+    const existing = Object.values(intensiveSessions).find((item) => item.id === sourceKey);
+    if (existing) {
+      enterIntensiveReading(existing.id);
+      setShowSelectionToolbar(false);
+      return;
+    }
+
+    temporaryTaskCounterRef.current += 1;
+    const taskNumber = temporaryTaskCounterRef.current;
+    const taskItemId = `${task.task_id}-temporary-${taskNumber}`;
+    const session: IntensiveReadingSession = {
+      id: sourceKey,
+      taskItemId,
+      sentence,
+      paragraphNumber: paragraphIndex + 1,
+      phase: "attempt",
+      translation: "",
+      marks: [],
+      styles: { ...DEFAULT_COMPONENT_STYLES },
+      analysis: null,
+      analysisError: null,
+      followUps: [],
+    };
+    setIntensiveSessions((current) => ({ ...current, [sourceKey]: session }));
+    setTemporaryTasks((current) => [
+      ...current,
+      {
+        id: taskItemId,
+        promptIndex: taskNumber - 1,
+        answer: "",
+        completed: false,
+        taskType: "intensive_reading",
+        sourceKey,
+        intensiveSessionId: sourceKey,
+        copy: {
+          title: `整句精读：第 ${paragraphIndex + 1} 段`,
+          prompt: "一边写整句翻译，一边自主标出句子成分，完成后再核对相关识别内容。",
+          selfCheck: "你的翻译和成分判断是否都能回到原句逐字验证？",
+        },
+      },
+    ]);
+    temporaryTaskSourceKeysRef.current.add(sourceKey);
+    setActiveIntensiveSessionId(sourceKey);
+    setExpandedTemporaryTaskId(taskItemId);
+    setSelection(null);
+    setSelectionAnchor(null);
+    setShowSelectionToolbar(false);
+    window.getSelection()?.removeAllRanges();
+    switchWorkspaceTab("temporary");
+    setProgressMessage(`已新增整句精读临时任务 ${taskNumber}，翻译和成分标记可以并行完成。`);
+  };
+
+  const analyzeIntensiveReading = async (sessionId: string) => {
+    const session = intensiveSessions[sessionId];
+    if (!session || !session.translation.trim() || session.marks.length === 0) return;
+    updateIntensiveSession(sessionId, (current) => ({
+      ...current,
+      phase: "analyzing",
+      analysisError: null,
+    }));
+    try {
+      const result = await analyzeAnnotation(
+        task,
+        session.sentence,
+        "请联合原句、我的整句翻译和自主成分标记进行精读核对：解释翻译差异，生成本句相关且可锚定的知识卡片，并给出候选句子成分供对比；没有可靠依据的项目请留空。",
+        {
+          learnerTranslation: session.translation,
+          learnerComponentMarks: session.marks.map((mark) => ({
+            role: mark.role,
+            start: mark.start,
+            end: mark.end,
+            textQuote: mark.textQuote,
+          })),
+        },
+      );
+      updateIntensiveSession(sessionId, (current) => ({
+        ...current,
+        phase: "review",
+        analysis: {
+          ...result,
+          sentence_components: result.sentence_components ?? [],
+          grammar_points: result.grammar_points ?? [],
+          collocations: result.collocations ?? [],
+          familiar_word_senses: result.familiar_word_senses ?? [],
+        },
+        analysisError: null,
+      }));
+      const taskItem = temporaryTasks.find((item) => item.id === session.taskItemId);
+      if (taskItem && !taskItem.completed) {
+        setTemporaryTasks((current) =>
+          current.map((item) =>
+            item.id === session.taskItemId ? { ...item, completed: true } : item,
+          ),
+        );
+        onTemporaryTaskComplete();
+      }
+      setProgressMessage("精读识别已解锁，只展示与本句相关且带原文依据的项目。");
+    } catch (error) {
+      updateIntensiveSession(sessionId, (current) => ({
+        ...current,
+        phase: "attempt",
+        analysisError: messageFor(error),
+      }));
+    }
+  };
+
+  const askIntensiveFollowUp = async (
+    sessionId: string,
+    target: IntensiveFollowUpTarget,
+    question: string,
+  ) => {
+    const session = intensiveSessions[sessionId];
+    const normalizedQuestion = question.trim();
+    if (!session?.analysis || !normalizedQuestion) return;
+    const followUpId = `intensive-follow-up-${crypto.randomUUID()}`;
+    updateIntensiveSession(sessionId, (current) => ({
+      ...current,
+      followUps: [
+        ...current.followUps,
+        {
+          id: followUpId,
+          target,
+          question: normalizedQuestion,
+          status: "asking",
+          answer: null,
+          evidenceQuotes: [],
+          nextQuestions: [],
+          error: null,
+        },
+      ],
+    }));
+    try {
+      const result = await analyzeAnnotation(task, session.sentence, normalizedQuestion, {
+        learnerTranslation: session.translation,
+        learnerComponentMarks: session.marks.map((mark) => ({
+          role: mark.role,
+          start: mark.start,
+          end: mark.end,
+          textQuote: mark.textQuote,
+        })),
+        followUp: {
+          targetKind: target.kind,
+          targetLabel: target.label,
+          targetContent: target.content,
+          question: normalizedQuestion,
+        },
+      });
+      const answer = result.follow_up_answer;
+      updateIntensiveSession(sessionId, (current) => ({
+        ...current,
+        followUps: current.followUps.map((item) =>
+          item.id === followUpId
+            ? {
+                ...item,
+                status: "answered",
+                answer: answer?.answer ?? "当前没有足够可靠的依据继续展开这个问题。",
+                evidenceQuotes: answer?.evidence_quotes ?? [],
+                nextQuestions: answer?.next_questions ?? [],
+              }
+            : item,
+        ),
+      }));
+    } catch (error) {
+      updateIntensiveSession(sessionId, (current) => ({
+        ...current,
+        followUps: current.followUps.map((item) =>
+          item.id === followUpId ? { ...item, status: "failed", error: messageFor(error) } : item,
+        ),
+      }));
     }
   };
 
@@ -844,11 +1136,22 @@ function ActiveTaskWorkspace({
       const result = await analyzeAnnotation(task, selection, learnerQuestion);
       setAnnotationAnalysis(result);
       if (!annotationExplanation.trim()) setAnnotationExplanation(learnerQuestion);
+      const sentence = resolveIntensiveSentence(
+        selection.paragraphId,
+        paragraphText,
+        selection.start,
+        selection.end,
+      );
+      const targetText = selection.textQuote.trim().split(/\s+/u).join(" ");
       addExplanationTemporaryTask({
         sourceKey: `annotation-analysis:${task.task_id}:${selection.paragraphId}:${selection.start}:${selection.end}:${learnerQuestion}`,
-        title: `${ANALYSIS_FOCUS_LABELS[result.focus]}讲解后的自查`,
+        taskType: "annotation_review",
+        title: `“${shortTemporaryTaskTarget(targetText)}”${ANALYSIS_FOCUS_LABELS[result.focus]}自查`,
         prompt: result.next_check,
         selfCheck: "回答是否引用了当前选区，并用刚才的拆解方法完成了独立验证？",
+        targetText,
+        sourceText: sentence.textQuote,
+        answerHint: annotationTaskAnswerHint(result.focus, targetText),
       });
     } catch (error) {
       setAnnotationAnalysis(null);
@@ -873,7 +1176,13 @@ function ActiveTaskWorkspace({
     onError(null);
     startTransition(async () => {
       try {
-        const updated = await saveAnnotation(task, annotationKind, selection, explanation);
+        const updated = await saveAnnotation(
+          task,
+          annotationKind,
+          selection,
+          explanation,
+          annotationAnalysis,
+        );
         onTaskChange(updated);
         const savedAnnotation = updated.annotations.at(-1);
         const assetKind: LearningAssetKind =
@@ -1202,6 +1511,7 @@ function ActiveTaskWorkspace({
           if (hintLevel >= 3) {
             addExplanationTemporaryTask({
               sourceKey: `reading-hint:${intervention.intervention_id}`,
+              taskType: "method_transfer",
               title:
                 hintLevel === 3
                   ? "把 H3 的线索比较迁移到自己的判断"
@@ -1597,7 +1907,12 @@ function ActiveTaskWorkspace({
                 panelTargets={expressionPanelTargets}
                 onRequestTab={requestExpressionLabTab}
                 onNoteCountChange={setExpressionNoteCount}
-                onExplanationTask={addExplanationTemporaryTask}
+                onExplanationTask={(explanationTask) =>
+                  addExplanationTemporaryTask({
+                    ...explanationTask,
+                    taskType: "method_transfer",
+                  })
+                }
               />
             </section>
           ) : (
@@ -1612,6 +1927,40 @@ function ActiveTaskWorkspace({
               onOpenTemporaryTask={addTemporaryTask}
               onReviewAnnotation={reviewAnnotation}
               onError={onError}
+              intensiveSession={activeIntensiveSession}
+              onExitIntensive={() => {
+                const session = activeIntensiveSession;
+                setActiveIntensiveSessionId(null);
+                if (session) {
+                  window.requestAnimationFrame(() => {
+                    document
+                      .getElementById(`reading-paragraph-${session.sentence.paragraphId}`)
+                      ?.focus({ preventScroll: true });
+                  });
+                }
+              }}
+              onIntensiveMarksChange={(marks) => {
+                if (!activeIntensiveSessionId) return;
+                updateIntensiveSession(activeIntensiveSessionId, (current) => ({
+                  ...current,
+                  marks,
+                  analysis: null,
+                  analysisError: null,
+                  followUps: [],
+                  phase: current.phase === "review" ? "attempt" : current.phase,
+                }));
+              }}
+              onIntensiveStylesChange={(styles) => {
+                if (!activeIntensiveSessionId) return;
+                updateIntensiveSession(activeIntensiveSessionId, (current) => ({
+                  ...current,
+                  styles,
+                }));
+              }}
+              onIntensiveFollowUp={(target, question) => {
+                if (!activeIntensiveSessionId) return;
+                void askIntensiveFollowUp(activeIntensiveSessionId, target, question);
+              }}
             />
           )}
 
@@ -1871,6 +2220,14 @@ function ActiveTaskWorkspace({
                               <article className="annotation-analysis-result" aria-live="polite">
                                 <header>
                                   <span>{ANALYSIS_FOCUS_LABELS[annotationAnalysis.focus]}</span>
+                                  {typeof annotationAnalysis.learning_count === "number" ? (
+                                    <span
+                                      className="vocabulary-learning-count"
+                                      aria-label={`这个词是第${annotationAnalysis.learning_count}次学习`}
+                                    >
+                                      第{annotationAnalysis.learning_count}次学习
+                                    </span>
+                                  ) : null}
                                   <small>
                                     {annotationAnalysis.analysis_status === "resolved"
                                       ? "已验证分析"
@@ -2405,15 +2762,25 @@ function ActiveTaskWorkspace({
                       material={material}
                       tasks={temporaryTasks}
                       expandedTaskId={expandedTemporaryTaskId}
-                      onToggle={(taskId) =>
-                        setExpandedTemporaryTaskId((current) =>
-                          current === taskId ? null : taskId,
-                        )
-                      }
+                      onToggle={toggleTemporaryTask}
                       onAnswer={updateTemporaryTaskAnswer}
                       onComplete={completeTemporaryTaskItem}
                       onAdd={addTemporaryTask}
-                      onClose={() => switchWorkspaceTab("task")}
+                      intensiveSessions={intensiveSessions}
+                      onIntensiveTranslationChange={(sessionId, value) =>
+                        updateIntensiveSession(sessionId, (current) => ({
+                          ...current,
+                          translation: value,
+                          analysis: current.phase === "review" ? null : current.analysis,
+                          analysisError: null,
+                          followUps: current.phase === "review" ? [] : current.followUps,
+                          phase: current.phase === "review" ? "attempt" : current.phase,
+                        }))
+                      }
+                      onAnalyzeIntensive={(sessionId) => void analyzeIntensiveReading(sessionId)}
+                      onAskIntensiveFollowUp={(sessionId, target, question) =>
+                        void askIntensiveFollowUp(sessionId, target, question)
+                      }
                     />
                   </div>,
                   targetForWorkspaceTab("temporary")!,
@@ -2540,7 +2907,9 @@ function ActiveTaskWorkspace({
                 key={kind}
                 type="button"
                 className={`annotation-kind-${kind}${kind === "uncertain" ? " uncertain-action" : ""}`}
-                onClick={() => chooseAnnotationKind(kind)}
+                onClick={() =>
+                  kind === "uncertain" ? startIntensiveReading() : chooseAnnotationKind(kind)
+                }
               >
                 {label}
               </button>
@@ -2881,7 +3250,7 @@ function temporaryTaskCopy(
   isReading: boolean,
   material: NonNullable<LearnerWorkspaceView["material"]>,
   promptIndex: number,
-) {
+): TemporaryTaskCopy {
   const readingPrompts = [
     {
       title: "提炼变化链",
@@ -2921,6 +3290,104 @@ function temporaryTaskCopy(
   return prompts[promptIndex % prompts.length] ?? prompts[0]!;
 }
 
+function shortTemporaryTaskTarget(value: string): string {
+  return value.length > 24 ? `${value.slice(0, 24)}…` : value;
+}
+
+function annotationTaskAnswerHint(
+  focus: AnnotationAnalysisView["focus"],
+  targetText: string,
+): string {
+  if (focus === "vocabulary") {
+    return `写出替换“${targetText}”的中文短语，再说明它放回原句后为什么通顺。`;
+  }
+  if (focus === "syntax") {
+    return "先写出最短主干“谁做了什么”，再补一句说明其余部分怎样修饰主干。";
+  }
+  if (focus === "reference") {
+    return `写出“${targetText}”指向的具体对象，并引用原句中的一个验证线索。`;
+  }
+  if (focus === "logic") {
+    return "写出前后两部分的逻辑关系，并指出让你这样判断的连接词或语义线索。";
+  }
+  return "用一句短答案写出你的判断，再引用当前原句中的一个词或短语作为依据。";
+}
+
+function restoredAnnotationTaskContext(
+  task: TemporaryTaskItem,
+  material: NonNullable<LearnerWorkspaceView["material"]>,
+  isReading: boolean,
+): Pick<TemporaryTaskCopy, "targetText" | "sourceText"> | null {
+  if (task.copy?.targetText || task.copy?.sourceText) {
+    return {
+      targetText: task.copy.targetText,
+      sourceText: task.copy.sourceText,
+    };
+  }
+  if (!isReading || !task.sourceKey?.startsWith("annotation-analysis:")) return null;
+  const match = /^annotation-analysis:[^:]+:([^:]+):(\d+):(\d+):/u.exec(task.sourceKey);
+  if (!match) return null;
+  const paragraphId = match[1]!;
+  const start = Number(match[2]);
+  const end = Number(match[3]);
+  const paragraph = (material as ReadingMaterialView).paragraphs.find(
+    (candidate) => candidate.paragraph_id === paragraphId,
+  );
+  if (!paragraph || !Number.isSafeInteger(start) || !Number.isSafeInteger(end)) return null;
+  if (start < 0 || end <= start || end > paragraph.text.length) return null;
+  return {
+    targetText: paragraph.text.slice(start, end),
+    sourceText: resolveIntensiveSentence(paragraphId, paragraph.text, start, end).textQuote,
+  };
+}
+
+function selfContainedTemporaryPrompt(prompt: string, targetText?: string): string {
+  return targetText && prompt.includes("替换它")
+    ? prompt.replace("替换它", `替换“${targetText}”`)
+    : prompt;
+}
+
+const TEMPORARY_TASK_TYPE_ORDER: TemporaryTaskType[] = [
+  "intensive_reading",
+  "annotation_review",
+  "method_transfer",
+  "self_practice",
+];
+
+const TEMPORARY_TASK_TYPE_LABELS: Record<TemporaryTaskType, string> = {
+  intensive_reading: "整句精读",
+  annotation_review: "标注自查",
+  method_transfer: "方法迁移",
+  self_practice: "自主加练",
+};
+
+function temporaryTaskType(task: TemporaryTaskItem): TemporaryTaskType {
+  if (task.taskType) return task.taskType;
+  if (task.intensiveSessionId || task.sourceKey?.startsWith("intensive-reading:")) {
+    return "intensive_reading";
+  }
+  if (task.sourceKey?.startsWith("annotation-analysis:")) return "annotation_review";
+  if (task.sourceKey?.startsWith("reading-hint:")) return "method_transfer";
+  return "self_practice";
+}
+
+function groupTemporaryTasks(tasks: TemporaryTaskItem[]) {
+  const groups = new Map<
+    TemporaryTaskType,
+    Array<{ task: TemporaryTaskItem; taskNumber: number }>
+  >();
+  tasks.forEach((task, index) => {
+    const type = temporaryTaskType(task);
+    const group = groups.get(type) ?? [];
+    group.push({ task, taskNumber: index + 1 });
+    groups.set(type, group);
+  });
+  return TEMPORARY_TASK_TYPE_ORDER.flatMap((type) => {
+    const items = groups.get(type);
+    return items?.length ? [{ type, label: TEMPORARY_TASK_TYPE_LABELS[type], items }] : [];
+  });
+}
+
 function TemporaryTaskList({
   isReading,
   material,
@@ -2930,7 +3397,10 @@ function TemporaryTaskList({
   onAnswer,
   onComplete,
   onAdd,
-  onClose,
+  intensiveSessions,
+  onIntensiveTranslationChange,
+  onAnalyzeIntensive,
+  onAskIntensiveFollowUp,
 }: {
   isReading: boolean;
   material: NonNullable<LearnerWorkspaceView["material"]>;
@@ -2940,118 +3410,169 @@ function TemporaryTaskList({
   onAnswer: (taskId: string, value: string) => void;
   onComplete: (taskId: string) => void;
   onAdd: () => void;
-  onClose: () => void;
+  intensiveSessions: Record<string, IntensiveReadingSession>;
+  onIntensiveTranslationChange: (sessionId: string, value: string) => void;
+  onAnalyzeIntensive: (sessionId: string) => void;
+  onAskIntensiveFollowUp: (
+    sessionId: string,
+    target: IntensiveFollowUpTarget,
+    question: string,
+  ) => void;
 }) {
-  const completedCount = tasks.filter((task) => task.completed).length;
-
+  const taskGroups = groupTemporaryTasks(tasks);
   return (
-    <section
-      className="temporary-task-panel"
-      aria-labelledby="temporary-task-list-title"
-      data-ui-anchor="modal"
-    >
-      <header>
-        <div>
-          <p className="eyebrow">临时任务清单 · 每项约 2 分钟</p>
-          <h2 id="temporary-task-list-title">把突然出现的练习先接住</h2>
-        </div>
-        <button type="button" className="icon-button" aria-label="返回本步任务" onClick={onClose}>
-          ×
+    <section className="temporary-task-panel" aria-label="临时任务内容">
+      <div className="temporary-task-toolbar">
+        <p>{tasks.length === 0 ? "暂无临时任务" : `共 ${tasks.length} 项，可逐项展开处理`}</p>
+        <button type="button" className="secondary-button" onClick={onAdd}>
+          + 新增临时任务
         </button>
-      </header>
-      <div className="temporary-task-summary" role="status">
-        <strong>
-          {completedCount} / {tasks.length}
-        </strong>
-        <span>已完成</span>
-        <p>这些任务独立记录，不结束主任务，也不改变主训练进度。</p>
       </div>
       {tasks.length === 0 ? (
-        <div className="temporary-task-empty">
-          <strong>清单还是空的</strong>
-          <p>遇到值得多练一步的地方，就在这里新建一项；每次新增都会保留为独立任务。</p>
-        </div>
+        <p className="temporary-task-empty-inline">
+          阅读时选择“仍没看懂”，或直接新增一项；任务会在这里出现。
+        </p>
       ) : null}
-      <ol className="temporary-task-list" aria-label="临时任务列表">
-        {tasks.map((task, index) => {
-          const copy = task.copy ?? temporaryTaskCopy(isReading, material, task.promptIndex);
-          const expanded = expandedTaskId === task.id;
-          const answerId = `temporary-answer-${task.id}`;
-          return (
-            <li
-              key={task.id}
-              className={`temporary-task-item${task.completed ? " completed" : ""}`}
+      <div className="temporary-task-groups" role="list" aria-label="临时任务列表">
+        {taskGroups.map((group) => (
+          <section className="temporary-task-group" key={group.type}>
+            <div className="temporary-task-group-heading">
+              <h3 id={`temporary-task-group-${group.type}`}>{group.label}</h3>
+              <span>{group.items.length}</span>
+            </div>
+            <ol
+              className="temporary-task-list"
+              aria-labelledby={`temporary-task-group-${group.type}`}
             >
-              <button
-                type="button"
-                className="temporary-task-item-heading"
-                aria-expanded={expanded}
-                aria-controls={`temporary-task-body-${task.id}`}
-                onClick={() => onToggle(task.id)}
-              >
-                <span className="temporary-task-number">{String(index + 1).padStart(2, "0")}</span>
-                <span>
-                  <strong>{copy.title}</strong>
-                  <small>
-                    {task.completed
-                      ? "已完成 · 点击查看"
-                      : expanded
-                        ? "正在填写"
-                        : "待完成 · 点击展开"}
-                  </small>
-                </span>
-                <span className="temporary-task-status" aria-hidden="true">
-                  {task.completed ? "✓" : expanded ? "−" : "+"}
-                </span>
-              </button>
-              {expanded ? (
-                <div className="temporary-task-item-body" id={`temporary-task-body-${task.id}`}>
-                  <div className="temporary-task-prompt">
-                    <span>任务</span>
-                    <p>{copy.prompt}</p>
-                  </div>
-                  <label htmlFor={answerId}>
-                    <span>临时任务 {index + 1} 的回答</span>
-                    <textarea
-                      id={answerId}
-                      value={task.answer}
-                      onChange={(event) => onAnswer(task.id, event.target.value)}
-                      disabled={task.completed}
-                      placeholder="写一个短答案即可，不追求完整。"
-                    />
-                  </label>
-                  {task.completed ? (
-                    <div className="temporary-task-feedback" role="status">
-                      <strong>迁移尝试已记录</strong>
-                      <p>现在自查：{copy.selfCheck}</p>
-                      <small>这是结构自检，不自动判定正误。</small>
-                    </div>
-                  ) : (
-                    <div className="temporary-task-item-actions">
-                      <button
-                        type="button"
-                        className="primary-button strong-action"
-                        onClick={() => onComplete(task.id)}
-                        disabled={!task.answer.trim()}
+              {group.items.map(({ task, taskNumber }) => {
+                const copy: TemporaryTaskCopy =
+                  task.copy ?? temporaryTaskCopy(isReading, material, task.promptIndex);
+                const sourceContext = restoredAnnotationTaskContext(task, material, isReading);
+                const displayTitle =
+                  sourceContext?.targetText && !copy.title.includes(sourceContext.targetText)
+                    ? `“${shortTemporaryTaskTarget(sourceContext.targetText)}”${copy.title}`
+                    : copy.title;
+                const expanded = expandedTaskId === task.id;
+                const answerId = `temporary-answer-${task.id}`;
+                const intensiveSession = task.intensiveSessionId
+                  ? intensiveSessions[task.intensiveSessionId]
+                  : null;
+                return (
+                  <li
+                    key={task.id}
+                    className={`temporary-task-item${intensiveSession ? " intensive" : ""}${task.completed ? " completed" : ""}`}
+                  >
+                    <button
+                      type="button"
+                      className="temporary-task-item-heading"
+                      aria-expanded={expanded}
+                      aria-controls={`temporary-task-body-${task.id}`}
+                      onClick={() => onToggle(task.id)}
+                    >
+                      <span className="temporary-task-number">
+                        {String(taskNumber).padStart(2, "0")}
+                      </span>
+                      <span>
+                        <strong>{displayTitle}</strong>
+                        <small>
+                          {task.completed
+                            ? "已完成 · 点击查看"
+                            : expanded
+                              ? "正在填写"
+                              : "待完成 · 点击展开"}
+                        </small>
+                      </span>
+                      <span className="temporary-task-status" aria-hidden="true">
+                        {task.completed ? "✓" : expanded ? "−" : "+"}
+                      </span>
+                    </button>
+                    {expanded ? (
+                      <div
+                        className="temporary-task-item-body"
+                        id={`temporary-task-body-${task.id}`}
                       >
-                        完成并查看自检
-                      </button>
-                    </div>
-                  )}
-                </div>
-              ) : null}
-            </li>
-          );
-        })}
-      </ol>
-      <footer>
-        <button type="button" className="quiet-button" onClick={onClose}>
-          返回主任务
-        </button>
-        <button type="button" className="primary-button strong-action" onClick={onAdd}>
-          + 新增一个临时任务
-        </button>
-      </footer>
+                        {!intensiveSession ? (
+                          <>
+                            {sourceContext?.sourceText ? (
+                              <div className="temporary-task-source">
+                                <span>原句</span>
+                                <blockquote>{sourceContext.sourceText}</blockquote>
+                                {sourceContext.targetText ? (
+                                  <p>
+                                    本次处理：<strong>{sourceContext.targetText}</strong>
+                                  </p>
+                                ) : null}
+                              </div>
+                            ) : null}
+                            <div className="temporary-task-prompt">
+                              <span>你要做什么</span>
+                              <p>
+                                {selfContainedTemporaryPrompt(
+                                  copy.prompt,
+                                  sourceContext?.targetText,
+                                )}
+                              </p>
+                            </div>
+                          </>
+                        ) : null}
+                        {intensiveSession ? (
+                          <IntensiveTemporaryTaskBody
+                            session={intensiveSession}
+                            onTranslationChange={(value) =>
+                              onIntensiveTranslationChange(intensiveSession.id, value)
+                            }
+                            onAnalyze={() => onAnalyzeIntensive(intensiveSession.id)}
+                            onFollowUp={(target, question) =>
+                              onAskIntensiveFollowUp(intensiveSession.id, target, question)
+                            }
+                          />
+                        ) : (
+                          <>
+                            <label htmlFor={answerId}>
+                              <span>你的回答</span>
+                              <textarea
+                                aria-label={`临时任务 ${taskNumber} 的回答`}
+                                id={answerId}
+                                value={task.answer}
+                                onChange={(event) => onAnswer(task.id, event.target.value)}
+                                disabled={task.completed}
+                                placeholder={
+                                  copy.answerHint ??
+                                  (sourceContext?.targetText
+                                    ? `围绕“${sourceContext.targetText}”写一个短答案。`
+                                    : "写一个短答案即可，不追求完整。")
+                                }
+                              />
+                            </label>
+                            {task.completed ? (
+                              <div className="temporary-task-feedback" role="status">
+                                <strong>迁移尝试已记录</strong>
+                                <p>现在自查：{copy.selfCheck}</p>
+                                <small>这是结构自检，不自动判定正误。</small>
+                              </div>
+                            ) : (
+                              <div className="temporary-task-item-actions">
+                                <button
+                                  type="button"
+                                  className="primary-button strong-action"
+                                  onClick={() => onComplete(task.id)}
+                                  disabled={!task.answer.trim()}
+                                >
+                                  完成并查看自检
+                                </button>
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    ) : null}
+                  </li>
+                );
+              })}
+            </ol>
+          </section>
+        ))}
+      </div>
     </section>
   );
 }
@@ -3067,6 +3588,11 @@ interface ReadingPaneProps {
   onOpenTemporaryTask: () => void;
   onReviewAnnotation: (annotationId: string) => void;
   onError: (message: string | null) => void;
+  intensiveSession: IntensiveReadingSession | null;
+  onExitIntensive: () => void;
+  onIntensiveMarksChange: (marks: SentenceComponentMark[]) => void;
+  onIntensiveStylesChange: (styles: ComponentStyleMap) => void;
+  onIntensiveFollowUp: (target: IntensiveFollowUpTarget, question: string) => void;
 }
 
 function ReadingPane({
@@ -3080,6 +3606,11 @@ function ReadingPane({
   onOpenTemporaryTask,
   onReviewAnnotation,
   onError,
+  intensiveSession,
+  onExitIntensive,
+  onIntensiveMarksChange,
+  onIntensiveStylesChange,
+  onIntensiveFollowUp,
 }: ReadingPaneProps) {
   const [readingProgress, setReadingProgress] = useState(0);
   const [focusMode, setFocusMode] = useState(false);
@@ -3182,6 +3713,19 @@ function ReadingPane({
     setLocatorSearched(false);
   };
 
+  if (intensiveSession) {
+    return (
+      <IntensiveReadingPane
+        session={intensiveSession}
+        reducedMotion={reducedMotion}
+        onExit={onExitIntensive}
+        onMarksChange={onIntensiveMarksChange}
+        onStylesChange={onIntensiveStylesChange}
+        onFollowUp={onIntensiveFollowUp}
+      />
+    );
+  }
+
   return (
     <article
       className={`material-pane${focusMode ? " focus-reading" : ""}`}
@@ -3211,38 +3755,6 @@ function ReadingPane({
           <b style={{ transform: `scaleX(${readingProgress / 100})` }} />
         </i>
         <small>{readingProgress}%</small>
-      </div>
-      <div className="reading-viewbar" role="toolbar" aria-label="阅读视图设置">
-        <button
-          type="button"
-          aria-label="回到文章开头"
-          data-tooltip="回到文章开头"
-          onClick={(event) => event.currentTarget.closest("article")?.scrollTo({ top: 0 })}
-        >
-          <ArrowLineUp size={18} />
-        </button>
-        <button
-          type="button"
-          className={focusMode ? "active" : ""}
-          aria-label={focusMode ? "退出专注阅读" : "进入专注阅读"}
-          data-tooltip={focusMode ? "退出专注阅读" : "进入专注阅读"}
-          aria-pressed={focusMode}
-          onClick={() => setFocusMode((current) => !current)}
-        >
-          <Target size={18} />
-        </button>
-        <button
-          type="button"
-          aria-label={`切换正文字号，当前${textScaleLabel}`}
-          data-tooltip={`正文字号：${textScaleLabel}`}
-          onClick={() =>
-            setTextScale((current) =>
-              current === "compact" ? "default" : current === "default" ? "large" : "compact",
-            )
-          }
-        >
-          <TextT size={19} />
-        </button>
       </div>
       <div className="material-heading">
         <h2 id="material-title">{material.title}</h2>
@@ -3321,6 +3833,7 @@ function ReadingPane({
             className={`reading-paragraph-group${locatorMatches.some((match) => match.paragraphId === paragraph.paragraph_id) ? " context-located" : ""}`}
             id={`reading-paragraph-${paragraph.paragraph_id}`}
             key={paragraph.paragraph_id}
+            tabIndex={-1}
           >
             <PremeasuredAnnotatedParagraph
               paragraphId={paragraph.paragraph_id}
@@ -3399,6 +3912,7 @@ function ReadingPane({
       <div
         ref={dockRef}
         className={`reading-command-dock${dockPosition ? " floating" : ""}${dockLocked ? " locked" : " unlocked"}`}
+        role="toolbar"
         aria-label="阅读快捷操作"
         style={dockPosition ?? undefined}
       >
@@ -3412,17 +3926,46 @@ function ReadingPane({
         >
           <DotsSixVertical size={17} />
         </button>
-        <button type="button" onClick={onSelectText}>
-          <Target size={17} />
-          标记选区
+        <button
+          type="button"
+          data-tooltip="滚动到文章开头"
+          onClick={() =>
+            materialRef.current?.scrollTo({
+              top: 0,
+              behavior: reducedMotion ? "auto" : "smooth",
+            })
+          }
+        >
+          <ArrowLineUp size={17} />
+          回到顶部
         </button>
-        <button type="button" onClick={onPromptUncertain}>
-          <BookOpen size={17} />
-          指出卡点
+        <button
+          type="button"
+          className={focusMode ? "active" : ""}
+          aria-label={focusMode ? "退出专注阅读" : "进入专注阅读"}
+          aria-pressed={focusMode}
+          data-tooltip={focusMode ? "恢复标题、定位和文章评价" : "只保留正文阅读"}
+          onClick={() => setFocusMode((current) => !current)}
+        >
+          <Target size={17} />
+          {focusMode ? "退出专注" : "专注阅读"}
+        </button>
+        <button
+          type="button"
+          aria-label={`切换正文字号，当前${textScaleLabel}`}
+          data-tooltip="在较小、标准和较大字号间循环"
+          onClick={() =>
+            setTextScale((current) =>
+              current === "compact" ? "default" : current === "default" ? "large" : "compact",
+            )
+          }
+        >
+          <TextT size={17} />
+          字号 · {textScaleLabel}
         </button>
         <button type="button" onClick={onOpenTemporaryTask}>
           <PlusSquare size={17} />
-          加入临时任务
+          新建临时任务
         </button>
         <button
           type="button"
@@ -3607,16 +4150,22 @@ function AnnotatedParagraphRange({
       if (!primary) {
         return <span key={`${valueStart}-${valueEnd}`}>{value}</span>;
       }
+      const { leadingWhitespace, annotatedText, trailingWhitespace } =
+        splitAnnotationDisplayText(value);
+      if (!annotatedText) {
+        return <span key={`${valueStart}-${valueEnd}`}>{value}</span>;
+      }
       const labels = segment.annotations.map((annotation) => ANNOTATION_LABELS[annotation.kind]);
       const expandsInline = primary.kind === "vocabulary";
       const expanded = expandedAnnotationId === primary.annotation_id;
       const showExpandedNote = expandsInline && expanded && valueEnd === segment.end;
       return (
         <span className="inline-annotation-wrap" key={`${valueStart}-${valueEnd}`}>
+          {leadingWhitespace}
           <button
             type="button"
             className={`inline-annotation annotation-kind-${primary.kind}`}
-            aria-label={`${labels.join("、")}标记：${value}`}
+            aria-label={`${labels.join("、")}标记：${annotatedText}`}
             aria-expanded={expandsInline ? expanded : undefined}
             title={`${labels.join("、")} · 点击查看你的解释`}
             onClick={() =>
@@ -3625,8 +4174,9 @@ function AnnotatedParagraphRange({
                 : onReviewAnnotation(primary.annotation_id)
             }
           >
-            {value}
+            {annotatedText}
           </button>
+          {trailingWhitespace}
           {showExpandedNote ? (
             <span className="inline-anchor-note" role="note">
               <strong>语境锚点</strong>
@@ -3694,7 +4244,8 @@ interface SavedAnnotationsProps {
   onToggle: () => void;
 }
 
-function SavedAnnotations({ annotations, expanded, onToggle }: SavedAnnotationsProps) {
+export function SavedAnnotations({ annotations, expanded, onToggle }: SavedAnnotationsProps) {
+  const [expandedAnnotationId, setExpandedAnnotationId] = useState<string | null>(null);
   return (
     <section className="saved-annotations" aria-labelledby="saved-annotations-title">
       <button
@@ -3717,26 +4268,110 @@ function SavedAnnotations({ annotations, expanded, onToggle }: SavedAnnotationsP
       {expanded ? (
         <div id="saved-annotations-list" className="saved-annotations-list">
           {annotations.length > 0 ? (
-            annotations.map((annotation) => (
-              <article
-                key={annotation.annotation_id}
-                id={`saved-annotation-${annotation.annotation_id}`}
-                className={`saved-annotation-card annotation-kind-${annotation.kind}`}
-                tabIndex={-1}
-              >
-                <div>
-                  <span>{ANNOTATION_LABELS[annotation.kind]}</span>
-                  <small>第 {annotation.span.paragraph_id.split("_p").at(-1)} 段</small>
-                </div>
-                <blockquote>“{annotation.span.text_quote}”</blockquote>
-                <p>{annotation.user_explanation}</p>
-              </article>
-            ))
+            annotations.map((annotation) => {
+              const itemExpanded = expandedAnnotationId === annotation.annotation_id;
+              const detailId = `saved-annotation-detail-${annotation.annotation_id}`;
+              return (
+                <article
+                  key={annotation.annotation_id}
+                  id={`saved-annotation-${annotation.annotation_id}`}
+                  className={`saved-annotation-card annotation-kind-${annotation.kind}${itemExpanded ? " expanded" : ""}`}
+                >
+                  <button
+                    type="button"
+                    className="saved-annotation-item-toggle"
+                    aria-expanded={itemExpanded}
+                    aria-controls={detailId}
+                    onClick={() =>
+                      setExpandedAnnotationId((current) =>
+                        current === annotation.annotation_id ? null : annotation.annotation_id,
+                      )
+                    }
+                  >
+                    <span className="saved-annotation-item-copy">
+                      <span>
+                        <strong>{ANNOTATION_LABELS[annotation.kind]}</strong>
+                        <small>
+                          第 {/(\d+)$/u.exec(annotation.span.paragraph_id)?.[1] ?? "?"} 段
+                        </small>
+                      </span>
+                      <q>{annotation.span.text_quote}</q>
+                    </span>
+                    <span className="saved-annotation-item-status" aria-hidden="true">
+                      {itemExpanded ? "−" : "+"}
+                    </span>
+                  </button>
+                  {itemExpanded ? (
+                    <div className="saved-annotation-detail" id={detailId}>
+                      <section>
+                        <span>你的说明</span>
+                        <p>{annotation.user_explanation}</p>
+                      </section>
+                      {annotation.analysis ? (
+                        <SavedAnnotationAnalysis analysis={annotation.analysis} />
+                      ) : (
+                        <p className="saved-annotation-no-analysis">
+                          这条标注保存时没有附带 Agent 解释，目前只保留了你的说明。
+                        </p>
+                      )}
+                    </div>
+                  ) : null}
+                </article>
+              );
+            })
           ) : (
             <p className="empty-annotations">还没有记录。选中原文，写下它的作用或你的卡点。</p>
           )}
         </div>
       ) : null}
+    </section>
+  );
+}
+
+function SavedAnnotationAnalysis({ analysis }: { analysis: AnnotationAnalysisView }) {
+  return (
+    <section className="saved-annotation-analysis" aria-label="Agent 具体解释">
+      <header>
+        <span>Agent 解释</span>
+        <small>
+          {analysis.source === "model"
+            ? "模型分析"
+            : analysis.source === "local_dictionary"
+              ? "词典核验"
+              : "保守降级"}
+        </small>
+      </header>
+      {analysis.vocabulary_note ? <p>{analysis.vocabulary_note}</p> : null}
+      {analysis.translation ? (
+        <p>
+          <strong>参考翻译：</strong>
+          {analysis.translation}
+        </p>
+      ) : null}
+      {analysis.grammar_structure.length > 0 ? (
+        <div>
+          <strong>结构拆解</strong>
+          <ul>
+            {analysis.grammar_structure.map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      <p>
+        <strong>具体诊断：</strong>
+        {analysis.diagnosis}
+      </p>
+      <ol>
+        {analysis.breakdown.map((step) => (
+          <li key={step}>{step}</li>
+        ))}
+      </ol>
+      <p className="saved-annotation-next-check">
+        <strong>下一步自查：</strong>
+        {analysis.next_check}
+      </p>
+      <small>{analysis.boundary_note}</small>
     </section>
   );
 }

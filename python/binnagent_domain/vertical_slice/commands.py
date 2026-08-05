@@ -33,6 +33,7 @@ class AddAnnotation:
     span: TextSpan
     user_explanation: str
     now: datetime
+    analysis_snapshot: dict[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)

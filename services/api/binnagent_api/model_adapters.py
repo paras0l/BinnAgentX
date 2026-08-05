@@ -39,7 +39,7 @@ from binnagent_domain.learning.grammar_ontology import (
     load_grammar_catalog,
     resolve_construction_id,
 )
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from binnagent_api.prompt_runtime import prompt_runtime
 from binnagent_api.settings import Settings, get_settings
@@ -196,7 +196,7 @@ class _RemoteModelAdapterBase:
         headers = {"Content-Type": "application/json"}
         if self._api_key:
             headers["Authorization"] = f"Bearer {self._api_key}"
-        attempts = 2 if self._provider == "longcat" else 1
+        attempts = 2
         for attempt in range(attempts):
             try:
                 async with httpx2.AsyncClient(
@@ -546,6 +546,8 @@ class RemoteAnnotationAnalysisAdapter(_RemoteModelAdapterBase):
         max_tokens = _policy_int(
             rendered, "max_tokens", self._max_tokens, minimum=200, maximum=4000
         )
+        if request.analysis_mode == "intensive_reading":
+            max_tokens = self._max_tokens
         payload = self._structured_payload(
             messages=messages,
             schema=schema,
@@ -554,6 +556,37 @@ class RemoteAnnotationAnalysisAdapter(_RemoteModelAdapterBase):
             longcat_thinking="disabled",
         )
         response = await self._generate_payload(payload)
+        try:
+            AnnotationAnalysisOutput.model_validate(response.payload)
+        except ValidationError:
+            messages.extend(
+                [
+                    {
+                        "role": "assistant",
+                        "content": json.dumps(response.payload, ensure_ascii=False),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            "上一个 JSON 未通过既定 Schema 校验。请修复字段、枚举、长度和必填项，"
+                            "完整重发一个符合 Schema 的 JSON 对象；不要解释，不要 Markdown。"
+                        ),
+                    },
+                ]
+            )
+            repaired = await self._generate_payload(
+                self._structured_payload(
+                    messages=messages,
+                    schema=schema,
+                    temperature=0.0,
+                    max_tokens=max_tokens,
+                    longcat_thinking="disabled",
+                )
+            )
+            response = ModelAdapterResponse(
+                payload=repaired.payload,
+                actual_cost_usd=response.actual_cost_usd + repaired.actual_cost_usd,
+            )
         return ModelAdapterResponse(
             payload=response.payload,
             actual_cost_usd=response.actual_cost_usd,
@@ -667,7 +700,13 @@ def annotation_analysis_adapter(
     resolved = settings or get_settings()
     if resolved.model_adapter == "deterministic_fixture":
         return DeterministicAnnotationAnalysisAdapter()
-    return _remote_adapter(RemoteAnnotationAnalysisAdapter, resolved)
+    return _remote_adapter(
+        RemoteAnnotationAnalysisAdapter,
+        resolved,
+        minimum_max_tokens=1600,
+        max_tokens=resolved.annotation_analysis_max_tokens,
+        timeout_seconds=resolved.annotation_analysis_timeout_seconds,
+    )
 
 
 def expression_review_adapter(settings: Settings | None = None) -> ExpressionReviewAdapter:
@@ -743,6 +782,16 @@ def _annotation_analysis_system_prompt(schema: dict[str, Any]) -> str:
         "忠实的中文译文，并用 grammar_structure 的1到6项展示主干、从句与修饰层级；"
         "不得扩展翻译全文。"
         "两种模式都要提供1到4步拆解和一个可自行验证的下一步；不得回答选择题、不得代做。"
+        "analysis_mode=intensive_reading 时，学习者已经先提交翻译和成分标记；"
+        "必须联合原句、学习者译文和学习者标记进行核对。translation_review 用具体差异解释译文，"
+        "但不得只给分数或笼统对错；knowledge_cards 只返回本句确实出现且值得迁移的规则。"
+        "sentence_components、grammar_points、collocations 和"
+        "familiar_word_senses 中每一项的 text_quote 必须逐字来自 selected_span；没有可靠、"
+        "相关内容的类别必须返回空数组，不得为凑齐栏目而生成。sentence_components 的 start/end"
+        "是 selected_span 内字符偏移，系统候选不能声称覆盖学习者标记。standard 模式下这四类"
+        "精读扩展字段返回空数组，translation_review 为 null，knowledge_cards 为空数组。"
+        "存在 follow_up_question 时，只回答该追问对象，follow_up_answer 必须有值，依据必须逐字来自"
+        "selected_span；没有追问时 follow_up_answer 必须为 null。"
         "evidence_quote 必须逐字取自段落上下文，answer_text 必须为 null。只返回 JSON。Schema: "
         + json.dumps(schema, ensure_ascii=False, separators=(",", ":"))
     )
@@ -750,12 +799,32 @@ def _annotation_analysis_system_prompt(schema: dict[str, Any]) -> str:
 
 def _annotation_analysis_user_prompt(request: AnnotationAnalysisRequest) -> str:
     memory = "\n".join(f"- {title}: {content}" for title, content in request.learner_memory)
+    component_marks = "\n".join(
+        f"- {role} [{start}, {end}): {text_quote}"
+        for role, start, end, text_quote in request.learner_component_marks
+    )
+    follow_up = (
+        "<follow_up>\n"
+        f"target_kind: {request.follow_up_target_kind}\n"
+        f"target_label: {request.follow_up_target_label}\n"
+        f"target_content: {request.follow_up_target_content}\n"
+        f"question: {request.follow_up_question}\n"
+        "</follow_up>\n"
+        if request.follow_up_question
+        else "<follow_up>无</follow_up>\n"
+    )
     return (
         f"任务内容版本: {request.content_version_id}\n"
         f"selection_scope: {request.selection_scope}\n"
+        f"analysis_mode: {request.analysis_mode}\n"
         f"<selected_span>\n{request.selected_text}\n</selected_span>\n"
         f"<paragraph_context>\n{request.paragraph_context}\n</paragraph_context>\n"
         f"<learner_question>\n{request.learner_question}\n</learner_question>\n"
+        "<learner_translation>\n"
+        f"{request.learner_translation or '未提供'}\n"
+        "</learner_translation>\n"
+        f"<learner_component_marks>\n{component_marks or '未提供'}\n</learner_component_marks>\n"
+        f"{follow_up}"
         f"<learner_memory>\n{memory or '无'}\n</learner_memory>"
     )
 

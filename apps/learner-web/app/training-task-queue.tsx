@@ -4,7 +4,11 @@ import { useState } from "react";
 
 import { BookOpenText, CheckCircle, Clock, GearSix, Plus, Sparkle } from "@phosphor-icons/react";
 
-import type { PersonalizedMaterialGenerationInput, PersonalizedTrainingMaterial } from "../lib/api";
+import type {
+  ImportedTrainingArticleInput,
+  PersonalizedMaterialGenerationInput,
+  PersonalizedTrainingMaterial,
+} from "../lib/api";
 
 interface SystemTrainingTask {
   title: string;
@@ -21,6 +25,7 @@ interface TrainingTaskQueueProps {
   isGenerating: boolean;
   systemTask: SystemTrainingTask;
   onGenerate: (input: PersonalizedMaterialGenerationInput) => void;
+  onImport: (input: ImportedTrainingArticleInput) => void;
   onConfigureObsidian: () => void;
   onOpenSystemTask: () => void;
   onOpenMaterial: (material: PersonalizedTrainingMaterial) => void;
@@ -31,10 +36,23 @@ const STATUS_LABEL: Record<PersonalizedTrainingMaterial["status"], string> = {
   requested: "等待生成",
   generating: "正在生成",
   validating: "正在校验",
+  awaiting_review: "等待质量审核",
   ready: "待训练",
   in_progress: "进行中",
   completed: "已完成",
   generation_failed: "生成失败",
+  rejected: "质量审核未通过",
+};
+
+const IMPORTED_STATUS_LABEL: Record<PersonalizedTrainingMaterial["status"], string> = {
+  requested: "等待处理",
+  generating: "正在处理",
+  validating: "正在校验",
+  awaiting_review: "等待质量审核",
+  ready: "待训练",
+  in_progress: "进行中",
+  completed: "已完成",
+  generation_failed: "处理失败",
   rejected: "质量审核未通过",
 };
 
@@ -53,6 +71,7 @@ export function TrainingTaskQueue({
   isGenerating,
   systemTask,
   onGenerate,
+  onImport,
   onConfigureObsidian,
   onOpenSystemTask,
   onOpenMaterial,
@@ -60,6 +79,9 @@ export function TrainingTaskQueue({
 }: TrainingTaskQueueProps) {
   const [goal, setGoal] = useState("综合巩固近期笔记");
   const [kinds, setKinds] = useState<PersonalizedMaterialGenerationInput["kinds"]>([]);
+  const [importTitle, setImportTitle] = useState("");
+  const [importContent, setImportContent] = useState("");
+  const [importGoal, setImportGoal] = useState("理解文章并完成读写迁移");
   const toggleKind = (kind: PersonalizedMaterialGenerationInput["kinds"][number]) => {
     setKinds((current) =>
       current.includes(kind) ? current.filter((item) => item !== kind) : [...current, kind],
@@ -82,7 +104,7 @@ export function TrainingTaskQueue({
               onClick={() => onGenerate({ goal, kinds })}
             >
               <Plus size={16} weight="bold" />
-              {isGenerating ? "正在生成并加入队列…" : "从 Obsidian 笔记生成新材料"}
+              {isGenerating ? "正在加入队列…" : "从 Obsidian 笔记生成新材料"}
             </button>
           ) : (
             <button type="button" className="quiet-button" onClick={onConfigureObsidian}>
@@ -132,6 +154,68 @@ export function TrainingTaskQueue({
         </details>
       ) : null}
 
+      <details className="personalized-generation-options imported-article-options">
+        <summary>导入已有文章</summary>
+        <p>导入后不再由 Agent 生成文章；题目、标注、质量审核和训练仍走原流程。</p>
+        <label>
+          <span>选择文本文件（可选）</span>
+          <input
+            type="file"
+            accept=".txt,.md,text/plain,text/markdown"
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (!file) return;
+              void file.text().then((text) => {
+                setImportContent(text);
+                setImportTitle((current) => current || file.name.replace(/\.(txt|md)$/i, ""));
+              });
+            }}
+          />
+        </label>
+        <label>
+          <span>文章标题</span>
+          <input
+            value={importTitle}
+            maxLength={160}
+            onChange={(event) => setImportTitle(event.target.value)}
+            placeholder="输入文章标题"
+          />
+        </label>
+        <label>
+          <span>文章正文</span>
+          <textarea
+            value={importContent}
+            maxLength={30000}
+            rows={8}
+            onChange={(event) => setImportContent(event.target.value)}
+            placeholder="粘贴英文文章；请用空行分隔为 3–6 段"
+          />
+        </label>
+        <label>
+          <span>本次目标</span>
+          <input
+            value={importGoal}
+            maxLength={240}
+            onChange={(event) => setImportGoal(event.target.value)}
+          />
+        </label>
+        <button
+          type="button"
+          className="quiet-button"
+          disabled={isGenerating || !importTitle.trim() || !importContent.trim()}
+          onClick={() =>
+            onImport({
+              title: importTitle.trim(),
+              content: importContent,
+              goal: importGoal.trim() || "理解文章并完成读写迁移",
+            })
+          }
+        >
+          <Plus size={16} weight="bold" />
+          {isGenerating ? "正在加入队列…" : "导入并加入训练队列"}
+        </button>
+      </details>
+
       {obsidianConfigurationChecked && !obsidianConfigured ? (
         <p className="training-queue-notice">
           Obsidian 尚未完成配对或没有成功同步记录，配置好后即可生成个性化材料。
@@ -174,12 +258,29 @@ export function TrainingTaskQueue({
               )}
             </div>
             <div>
-              <span className="training-task-status">{STATUS_LABEL[material.status]}</span>
+              <span className="training-task-status">
+                {
+                  (material.source_kind === "imported" ? IMPORTED_STATUS_LABEL : STATUS_LABEL)[
+                    material.status
+                  ]
+                }
+              </span>
               <h3>{material.title}</h3>
               <p>
-                个性化阅读 · {material.paragraphs.length} 段 · 综合 {material.source_context_count}{" "}
-                篇笔记 · {shortDate(material.created_at)}
+                {material.source_kind === "imported" ? "导入阅读" : "个性化阅读"} ·{" "}
+                {material.paragraphs.length} 段
+                {material.source_kind === "imported"
+                  ? ""
+                  : ` · 综合 ${material.source_context_count} 篇笔记`}{" "}
+                · {shortDate(material.created_at)}
               </p>
+              {material.failure_reason &&
+              ["generation_failed", "rejected"].includes(material.status) ? (
+                <p className="training-task-failure-reason">
+                  <strong>未通过原因：</strong>
+                  {material.failure_reason}
+                </p>
+              ) : null}
             </div>
             <button
               type="button"
@@ -197,8 +298,12 @@ export function TrainingTaskQueue({
               {!material.training_eligible
                 ? material.start_block_reason === "material_not_ready"
                   ? ["generation_failed", "rejected"].includes(material.status)
-                    ? "重新生成"
-                    : "生成处理中"
+                    ? material.source_kind === "imported"
+                      ? "重新处理"
+                      : "重新生成"
+                    : material.source_kind === "imported"
+                      ? "处理中"
+                      : "生成处理中"
                   : material.start_block_reason === "quality_review_required"
                     ? "质量审核中"
                     : material.start_block_reason === "active_training"
@@ -219,7 +324,7 @@ export function TrainingTaskQueue({
           <Sparkle size={24} weight="duotone" />
           <div>
             <strong>队列里还没有个性化材料</strong>
-            <p>生成后会保存在这里，不会混入学习资产索引。</p>
+            <p>生成或导入后会保存在这里，不会混入学习资产索引。</p>
           </div>
         </div>
       ) : null}

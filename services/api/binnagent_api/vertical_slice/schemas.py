@@ -46,12 +46,88 @@ class AnnotationRequest(BaseModel):
     kind: AnnotationKind
     span: SpanInput
     user_explanation: Annotated[str, Field(min_length=1, max_length=2000)]
+    analysis: dict[str, object] | None = None
+
+
+class IntensiveFollowUpInput(BaseModel):
+    target_kind: Literal[
+        "translation_issue", "knowledge_card", "component_comparison", "explanation"
+    ]
+    target_label: Annotated[str, Field(min_length=1, max_length=120)]
+    target_content: Annotated[str, Field(min_length=1, max_length=1200)]
+    question: Annotated[str, Field(min_length=1, max_length=600)]
 
 
 class AnnotationAnalysisRequest(BaseModel):
     expected_version: Annotated[int, Field(ge=1)]
     span: SpanInput
     learner_question: Annotated[str, Field(min_length=1, max_length=1200)]
+    analysis_mode: Literal["standard", "intensive_reading"] = "standard"
+    learner_translation: Annotated[str, Field(min_length=1, max_length=2000)] | None = None
+    learner_component_marks: Annotated[
+        list["LearnerComponentMarkInput"], Field(default_factory=list, max_length=16)
+    ]
+    follow_up: IntensiveFollowUpInput | None = None
+
+
+SentenceComponentRole = Literal[
+    "subject",
+    "predicate",
+    "object",
+    "predicative",
+    "attributive",
+    "adverbial",
+    "complement",
+    "appositive",
+    "connector",
+]
+
+
+class LearnerComponentMarkInput(BaseModel):
+    role: SentenceComponentRole
+    start: Annotated[int, Field(ge=0)]
+    end: Annotated[int, Field(ge=1)]
+    text_quote: Annotated[str, Field(min_length=1, max_length=1000)]
+
+
+class AnchoredSentenceInsightView(BaseModel):
+    text_quote: str
+    explanation: str
+
+
+class SentenceComponentAnalysisView(AnchoredSentenceInsightView):
+    role: SentenceComponentRole
+    start: int
+    end: int
+
+
+class TranslationReviewIssueView(BaseModel):
+    kind: Literal["word_meaning", "scope", "logic", "omission", "tone", "structure"]
+    source_quote: str
+    learner_excerpt: str | None
+    explanation: str
+    suggestion: str
+
+
+class TranslationReviewView(BaseModel):
+    summary: str
+    strengths: list[str]
+    issues: list[TranslationReviewIssueView]
+
+
+class KnowledgeCardView(BaseModel):
+    category: Literal["grammar", "collocation", "vocabulary", "translation"]
+    title: str
+    source_quote: str
+    rule: str
+    explanation: str
+    check_question: str
+
+
+class FollowUpAnswerView(BaseModel):
+    answer: str
+    evidence_quotes: list[str]
+    next_questions: list[str]
 
 
 class AnnotationAnalysisView(BaseModel):
@@ -63,11 +139,19 @@ class AnnotationAnalysisView(BaseModel):
     selection_scope: Literal["word_or_phrase", "sentence_or_paragraph"]
     translation: str | None
     vocabulary_note: str | None
+    learning_count: Annotated[int, Field(ge=1)] | None
     grammar_structure: list[str]
+    sentence_components: list[SentenceComponentAnalysisView] = Field(default_factory=list)
+    grammar_points: list[AnchoredSentenceInsightView] = Field(default_factory=list)
+    collocations: list[AnchoredSentenceInsightView] = Field(default_factory=list)
+    familiar_word_senses: list[AnchoredSentenceInsightView] = Field(default_factory=list)
+    translation_review: TranslationReviewView | None = None
+    knowledge_cards: list[KnowledgeCardView] = Field(default_factory=list)
+    follow_up_answer: FollowUpAnswerView | None = None
     diagnosis: str
     breakdown: list[str]
     next_check: str
-    source: Literal["model", "local_fallback"]
+    source: Literal["model", "local_dictionary", "local_fallback"]
     reason_code: str
     boundary_note: str
 
@@ -173,6 +257,7 @@ class AnnotationView(BaseModel):
     kind: AnnotationKind
     span: AnnotationSpanView
     user_explanation: str
+    analysis: AnnotationAnalysisView | None
     created_at: datetime
 
 

@@ -2,7 +2,45 @@ import httpx2
 import pytest
 from binnagent_api import personalized_material_service
 from binnagent_api.model_adapters import PersonalizedReadingOutput
-from binnagent_api.personalized_package import build_article, build_objective_bundle
+from binnagent_api.personalized_package import (
+    build_article,
+    build_imported_article,
+    build_objective_bundle,
+    deterministic_assessment,
+)
+
+
+def test_imported_assessment_fallback_keeps_question_types_and_stems_distinct() -> None:
+    material_id = "material_imported_fallback"
+    objective = build_objective_bundle(
+        material_id=material_id,
+        learner_id="learner_imported_fallback",
+        source_asset_ids=[f"{material_id}_imported_article"],
+        goal="理解文章并完成读写迁移",
+        adaptation_profile={"overall_level": "developing"},
+    )
+    article = build_imported_article(
+        material_id=material_id,
+        objective=objective,
+        title="Keep Going",
+        paragraphs=[
+            "A learner begins by noticing one clear idea in a new text.",
+            "Although progress can be slow, careful practice makes the next step easier.",
+            "The learner finally uses that evidence to explain the article's message.",
+        ],
+        focus_points=["evidence"],
+    )
+
+    output = deterministic_assessment(article=article, objective=objective)
+
+    assert [question.question_type for question in output.questions] == [
+        "detail_comprehension",
+        "evidence_reasoning",
+        "inference",
+    ]
+    assert len({question.stem for question in output.questions}) == 3
+    assert [question.evidence_paragraph_index for question in output.questions] == [0, 1, 2]
+    assert len({tuple(question.hints) for question in output.questions}) == 3
 
 
 @pytest.mark.asyncio

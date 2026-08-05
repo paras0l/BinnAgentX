@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from hashlib import sha256
 from typing import Any
 
@@ -47,13 +48,13 @@ def build_objective_bundle(
     source_asset_ids: list[str],
     goal: str,
     adaptation_profile: dict[str, Any],
+    construction_id: str = "clause.adverbial.concession.although.v1",
+    discourse_target: str = "concession",
 ) -> LearningObjectiveBundle:
     if not source_asset_ids:
         raise ValueError("personalized_objective_requires_source_assets")
     level = str(adaptation_profile.get("overall_level", "developing"))
-    discourse_target = "concession"
     reading_target = "evidence_boundary"
-    construction_id = "clause.adverbial.concession.although.v1"
     construction = load_grammar_catalog().by_id(construction_id)
     goal_evidence = goal.strip() or "Learner needs a reviewed concession target."
     grammar_target = TargetGrammarStructure(
@@ -95,6 +96,37 @@ def build_objective_bundle(
     )
 
 
+def imported_article_targets(paragraphs: list[str]) -> tuple[str, str, str, str, int]:
+    """Select a supported, uniquely locatable grammar target from imported text."""
+    connector_targets = (
+        ("Although", "Whenever", "clause.adverbial.concession.although.v1", "concession"),
+        ("Because", "Despite", "clause.adverbial.cause.because.v1", "cause"),
+        ("When", "Once", "clause.adverbial.time.when.v1", "time"),
+        ("If", "As", "clause.adverbial.condition.if.v1", "condition"),
+    )
+    for canonical, replacement, construction_id, discourse_target in connector_targets:
+        for candidate in (canonical, canonical.lower()):
+            pattern = rf"\b{re.escape(candidate)}\b"
+            matches = [
+                index for index, paragraph in enumerate(paragraphs) if re.search(pattern, paragraph)
+            ]
+            if len(matches) == 1 and len(re.findall(pattern, paragraphs[matches[0]])) == 1:
+                return construction_id, discourse_target, candidate, replacement, matches[0]
+
+    for paragraph_index, paragraph in enumerate(paragraphs):
+        for match in re.finditer(r"\b[A-Za-z]{2,}\b", paragraph):
+            candidate = match.group(0)
+            if sum(value.count(candidate) for value in paragraphs) == 1:
+                return (
+                    "clause.main.finite.v1",
+                    "claim_evidence",
+                    candidate,
+                    "x" * len(candidate),
+                    paragraph_index,
+                )
+    raise ValueError("imported_article_grammar_target_unavailable")
+
+
 def build_article(
     *,
     material_id: str,
@@ -119,6 +151,35 @@ def build_article(
     }
 
 
+def build_imported_article(
+    *,
+    material_id: str,
+    objective: LearningObjectiveBundle,
+    title: str,
+    paragraphs: list[str],
+    focus_points: list[str],
+) -> dict[str, Any]:
+    """Wrap learner-supplied text in the same artifact contract as generated readings."""
+    artifact = ContentArtifact(
+        artifact_id=f"{material_id}_article",
+        version=1,
+        objective_bundle_id=objective.objective_bundle_id,
+        artifact_type="article",
+        generation_inputs_hash=stable_content_hash(
+            {"source_kind": "imported", "title": title, "paragraphs": paragraphs}
+        ),
+        content_hash=stable_content_hash({"title": title, "paragraphs": paragraphs}),
+        producer_version="imported-reading-v1",
+    )
+    return {
+        "artifact": artifact.model_dump(mode="json"),
+        "title": title,
+        "paragraphs": paragraphs,
+        "focus_points": focus_points,
+        "source_titles": [],
+    }
+
+
 def deterministic_assessment(
     *,
     article: dict[str, Any],
@@ -127,6 +188,8 @@ def deterministic_assessment(
     paragraphs = [str(value) for value in article["paragraphs"]]
     if len(paragraphs) < 3:
         raise ValueError("personalized_assessment_requires_three_paragraphs")
+    if article["artifact"].get("producer_version") == "imported-reading-v1":
+        return _deterministic_imported_assessment(article=article, objective=objective)
     evidence = [_evidence_excerpt(paragraph) for paragraph in paragraphs[:3]]
     grammar_index = next(
         (index for index, paragraph in enumerate(paragraphs) if "Although " in paragraph),
@@ -276,6 +339,159 @@ def deterministic_assessment(
                 "State the familiar rule.",
                 "Name one changed condition.",
                 "Use concession to qualify the recommendation.",
+            ],
+        ),
+    )
+
+
+def _deterministic_imported_assessment(
+    *,
+    article: dict[str, Any],
+    objective: LearningObjectiveBundle,
+) -> PersonalizedAssessmentOutput:
+    paragraphs = [str(value) for value in article["paragraphs"]]
+    evidence = [_evidence_excerpt(paragraph) for paragraph in paragraphs[:3]]
+    closing_evidence = _closing_evidence_excerpt(paragraphs[2])
+    questions = [
+        PersonalizedQuestionOutput(
+            question_type="detail_comprehension",
+            difficulty_tier="foundation",
+            stem="Which statement is explicitly supported by the opening paragraph?",
+            options=[
+                PersonalizedQuestionOptionOutput(option_id="A", text=evidence[0]),
+                PersonalizedQuestionOptionOutput(
+                    option_id="B",
+                    text=evidence[1],
+                    error_mechanism="quotes the middle paragraph instead of the opening",
+                ),
+                PersonalizedQuestionOptionOutput(
+                    option_id="C",
+                    text=evidence[2],
+                    error_mechanism="quotes the final paragraph instead of the opening",
+                ),
+            ],
+            answer_option_id="A",
+            evidence_paragraph_index=0,
+            evidence_quote=evidence[0],
+            hints=[
+                "Focus only on what the opening paragraph states.",
+                "Locate the first distinctive words of each option.",
+                "Cross out wording that appears later in the article.",
+                "Choose the statement found directly in the opening paragraph.",
+            ],
+            public_explanation="The opening paragraph contains this statement directly.",
+        ),
+        PersonalizedQuestionOutput(
+            question_type="evidence_reasoning",
+            difficulty_tier="standard",
+            stem=(
+                f'A reader cites "{evidence[1]}". What does a source check show?'
+            ),
+            options=[
+                PersonalizedQuestionOptionOutput(
+                    option_id="A",
+                    text="It comes from the opening paragraph, not the middle paragraph.",
+                    error_mechanism="assigns the quotation to the wrong source location",
+                ),
+                PersonalizedQuestionOptionOutput(
+                    option_id="B",
+                    text="It appears in the middle paragraph exactly as cited.",
+                ),
+                PersonalizedQuestionOptionOutput(
+                    option_id="C",
+                    text="It is not present in the article and should not be cited.",
+                    error_mechanism="rejects a quotation that is present in the source",
+                ),
+            ],
+            answer_option_id="B",
+            evidence_paragraph_index=1,
+            evidence_quote=evidence[1],
+            hints=[
+                "Identify the exact quotation being checked.",
+                "Scan the middle paragraph for its first distinctive words.",
+                "Compare the cited wording with the source word for word.",
+                "Choose the option that reports the verified source location.",
+            ],
+            public_explanation=(
+                "The cited wording occurs verbatim in the middle paragraph, so the source check "
+                "confirms it."
+            ),
+        ),
+        PersonalizedQuestionOutput(
+            question_type="inference",
+            difficulty_tier="advanced",
+            stem=(
+                "What can a reader infer about the role of the sentence "
+                f'"{closing_evidence}" in the article\'s organization?'
+            ),
+            options=[
+                PersonalizedQuestionOptionOutput(
+                    option_id="A",
+                    text="It introduces the topic at the start of the opening paragraph.",
+                    error_mechanism="moves the sentence from the conclusion to the opening",
+                ),
+                PersonalizedQuestionOptionOutput(
+                    option_id="B",
+                    text="It is unrelated wording that does not appear in the article.",
+                    error_mechanism="denies evidence that appears in the final paragraph",
+                ),
+                PersonalizedQuestionOptionOutput(
+                    option_id="C",
+                    text="It closes the final paragraph and serves as the concluding statement.",
+                ),
+            ],
+            answer_option_id="C",
+            evidence_paragraph_index=2,
+            evidence_quote=closing_evidence,
+            hints=[
+                "This question asks about organization, not just word meaning.",
+                "Locate the quoted sentence before deciding its role.",
+                "Notice what comes after the sentence in the final paragraph.",
+                "Use its position to infer whether it opens, develops, or closes the article.",
+            ],
+            public_explanation=(
+                "The sentence appears at the end of the final paragraph, which makes it the "
+                "article's concluding statement."
+            ),
+        ),
+    ]
+
+    construction_id, target, correct_text, incorrect_text, paragraph_index = (
+        imported_article_targets(paragraphs)
+    )
+    if construction_id != objective.target_grammar_structures[0].construction_id:
+        raise ValueError("imported_article_objective_target_mismatch")
+    return PersonalizedAssessmentOutput(
+        questions=questions,
+        grammar_annotations=[
+            PersonalizedGrammarOutput(
+                paragraph_index=paragraph_index,
+                construction_id=construction_id,
+                target_facets=[GrammarFacet.FORM, GrammarFacet.MEANING],
+                correct_text=correct_text,
+                incorrect_text=incorrect_text,
+                error_type="imported_text_structure",
+                hint="Use the surrounding clause to restore the wording from the source article.",
+                explanation=(
+                    "This span is preserved from the imported article and is reviewed in its "
+                    "original sentence context."
+                ),
+            )
+        ],
+        transfer=PersonalizedTransferOutput(
+            title="Apply the article's reasoning in a new setting",
+            situation=(
+                "A study group faces a new text and must reuse the same reading operation "
+                "without copying the imported article's wording."
+            ),
+            audience="another study group",
+            purpose="transfer the article's reasoning to a different context",
+            target_argument_move=target,
+            optional_active_resource="claim, evidence, and a clearly stated relationship",
+            forbidden_mechanical_use=["Do not copy a complete sentence from the reading."],
+            v1_minimum=[
+                "State a claim for the new setting.",
+                "Support it with a relevant condition or piece of evidence.",
             ],
         ),
     )
@@ -644,6 +860,14 @@ def _evidence_excerpt(paragraph: str) -> str:
     sentence = paragraph.split(".", maxsplit=1)[0].strip()
     if len(sentence) < 20:
         sentence = paragraph[:160].strip()
+    return sentence
+
+
+def _closing_evidence_excerpt(paragraph: str) -> str:
+    sentences = [value.strip() for value in re.split(r"(?<=[.!?])\s+", paragraph) if value.strip()]
+    sentence = sentences[-1] if sentences else paragraph.strip()
+    if len(sentence) < 20:
+        sentence = paragraph[-160:].strip()
     return sentence
 
 
