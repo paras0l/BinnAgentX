@@ -1,0 +1,140 @@
+name: binnagentx
+
+x-python-service: &python-service
+  image: binnagentx-app:latest
+  env_file:
+    - path: /opt/binnagent/.env.production
+      required: false
+    - path: .env.production
+      required: true
+  environment:
+    BINNAGENT_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+  restart: unless-stopped
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - postgres_data:/var/lib/postgresql
+
+  migrate:
+    <<: *python-service
+    command: ["python", "-m", "alembic", "-c", "services/api/alembic.ini", "upgrade", "head"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  worker:
+    <<: *python-service
+    command: ["binnagent-worker"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      - generated_content:/app/fixtures/content/v1/generated
+
+  asset-exporter:
+    <<: *python-service
+    command: ["binnagent-asset-exporter"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  app:
+    <<: *python-service
+    command:
+      [
+        "uvicorn",
+        "binnagent_api.main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8000",
+        "--no-access-log",
+      ]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=2)",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 10s
+    volumes:
+      - generated_content:/app/fixtures/content/v1/generated
+
+  learner:
+    image: binnagentx-learner:latest
+    environment:
+      HOSTNAME: 0.0.0.0
+      PORT: 3000
+      NEXT_PUBLIC_LEARNER_API_BASE_URL: http://app:8000/learner
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+    ports:
+      - "5173:3000"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+  control:
+    image: binnagentx-control:latest
+    environment:
+      HOSTNAME: 0.0.0.0
+      PORT: 3001
+      BINNAGENT_ENV: development
+      BINNAGENT_CONTROL_REQUIRED_ROLE: developer_reviewer
+      NEXT_PUBLIC_CONTROL_API_BASE_URL: http://app:8000/control
+    depends_on:
+      app:
+        condition: service_healthy
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5174:3001"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3001/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+
+volumes:
+  postgres_data:
+    name: binnagentx_remote_postgres_data
+  generated_content:
+    name: binnagentx_remote_generated_content

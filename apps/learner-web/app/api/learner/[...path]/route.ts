@@ -19,9 +19,11 @@ async function forward(request: NextRequest, context: RouteContext): Promise<Res
   const headers = new Headers({ Accept: "application/json" });
   const contentType = request.headers.get("content-type");
   const idempotencyKey = request.headers.get("idempotency-key");
+  const authorization = request.headers.get("authorization");
   const cookie = request.headers.get("cookie");
   if (contentType) headers.set("Content-Type", contentType);
   if (idempotencyKey) headers.set("Idempotency-Key", idempotencyKey);
+  if (authorization) headers.set("Authorization", authorization);
   if (cookie) headers.set("Cookie", cookie);
   const body =
     request.method === "GET" || request.method === "HEAD" ? undefined : await request.text();

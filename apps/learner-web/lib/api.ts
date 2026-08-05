@@ -22,6 +22,7 @@ import type {
   LearningAssetInput,
   LearningAssetsState,
 } from "./learning-assets-storage";
+import { createClientToken } from "./client-id";
 
 interface ApiErrorBody {
   code?: string;
@@ -172,7 +173,7 @@ export class LearnerApiError extends Error {
 }
 
 function idempotencyKey(command: string): string {
-  return `${command}:${crypto.randomUUID()}`;
+  return `${command}:${createClientToken()}`;
 }
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
@@ -334,6 +335,7 @@ export function createObsidianPluginConnection(): Promise<ObsidianPluginConnecti
 
 export interface ObsidianPluginSyncStatus {
   paired: boolean;
+  connection_state: "unpaired" | "waiting" | "active" | "stale";
   synced_context_count: number;
   last_synced_at: string | null;
 }

@@ -40,6 +40,7 @@ import {
   submitMaterialFeedback,
   verifyGrammarChallenge,
 } from "../lib/api";
+import { createClientToken } from "../lib/client-id";
 import type {
   AnnotationAnalysisView,
   AnnotationKind,
@@ -1042,7 +1043,7 @@ function ActiveTaskWorkspace({
     const session = intensiveSessions[sessionId];
     const normalizedQuestion = question.trim();
     if (!session?.analysis || !normalizedQuestion) return;
-    const followUpId = `intensive-follow-up-${crypto.randomUUID()}`;
+    const followUpId = `intensive-follow-up-${createClientToken()}`;
     updateIntensiveSession(sessionId, (current) => ({
       ...current,
       followUps: [

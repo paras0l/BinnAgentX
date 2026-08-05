@@ -6,7 +6,9 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEPLOY_SCRIPT = PROJECT_ROOT / "scripts" / "deploy.sh"
+REMOTE_DEPLOY_SCRIPT = PROJECT_ROOT / "scripts" / "deploy-remote.sh"
 COMPOSE_FILE = PROJECT_ROOT / "compose.yaml"
+REMOTE_COMPOSE_FILE = PROJECT_ROOT / "compose.remote.yaml"
 
 
 def _write_executable(path: Path, content: str) -> None:
@@ -37,6 +39,34 @@ def test_deploy_script_has_valid_syntax_and_concise_help() -> None:
     assert "--host-services" in help_result.stdout
     assert "--restart" in help_result.stdout
     assert "控制台只显示关键状态" in help_result.stdout
+
+
+def test_remote_deploy_prebuilds_amd64_images_and_never_builds_on_server() -> None:
+    syntax = subprocess.run(
+        ["bash", "-n", str(REMOTE_DEPLOY_SCRIPT)],
+        cwd=PROJECT_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert syntax.returncode == 0, syntax.stderr
+
+    deploy = REMOTE_DEPLOY_SCRIPT.read_text(encoding="utf-8")
+    compose = REMOTE_COMPOSE_FILE.read_text(encoding="utf-8")
+    assert 'PLATFORM="${BINNAGENTX_DEPLOY_PLATFORM:-linux/amd64}"' in deploy
+    assert "--driver docker-container" in deploy
+    assert deploy.count("docker buildx build") == 3
+    assert "docker compose --env-file .env.production -f compose.yaml up" in deploy
+    assert "--detach --remove-orphans --no-build" in deploy
+    assert "docker rm -f" in deploy
+    assert "binnagent-web binnagent-app" in deploy
+    assert "build:" not in compose
+    for image in (
+        "binnagentx-app:latest",
+        "binnagentx-learner:latest",
+        "binnagentx-control:latest",
+    ):
+        assert image in compose
 
 
 def test_compose_project_is_isolated_and_contains_the_full_app_stack() -> None:

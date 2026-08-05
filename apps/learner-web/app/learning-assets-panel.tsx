@@ -180,6 +180,8 @@ function ObsidianSetupDialog({
   const [draftVaultName, setDraftVaultName] = useState(vaultName);
   const [pluginConnection, setPluginConnection] = useState<ObsidianPluginConnection | null>(null);
   const hasVault = Boolean(draftVaultName.trim());
+  const pluginApiBaseUrl =
+    typeof window === "undefined" ? "/api/learner" : `${window.location.origin}/api/learner`;
 
   const saveAndOpenVault = () => {
     const normalized = draftVaultName.trim();
@@ -289,7 +291,7 @@ function ObsidianSetupDialog({
               </p>
               <a
                 className="quiet-button"
-                href="/downloads/BinnAgentX-Learning-Sync-v0.1.6.zip"
+                href="/downloads/BinnAgentX-Learning-Sync-v0.1.7.zip"
                 download
               >
                 下载 Obsidian 插件
@@ -299,7 +301,7 @@ function ObsidianSetupDialog({
               </button>
               {pluginConnection ? (
                 <pre>
-                  <code>{`连接 ID: ${pluginConnection.connection_id}\n同步密钥: ${pluginConnection.sync_secret}`}</code>
+                  <code>{`BinnAgentX 地址: ${pluginApiBaseUrl}\n连接 ID: ${pluginConnection.connection_id}\n同步密钥: ${pluginConnection.sync_secret}`}</code>
                 </pre>
               ) : null}
             </div>
@@ -370,6 +372,14 @@ export function LearningAssetsPanel({
       item.evidenceStatus === "independently_usable" || item.evidenceStatus === "delayed_stable",
   ).length;
   const syncAttentionCount = state.items.filter((item) => item.syncStatus !== "synced").length;
+  const pluginConnectionState =
+    pluginSyncStatus?.connection_state ??
+    (pluginSyncStatus?.last_synced_at
+      ? "active"
+      : pluginSyncStatus?.paired
+        ? "waiting"
+        : "unpaired");
+  const effectiveVaultName = pluginConnectionState === "stale" ? "" : obsidianVaultName;
 
   const saveObsidianVaultName = (value: string) => {
     setObsidianVaultName(value);
@@ -381,9 +391,13 @@ export function LearningAssetsPanel({
   };
 
   const organizeInbox = async () => {
-    if (!pluginSyncStatus?.paired) {
+    if (pluginConnectionState === "unpaired" || pluginConnectionState === "stale") {
       setOrganizerQueued(false);
-      setOrganizerNotice("请先完成 Obsidian 插件配对。");
+      setOrganizerNotice(
+        pluginConnectionState === "stale"
+          ? "本机 Vault 已断开，请重新选择 Vault 并完成插件连接。"
+          : "请先完成 Obsidian 插件配对。",
+      );
       setShowVaultSetup(true);
       return;
     }
@@ -518,12 +532,14 @@ export function LearningAssetsPanel({
                 <small>本机知识库连接</small>
               </span>
             </span>
-            <em data-state={pluginSyncStatus?.last_synced_at ? "ready" : "attention"}>
-              {pluginSyncStatus?.last_synced_at
+            <em data-state={pluginConnectionState === "active" ? "ready" : "attention"}>
+              {pluginConnectionState === "active"
                 ? "连接正常"
-                : pluginSyncStatus?.paired
-                  ? "等待同步"
-                  : "尚未配对"}
+                : pluginConnectionState === "stale"
+                  ? "连接已失效"
+                  : pluginConnectionState === "waiting"
+                    ? "等待同步"
+                    : "尚未配对"}
             </em>
           </header>
           <div className="asset-sync-items">
@@ -535,7 +551,10 @@ export function LearningAssetsPanel({
               <LinkSimple size={16} />
               <span>
                 <small>当前 Vault</small>
-                <strong>{obsidianVaultName || "点击选择"}</strong>
+                <strong>
+                  {effectiveVaultName ||
+                    (pluginConnectionState === "stale" ? "重新选择" : "点击选择")}
+                </strong>
               </span>
             </button>
             <article>
@@ -543,17 +562,21 @@ export function LearningAssetsPanel({
               <span>
                 <small>插件状态</small>
                 <strong>
-                  {pluginSyncStatus?.last_synced_at
+                  {pluginConnectionState === "active"
                     ? "已同步"
-                    : pluginSyncStatus?.paired
-                      ? "待同步"
-                      : "未配对"}
+                    : pluginConnectionState === "stale"
+                      ? "已断开"
+                      : pluginConnectionState === "waiting"
+                        ? "待同步"
+                        : "未配对"}
                 </strong>
               </span>
               <small>
-                {pluginSyncStatus?.last_synced_at
+                {pluginConnectionState === "active" && pluginSyncStatus?.last_synced_at
                   ? `${pluginSyncStatus.synced_context_count} 条 · ${dateLabel(pluginSyncStatus.last_synced_at, "刚刚")}`
-                  : "请在插件中执行 Sync"}
+                  : pluginConnectionState === "stale"
+                    ? "未收到本机插件同步，请重新连接"
+                    : "请在插件中执行 Sync"}
               </small>
             </article>
           </div>
@@ -765,10 +788,10 @@ export function LearningAssetsPanel({
                       <button type="button" onClick={() => onOpen(item)}>
                         <LinkSimple size={15} /> 在 Obsidian 中打开
                       </button>
-                    ) : obsidianVaultName ? (
+                    ) : effectiveVaultName ? (
                       <button
                         type="button"
-                        onClick={() => openOrCreateObsidianAsset(item, obsidianVaultName)}
+                        onClick={() => openOrCreateObsidianAsset(item, effectiveVaultName)}
                       >
                         <LinkSimple size={15} /> 在 Obsidian 中创建
                       </button>
@@ -777,11 +800,11 @@ export function LearningAssetsPanel({
                         <GearSix size={15} /> 选择 Obsidian Vault
                       </button>
                     )}
-                    {obsidianVaultName ? (
+                    {effectiveVaultName ? (
                       <button
                         type="button"
                         className="asset-recreate-button"
-                        onClick={() => recreateObsidianAsset(item, obsidianVaultName)}
+                        onClick={() => recreateObsidianAsset(item, effectiveVaultName)}
                       >
                         笔记已删除？重新创建
                       </button>
@@ -789,7 +812,7 @@ export function LearningAssetsPanel({
                     {item.syncStatus !== "synced" ? (
                       <span>
                         <WarningCircle size={15} />{" "}
-                        {obsidianVaultName ? "等待你在本机创建" : "请先选择 Vault"}
+                        {effectiveVaultName ? "等待你在本机创建" : "请先选择 Vault"}
                       </span>
                     ) : null}
                   </footer>
@@ -813,7 +836,7 @@ export function LearningAssetsPanel({
       {showVaultSetup ? (
         <ObsidianSetupDialog
           status={vaultStatus}
-          vaultName={obsidianVaultName}
+          vaultName={effectiveVaultName}
           onClose={() => {
             setShowVaultSetup(false);
             onVaultSetupClose?.();

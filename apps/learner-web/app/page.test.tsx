@@ -870,6 +870,9 @@ describe("learner home", () => {
         if (url.endsWith("/obsidian-plugin-status")) {
           return Response.json({ paired: false, synced_context_count: 0, last_synced_at: null });
         }
+        if (url.endsWith("/obsidian-plugin-connections")) {
+          return Response.json({ connection_id: "obsync_remote", sync_secret: "secret_remote" });
+        }
         if (url.endsWith("/v1/training-materials")) return Response.json([]);
         return Response.json({ detail: "not_found" }, { status: 404 });
       }),
@@ -882,6 +885,10 @@ describe("learner home", () => {
     fireEvent.click(configureButton);
     expect(screen.getByRole("dialog", { name: "连接你的知识库" })).toBeVisible();
     expect(screen.getByRole("heading", { name: /把读过的痕迹/ })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "生成插件连接凭据" }));
+    expect(
+      await screen.findByText(/BinnAgentX 地址: http:\/\/localhost:3000\/api\/learner/),
+    ).toBeVisible();
   });
 
   it("starts stage progress at zero before any stage is completed", () => {

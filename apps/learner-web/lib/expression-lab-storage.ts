@@ -1,4 +1,5 @@
 import type { LearningAsset } from "./learning-assets-storage";
+import { createClientToken } from "./client-id";
 
 const EXPRESSION_LAB_PREFIX = "binnagent:expression-lab:v1:";
 const MAX_BOARD_NOTES = 40;
@@ -104,10 +105,7 @@ export function saveExpressionLab(state: ExpressionLabState): ExpressionLabState
 export function createExpressionNote(kind: ExpressionNoteKind, index: number): ExpressionBoardNote {
   const column = index % 3;
   const row = Math.floor(index / 3);
-  const id =
-    typeof crypto !== "undefined" && "randomUUID" in crypto
-      ? crypto.randomUUID()
-      : `note_${Date.now()}_${index}`;
+  const id = `note_${createClientToken()}_${index}`;
   return {
     id,
     kind,

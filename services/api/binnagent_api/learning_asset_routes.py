@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import secrets
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 from urllib.parse import quote
 from uuid import UUID, uuid4
@@ -50,6 +50,10 @@ from binnagent_api.vertical_slice import tables
 
 learning_asset_router = APIRouter(prefix="/v1/assets", tags=["learning-assets"])
 obsidian_sync_router = APIRouter(prefix="/v1/obsidian-sync", tags=["obsidian-sync"])
+
+# The plugin sync loop runs once per minute. Missing three consecutive cycles is
+# treated as a disconnected local Vault while preserving the historical pairing.
+_OBSIDIAN_PLUGIN_STALE_AFTER = timedelta(minutes=3)
 
 _ASSET_KINDS = {
     "vocabulary",
@@ -184,6 +188,7 @@ class ObsidianPluginConnectionView(BaseModel):
 
 class ObsidianPluginSyncStatusView(BaseModel):
     paired: bool
+    connection_state: Literal["unpaired", "waiting", "active", "stale"]
     synced_context_count: int
     last_synced_at: datetime | None
 
@@ -433,8 +438,17 @@ async def obsidian_plugin_sync_status(request: Request) -> ObsidianPluginSyncSta
                 )
             )
         ).one()
+    if not paired:
+        connection_state = "unpaired"
+    elif last_synced_at is None:
+        connection_state = "waiting"
+    elif last_synced_at >= datetime.now(UTC) - _OBSIDIAN_PLUGIN_STALE_AFTER:
+        connection_state = "active"
+    else:
+        connection_state = "stale"
     return ObsidianPluginSyncStatusView(
         paired=bool(paired),
+        connection_state=connection_state,
         synced_context_count=int(synced_context_count),
         last_synced_at=last_synced_at,
     )

@@ -6,7 +6,39 @@ import { LearningAssetsPanel } from "./learning-assets-panel";
 
 afterEach(() => {
   cleanup();
+  localStorage.clear();
   vi.unstubAllGlobals();
+});
+
+it("invalidates the locally selected Vault when the plugin heartbeat is stale", () => {
+  localStorage.setItem("binnagent:obsidian-vault-name", "Deleted Vault");
+
+  render(
+    <LearningAssetsPanel
+      state={{ schemaVersion: 2, items: [] }}
+      onAdd={vi.fn()}
+      onToggleStar={vi.fn()}
+      onOpen={vi.fn()}
+      vaultStatus={null}
+      onRefreshVaultStatus={vi.fn()}
+      onRefreshAssets={vi.fn()}
+      onOrganizeInbox={vi.fn().mockResolvedValue(undefined)}
+      pluginSyncStatus={{
+        paired: true,
+        connection_state: "stale",
+        synced_context_count: 4,
+        last_synced_at: "2026-08-05T10:00:00Z",
+      }}
+    />,
+  );
+
+  expect(screen.getByText("连接已失效")).toBeVisible();
+  expect(screen.getByText("重新选择")).toBeVisible();
+  expect(screen.queryByText("Deleted Vault")).not.toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("button", { name: /当前 Vault/ }));
+  expect(screen.getByText("尚未选择 Vault")).toBeVisible();
+  expect(screen.getByLabelText("Vault 名称")).toHaveValue("");
 });
 
 it("shows isolated raw and denoised copies side by side", async () => {

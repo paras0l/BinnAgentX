@@ -70,6 +70,7 @@ import {
   recordTemporaryTask,
   saveExperienceProfile,
 } from "../lib/experience-storage";
+import { copyTextToClipboard } from "../lib/clipboard";
 import type { LearnerIdentity } from "../lib/auth-api";
 import { EMPTY_LEARNING_ASSETS, type LearningAssetInput } from "../lib/learning-assets-storage";
 import { LearningAssetsPanel } from "./learning-assets-panel";
@@ -285,6 +286,24 @@ export function LearningExperience({
       })
       .catch((reason: unknown) => setError(errorMessage(reason)));
   }, []);
+
+  useEffect(() => {
+    if (surface !== "assets") return;
+    let active = true;
+    const refreshPluginStatus = () => {
+      void getObsidianPluginSyncStatus()
+        .then((status) => {
+          if (active) setPluginSyncStatus(status);
+        })
+        .catch(() => undefined);
+    };
+    refreshPluginStatus();
+    const timer = window.setInterval(refreshPluginStatus, 30_000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [surface]);
 
   const refreshTrainingHistory = useCallback((page = 1) => {
     setIsHistoryPending(true);
@@ -777,7 +796,10 @@ export function LearningExperience({
         trainingMaterials={trainingMaterials}
         syncedContextCount={pluginSyncStatus?.synced_context_count ?? 0}
         obsidianConfigurationChecked={pluginSyncStatus !== null}
-        obsidianConfigured={Boolean(pluginSyncStatus?.paired && pluginSyncStatus.last_synced_at)}
+        obsidianConfigured={Boolean(
+          pluginSyncStatus?.connection_state === "active" ||
+          (!pluginSyncStatus?.connection_state && pluginSyncStatus?.last_synced_at),
+        )}
         isGeneratingMaterial={isGeneratingMaterial}
         onGenerateMaterial={generateTrainingMaterial}
         onImportArticle={importArticle}
@@ -1712,11 +1734,11 @@ function PreferencesPanel({
               className="quiet-button"
               aria-label={inviteCopied ? "邀请码已复制" : "复制邀请码"}
               onClick={async () => {
-                try {
-                  await navigator.clipboard.writeText(inviteCode);
+                const copied = await copyTextToClipboard(inviteCode);
+                if (copied) {
                   setInviteCopied(true);
                   window.setTimeout(() => setInviteCopied(false), 1800);
-                } catch {
+                } else {
                   setInviteCopied(false);
                 }
               }}

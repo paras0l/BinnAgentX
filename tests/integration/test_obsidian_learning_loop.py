@@ -232,6 +232,38 @@ async def _clean() -> None:
             await connection.execute(sa.delete(table))
 
 
+@pytest.mark.asyncio
+async def test_obsidian_plugin_status_expires_when_local_vault_stops_syncing() -> None:
+    transport = httpx2.ASGITransport(app=create_app())
+    async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
+        created = await client.post("/learner/v1/assets/obsidian-plugin-connections")
+        assert created.status_code == 200, created.text
+
+        waiting = await client.get("/learner/v1/assets/obsidian-plugin-status")
+        assert waiting.status_code == 200, waiting.text
+        assert waiting.json()["connection_state"] == "waiting"
+
+        connection_id = created.json()["connection_id"]
+        async with get_engine().begin() as connection:
+            await connection.execute(
+                tables.obsidian_sync_connections.update()
+                .where(tables.obsidian_sync_connections.c.connection_id == connection_id)
+                .values(last_used_at=datetime.now(UTC))
+            )
+        active = await client.get("/learner/v1/assets/obsidian-plugin-status")
+        assert active.json()["connection_state"] == "active"
+
+        async with get_engine().begin() as connection:
+            await connection.execute(
+                tables.obsidian_sync_connections.update()
+                .where(tables.obsidian_sync_connections.c.connection_id == connection_id)
+                .values(last_used_at=datetime.now(UTC) - timedelta(minutes=4))
+            )
+        stale = await client.get("/learner/v1/assets/obsidian-plugin-status")
+        assert stale.json()["paired"] is True
+        assert stale.json()["connection_state"] == "stale"
+
+
 def _reviewed_package_values(
     material_id: str,
     paragraphs: list[str],

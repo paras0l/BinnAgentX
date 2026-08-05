@@ -29,7 +29,7 @@ Then enable **BinnAgentX Learning Sync** in Obsidian's Community plugins.
 
 ## Install for learners
 
-1. Download `BinnAgentX-Learning-Sync-v0.1.6.zip` from the BinnAgentX release.
+1. Download `BinnAgentX-Learning-Sync-v0.1.7.zip` from the BinnAgentX release.
 2. Unzip it into `<your-vault>/.obsidian/plugins/`; the final path must be
    `<your-vault>/.obsidian/plugins/binnagentx-learning-sync/main.js`.
 3. Open Obsidian **Settings → Community plugins**, turn off Restricted mode if
@@ -37,7 +37,9 @@ Then enable **BinnAgentX Learning Sync** in Obsidian's Community plugins.
 4. In BinnAgentX's **学习资产 → 配置 Obsidian**, generate a plugin connection
    credential and paste its Connection ID and Sync Secret into this plugin's
    settings.
-   Keep the default BinnAgentX address as `http://127.0.0.1:8000/learner`.
+   For local development keep `http://127.0.0.1:8000/learner`. For a remote
+   learner site use the exact address shown with the generated credentials,
+   normally `https://your-site.example/api/learner`.
 
 ## User workflow
 
@@ -50,9 +52,9 @@ Then enable **BinnAgentX Learning Sync** in Obsidian's Community plugins.
    first note when Obsidian's file explorer is sorted by filename A–Z.
 2. The plugin configures Obsidian's Templates folder as
    `BinnAgentX/05-Templates` and its attachment folder as
-   `BinnAgentX/06-Attachments`. Enable the Templates core plugin, install and
-   enable the Spaced Repetition community plugin for flashcard review, and
-   optionally install Dataview to render automatic dashboard tables. The
+   `BinnAgentX/06-Attachments`. It also downloads pinned official releases of
+   Dataview and Spaced Repetition, adds both to this Vault's enabled community
+   plugins, and preserves any existing plugin files and settings. The
    vocabulary template joins the `flashcards/binnagentx/vocabulary` deck and
    creates a rich multi-line recall card that reuses the note's meaning,
    pronunciation, collocations, example, and contrast sections. A managed CSS

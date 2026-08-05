@@ -23,6 +23,13 @@ interface SyncSettings {
   lastSyncSummary: string;
 }
 
+interface CommunityPluginDependency {
+  id: string;
+  name: string;
+  version: string;
+  releaseBaseUrl: string;
+}
+
 interface LearningContextEntry {
   source_key: string;
   asset_id?: string;
@@ -90,7 +97,23 @@ const LIBRARY_FOLDERS = [
 const INBOX_FOLDER = `${LIBRARY_ROOT}/00-Inbox`;
 const TEMPLATE_FOLDER = `${LIBRARY_ROOT}/05-Templates`;
 const ATTACHMENT_FOLDER = `${LIBRARY_ROOT}/06-Attachments`;
-const CURRENT_LIBRARY_VERSION = 6;
+const CURRENT_LIBRARY_VERSION = 7;
+const COMMUNITY_PLUGIN_DEPENDENCIES: CommunityPluginDependency[] = [
+  {
+    id: "dataview",
+    name: "Dataview",
+    version: "0.5.68",
+    releaseBaseUrl: "https://github.com/blacksmithgu/obsidian-dataview/releases/download/0.5.68",
+  },
+  {
+    id: "obsidian-spaced-repetition",
+    name: "Spaced Repetition",
+    version: "1.15.4",
+    releaseBaseUrl:
+      "https://github.com/st3v3nmw/obsidian-spaced-repetition/releases/download/1.15.4",
+  },
+];
+const COMMUNITY_PLUGIN_FILES = ["manifest.json", "main.js", "styles.css"] as const;
 const DASHBOARD_MIGRATIONS = [
   [`${LIBRARY_ROOT}/Dashboard.md`, `${LIBRARY_ROOT}/00-Dashboard.md`],
   [`${LIBRARY_ROOT}/01-Vocabulary/Dashboard.md`, `${LIBRARY_ROOT}/01-Vocabulary/00-Dashboard.md`],
@@ -365,13 +388,13 @@ tags:
 
 # Spaced Repetition 使用指南
 
-BinnAgentX Learning Sync 负责把学习材料整理到这个 Vault；社区插件 **Spaced Repetition** 负责判断哪些闪卡今天需要复习。BinnAgentX 不会替你安装社区插件，下面的设置只需完成一次。
+BinnAgentX Learning Sync 负责把学习材料整理到这个 Vault；社区插件 **Spaced Repetition** 负责判断哪些闪卡今天需要复习。初始化学习库时会自动安装并启用 **Dataview** 和 **Spaced Repetition**；如果 Obsidian 当时无法立即加载新插件，重启一次 Obsidian 即可。
 
 ## 1. 安装并启用插件
 
-1. 打开 Obsidian 的 **设置 → 第三方插件（Community plugins）**。
-2. 如果仍处于受限模式，按 Obsidian 提示关闭受限模式。
-3. 点击“浏览”，搜索 **Spaced Repetition**，安装并启用它。
+1. 执行命令 **Initialize BinnAgentX learning library**，或在 BinnAgentX Learning Sync 设置中点击“检查并补齐”。
+2. 初始化会从插件官方 GitHub Release 下载固定版本，并把它们加入当前 Vault 的第三方插件启用清单。
+3. 如果命令提示需要重启，请关闭并重新打开 Obsidian；已有插件文件和设置不会被覆盖。
 4. 初次使用不需要修改算法或分隔符设置，保留默认值即可。
 
 ## 2. 用样例完成第一次复习
@@ -815,17 +838,48 @@ export default class BinnAgentXLearningSyncPlugin extends Plugin {
         installed += 1;
       }
     }
+    installed += await this.migrateSpacedRepetitionGuide();
     await this.configureObsidianFolders();
     installed += await this.installReviewStyleSnippet();
+    const communityPlugins = await this.installCommunityPluginDependencies();
+    installed += communityPlugins.installed;
     this.settings.libraryVersion = CURRENT_LIBRARY_VERSION;
     await this.saveSettings();
     if (showNotice) {
       new Notice(
         installed
-          ? `BinnAgentX 学习库已初始化（补齐或更新 ${installed} 项）`
+          ? `BinnAgentX 学习库已初始化（补齐或更新 ${installed} 项；${communityPlugins.summary}）`
           : "BinnAgentX 学习库已就绪，未覆盖你的修改",
       );
     }
+  }
+
+  private async migrateSpacedRepetitionGuide(): Promise<number> {
+    const path = `${LIBRARY_ROOT}/Spaced Repetition 使用指南.md`;
+    const file = this.app.vault.getAbstractFileByPath(path);
+    if (!(file instanceof TFile)) return 0;
+    const content = await this.app.vault.read(file);
+    const legacyIntroduction =
+      "BinnAgentX Learning Sync 负责把学习材料整理到这个 Vault；社区插件 **Spaced Repetition** 负责判断哪些闪卡今天需要复习。BinnAgentX 不会替你安装社区插件，下面的设置只需完成一次。";
+    const legacyInstallation = `1. 打开 Obsidian 的 **设置 → 第三方插件（Community plugins）**。
+2. 如果仍处于受限模式，按 Obsidian 提示关闭受限模式。
+3. 点击“浏览”，搜索 **Spaced Repetition**，安装并启用它。
+4. 初次使用不需要修改算法或分隔符设置，保留默认值即可。`;
+    if (!content.includes(legacyIntroduction) || !content.includes(legacyInstallation)) return 0;
+    const updated = content
+      .replace(
+        legacyIntroduction,
+        "BinnAgentX Learning Sync 负责把学习材料整理到这个 Vault；社区插件 **Spaced Repetition** 负责判断哪些闪卡今天需要复习。初始化学习库时会自动安装并启用 **Dataview** 和 **Spaced Repetition**；如果 Obsidian 当时无法立即加载新插件，重启一次 Obsidian 即可。",
+      )
+      .replace(
+        legacyInstallation,
+        `1. 执行命令 **Initialize BinnAgentX learning library**，或在 BinnAgentX Learning Sync 设置中点击“检查并补齐”。
+2. 初始化会从插件官方 GitHub Release 下载固定版本，并把它们加入当前 Vault 的第三方插件启用清单。
+3. 如果命令提示需要重启，请关闭并重新打开 Obsidian；已有插件文件和设置不会被覆盖。
+4. 初次使用不需要修改算法或分隔符设置，保留默认值即可。`,
+      );
+    await this.app.vault.modify(file, updated);
+    return 1;
   }
 
   private async migrateManagedDashboards(): Promise<number> {
@@ -881,6 +935,100 @@ export default class BinnAgentXLearningSyncPlugin extends Plugin {
     await this.mergeConfigFile(`${this.app.vault.configDir}/templates.json`, {
       folder: TEMPLATE_FOLDER,
     });
+  }
+
+  private async installCommunityPluginDependencies(): Promise<{
+    installed: number;
+    summary: string;
+  }> {
+    const adapter = this.app.vault.adapter;
+    const pluginsFolder = `${this.app.vault.configDir}/plugins`;
+    if (!(await adapter.exists(pluginsFolder))) await adapter.mkdir(pluginsFolder);
+
+    let installed = 0;
+    const available: string[] = [];
+    for (const dependency of COMMUNITY_PLUGIN_DEPENDENCIES) {
+      const pluginFolder = `${pluginsFolder}/${dependency.id}`;
+      const manifestPath = `${pluginFolder}/manifest.json`;
+      const mainPath = `${pluginFolder}/main.js`;
+      if ((await adapter.exists(manifestPath)) && (await adapter.exists(mainPath))) {
+        available.push(dependency.id);
+        continue;
+      }
+
+      const downloads = await Promise.all(
+        COMMUNITY_PLUGIN_FILES.map(async (file) => {
+          const response = await requestUrl({
+            url: `${dependency.releaseBaseUrl}/${file}`,
+            method: "GET",
+            throw: false,
+          });
+          if (response.status < 200 || response.status >= 300) {
+            throw new Error(`无法下载 ${dependency.name} ${dependency.version} 的 ${file}`);
+          }
+          return [file, response.text] as const;
+        }),
+      );
+      const manifestDownload = downloads.find(([file]) => file === "manifest.json");
+      try {
+        const manifest = JSON.parse(manifestDownload?.[1] ?? "") as {
+          id?: string;
+          version?: string;
+        };
+        if (manifest.id !== dependency.id || manifest.version !== dependency.version) {
+          throw new Error("manifest mismatch");
+        }
+      } catch {
+        throw new Error(`${dependency.name} 下载内容校验失败`);
+      }
+      if (!(await adapter.exists(pluginFolder))) await adapter.mkdir(pluginFolder);
+      for (const [file, content] of downloads) {
+        const path = `${pluginFolder}/${file}`;
+        if (!(await adapter.exists(path))) await adapter.write(path, content);
+      }
+      available.push(dependency.id);
+      installed += 1;
+    }
+
+    const enabledPath = `${this.app.vault.configDir}/community-plugins.json`;
+    let enabled: string[] = [];
+    if (await adapter.exists(enabledPath)) {
+      try {
+        const parsed: unknown = JSON.parse(await adapter.read(enabledPath));
+        if (Array.isArray(parsed)) enabled = arrayStrings(parsed);
+      } catch {
+        throw new Error(`无法启用依赖插件：${enabledPath} 不是有效的 JSON`);
+      }
+    }
+    const nextEnabled = uniqueStrings([...enabled, ...available]);
+    if (JSON.stringify(nextEnabled) !== JSON.stringify(enabled)) {
+      await adapter.write(enabledPath, `${JSON.stringify(nextEnabled, null, 2)}\n`);
+    }
+
+    const pluginManager = (
+      this.app as App & {
+        plugins?: {
+          loadManifests?: () => Promise<void>;
+          enablePluginAndSave?: (id: string) => Promise<void>;
+        };
+      }
+    ).plugins;
+    let loadedImmediately = false;
+    try {
+      if (pluginManager?.loadManifests) await pluginManager.loadManifests();
+      if (pluginManager?.enablePluginAndSave) {
+        for (const id of available) await pluginManager.enablePluginAndSave(id);
+        loadedImmediately = true;
+      }
+    } catch {
+      // The enabled list is already durable; Obsidian will load both plugins after restart.
+    }
+    return {
+      installed,
+      summary: `${COMMUNITY_PLUGIN_DEPENDENCIES.map(({ name }) => name).join("、")} ${
+        loadedImmediately ? "已启用" : "已安装，重启 Obsidian 后启用"
+      }`,
+    };
   }
 
   private async installReviewStyleSnippet(): Promise<number> {
@@ -1073,7 +1221,13 @@ export default class BinnAgentXLearningSyncPlugin extends Plugin {
       throw: false,
     });
     if (response.status < 200 || response.status >= 300)
-      throw new Error(`无法读取待同步资产（${response.status}）`);
+      throw new Error(
+        `无法读取待同步资产（${response.status}）${
+          response.status === 404
+            ? "；请检查 BinnAgentX 地址，远程站点通常以 /api/learner 结尾"
+            : ""
+        }`,
+      );
     const exports = response.json as PendingAssetExport[];
     let completed = 0;
     for (const item of exports) {
@@ -1189,7 +1343,7 @@ class BinnAgentXSettingTab extends PluginSettingTab {
     new Setting(containerEl)
       .setName("初始化学习库")
       .setDesc(
-        "创建 00–06 目录、MOC / Dataview Dashboard、支持闪卡的词汇模板、Spaced Repetition 指南与入门示例；不会覆盖你的修改。",
+        "创建 00–06 目录、Dashboard、模板与指南，并自动安装启用 Dataview、Spaced Repetition；不会覆盖已有插件文件或你的笔记修改。",
       )
       .addButton((button) =>
         button.setButtonText("检查并补齐").onClick(async () => {
@@ -1234,7 +1388,9 @@ class BinnAgentXSettingTab extends PluginSettingTab {
       );
     new Setting(containerEl)
       .setName("BinnAgentX 地址")
-      .setDesc("本机默认：http://127.0.0.1:8000/learner")
+      .setDesc(
+        "本机默认：http://127.0.0.1:8000/learner；远程站点请复制连接凭据旁显示的 /api/learner 地址。",
+      )
       .addText((text) =>
         text.setValue(this.plugin.settings.apiBaseUrl).onChange(async (value) => {
           this.plugin.settings.apiBaseUrl = value;

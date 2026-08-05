@@ -771,7 +771,7 @@ BinnAgentX
 
 ## 安装与排障
 
-* 发布包：`releases/BinnAgentX-Learning-Sync-v0.1.6.zip`；学习端下载副本位于 `apps/learner-web/public/downloads/`。
+* v0.1.7 发布包：`releases/BinnAgentX-Learning-Sync-v0.1.7.zip`；学习端下载副本位于 `apps/learner-web/public/downloads/`。初始化沿用同一学习库链路补齐指南，并从官方固定版本自动安装启用 Dataview 与 Spaced Repetition；远程配对页同时显示可复制的 `/api/learner` 插件地址，前端代理保留插件 Bearer 凭据。
 * 插件最终目录必须是 `<Vault>/.obsidian/plugins/binnagentx-learning-sync/`。同一插件 ID 的重复目录会导致 Obsidian 不加载插件；本次验收已将旧的重复目录移到 `<Vault>/.obsidian/plugin-backups/`，可恢复但不再参与插件扫描。
 * 服务端连接显示“已配对”但没有最近同步时间时，先检查插件目录是否唯一，再查看插件设置页的“最近同步”。
 * 本次没有运行或重建 OpenWiki；本文和 README 是权威源文档，OpenWiki 仍由用户按既有流程手动维护。
