@@ -25,6 +25,7 @@ __pycache__/
 .eslintcache
 *.tsbuildinfo
 .coverage
+.codex-audit
 .coverage.*
 htmlcov/
 .venv/
