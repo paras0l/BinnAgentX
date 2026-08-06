@@ -12,6 +12,7 @@ from binnagent_domain.vertical_slice.commands import (
     PauseTask,
     RecordIntervention,
     RecordRevision,
+    RemoveAnnotation,
     ReplaceMaterial,
     ResumeTask,
     SaveAttempt,
@@ -132,6 +133,22 @@ def test_independent_matched_reading_requires_annotation_and_attempt() -> None:
     assert transition.task.state.value == "completed"
     assert transition.task.highest_hint_level == 0
     assert transition.events[0].event_type == "task_completed"
+
+
+def test_saved_annotation_can_be_undone_through_the_task_aggregate() -> None:
+    task = _annotation(_task())
+
+    transition = task.remove_annotation(
+        RemoveAnnotation(
+            expected_version=task.version,
+            annotation_id="annotation_domain_0001",
+            now=NOW + timedelta(minutes=2),
+        )
+    )
+
+    assert transition.task.current_annotations == ()
+    assert transition.task.version == task.version + 1
+    assert transition.events[0].event_type == "annotation_removed"
 
 
 def test_h2_feedback_requires_learner_v2_and_preserves_v1() -> None:

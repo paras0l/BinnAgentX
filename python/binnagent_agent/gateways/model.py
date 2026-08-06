@@ -257,6 +257,28 @@ class ExpressionReviewOutput(BaseModel):
     versions: Annotated[list[ExpressionStyleVersionOutput], Field(min_length=3, max_length=3)]
 
 
+class ExpressionAssistOutput(BaseModel):
+    """Validated contextual recommendation generated from a learner's Chinese intent."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    schema_version: Literal["1.0.0"]
+    recommended_expression: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=2, max_length=2000),
+    ]
+    context_fit: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=8, max_length=500),
+    ]
+    usage_notes: Annotated[
+        list[
+            Annotated[str, StringConstraints(strip_whitespace=True, min_length=4, max_length=240)]
+        ],
+        Field(min_length=1, max_length=4),
+    ]
+
+
 def _conservative_expression_versions(draft: str) -> tuple[ExpressionStyleVersionOutput, ...]:
     academic = draft
     for source, target in (
@@ -348,6 +370,23 @@ class ExpressionReviewRequest:
 
 
 @dataclass(frozen=True, slots=True)
+class ExpressionAssistRequest:
+    workflow_run_id: str
+    task_id: str
+    input_attempt_version_id: str
+    content_version_id: str
+    chinese_intent: str
+    learner_draft: str
+    situation: str
+    audience: str
+    purpose: str
+    target_argument_move: str
+    generation_index: int
+    previous_candidate: str | None = None
+    recent_assets: tuple[tuple[str, str], ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class ModelAdapterResponse:
     payload: object
     actual_cost_usd: Decimal
@@ -376,6 +415,14 @@ class ExpressionReviewAdapter(Protocol):
     estimated_cost_usd: Decimal
 
     async def generate(self, request: ExpressionReviewRequest) -> ModelAdapterResponse: ...
+
+
+class ExpressionAssistAdapter(Protocol):
+    name: str
+    is_remote: bool
+    estimated_cost_usd: Decimal
+
+    async def generate(self, request: ExpressionAssistRequest) -> ModelAdapterResponse: ...
 
 
 class GatewayOutcome(StrEnum):
@@ -503,6 +550,29 @@ class DeterministicExpressionReviewAdapter:
                     "再选择最值得亲自重写的一处。"
                 ),
                 "versions": [version.model_dump() for version in versions],
+            },
+            actual_cost_usd=Decimal("0"),
+        )
+
+
+class DeterministicExpressionAssistAdapter:
+    name = "deterministic_fixture"
+    is_remote = False
+    estimated_cost_usd = Decimal("0")
+
+    async def generate(self, request: ExpressionAssistRequest) -> ModelAdapterResponse:
+        variant = "Another natural way to express this idea is to make the main point explicit."
+        if request.generation_index == 1:
+            variant = "A natural English expression should state the main point clearly."
+        return ModelAdapterResponse(
+            payload={
+                "schema_version": "1.0.0",
+                "recommended_expression": variant,
+                "context_fit": "The wording is direct enough for the current audience and purpose.",
+                "usage_notes": [
+                    "Use a direct subject and verb instead of translating each Chinese word.",
+                    "Keep the original meaning without adding a new claim.",
+                ],
             },
             actual_cost_usd=Decimal("0"),
         )
@@ -1132,6 +1202,174 @@ class ExpressionReviewResult:
             GatewayOutcome.VALIDATED_FIXTURE,
             GatewayOutcome.VALIDATED_MODEL,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class ExpressionAssistResult:
+    adapter: str
+    prompt_version: str
+    outcome: GatewayOutcome
+    reason_code: str
+    recommended_expression: str | None
+    context_fit: str | None
+    usage_notes: tuple[str, ...]
+    output_hash: str
+    used_remote_call: bool
+    estimated_cost_usd: Decimal
+    actual_cost_usd: Decimal
+    latency_ms: int
+    rejection_code: str | None
+
+    @property
+    def used_fallback(self) -> bool:
+        return self.outcome not in {
+            GatewayOutcome.VALIDATED_FIXTURE,
+            GatewayOutcome.VALIDATED_MODEL,
+        }
+
+
+class ExpressionAssistGateway:
+    prompt_version = "prompt_expression_chinese_assist_v1"
+
+    def __init__(
+        self,
+        adapter: ExpressionAssistAdapter,
+        *,
+        timeout_seconds: float,
+        allow_remote: bool = False,
+    ) -> None:
+        if timeout_seconds <= 0:
+            raise ValueError("model timeout must be positive")
+        if not adapter.estimated_cost_usd.is_finite() or adapter.estimated_cost_usd < 0:
+            raise ValueError("model cost estimate must be finite and non-negative")
+        self._adapter = adapter
+        self._timeout_seconds = timeout_seconds
+        self._allow_remote = allow_remote
+
+    async def generate(
+        self,
+        request: ExpressionAssistRequest,
+        budget: ModelBudget,
+    ) -> ExpressionAssistResult:
+        if request.generation_index < 1:
+            raise ValueError("generation index must be positive")
+        if self._adapter.is_remote and not self._allow_remote:
+            return self._fallback("remote_model_calls_disabled")
+        if self._adapter.is_remote and (
+            evaluate_model_budget(budget, self._adapter.estimated_cost_usd)
+            is BudgetDecision.USE_DETERMINISTIC_FALLBACK
+        ):
+            return self._fallback("model_budget_exhausted")
+
+        started = perf_counter()
+        try:
+            response = await asyncio.wait_for(
+                self._adapter.generate(request),
+                timeout=self._timeout_seconds,
+            )
+        except TimeoutError:
+            return self._fallback(
+                "model_timeout",
+                latency_ms=self._latency_ms(started),
+                remote_attempted=self._adapter.is_remote,
+            )
+        except Exception:
+            return self._fallback(
+                "model_adapter_error",
+                latency_ms=self._latency_ms(started),
+                remote_attempted=self._adapter.is_remote,
+            )
+
+        latency_ms = self._latency_ms(started)
+        if not response.actual_cost_usd.is_finite() or response.actual_cost_usd < 0:
+            return self._fallback(
+                "negative_model_cost",
+                latency_ms=latency_ms,
+                remote_attempted=self._adapter.is_remote,
+            )
+        try:
+            output = ExpressionAssistOutput.model_validate(response.payload)
+        except ValidationError:
+            return self._fallback(
+                "model_output_schema_invalid",
+                latency_ms=latency_ms,
+                remote_attempted=self._adapter.is_remote,
+                actual_cost_usd=response.actual_cost_usd,
+            )
+        serialized = "\n".join(
+            (output.recommended_expression, output.context_fit, *output.usage_notes)
+        )
+        return ExpressionAssistResult(
+            adapter=self._adapter.name,
+            prompt_version=response.prompt_version or self.prompt_version,
+            outcome=(
+                GatewayOutcome.VALIDATED_MODEL
+                if self._adapter.is_remote
+                else GatewayOutcome.VALIDATED_FIXTURE
+            ),
+            reason_code=(
+                "expression_chinese_assist_model_validated"
+                if self._adapter.is_remote
+                else "expression_chinese_assist_fixture"
+            ),
+            recommended_expression=output.recommended_expression,
+            context_fit=output.context_fit,
+            usage_notes=tuple(output.usage_notes),
+            output_hash=self._hash(serialized),
+            used_remote_call=self._adapter.is_remote,
+            estimated_cost_usd=self._adapter.estimated_cost_usd,
+            actual_cost_usd=response.actual_cost_usd,
+            latency_ms=latency_ms,
+            rejection_code=None,
+        )
+
+    def _fallback(
+        self,
+        rejection_code: str,
+        *,
+        latency_ms: int = 0,
+        remote_attempted: bool = False,
+        actual_cost_usd: Decimal | None = None,
+    ) -> ExpressionAssistResult:
+        outcome_by_rejection = {
+            "remote_model_calls_disabled": GatewayOutcome.REMOTE_DISABLED_FALLBACK,
+            "model_budget_exhausted": GatewayOutcome.BUDGET_FALLBACK,
+            "model_timeout": GatewayOutcome.TIMEOUT_FALLBACK,
+            "model_adapter_error": GatewayOutcome.ADAPTER_ERROR_FALLBACK,
+        }
+        cost = (
+            actual_cost_usd
+            if actual_cost_usd is not None
+            else self._adapter.estimated_cost_usd
+            if remote_attempted
+            else Decimal("0")
+        )
+        return ExpressionAssistResult(
+            adapter=self._adapter.name,
+            prompt_version=self.prompt_version,
+            outcome=outcome_by_rejection.get(
+                rejection_code,
+                GatewayOutcome.INVALID_OUTPUT_FALLBACK,
+            ),
+            reason_code="expression_chinese_assist_unavailable",
+            recommended_expression=None,
+            context_fit=None,
+            usage_notes=(),
+            output_hash=self._hash(rejection_code),
+            used_remote_call=remote_attempted,
+            estimated_cost_usd=self._adapter.estimated_cost_usd,
+            actual_cost_usd=cost,
+            latency_ms=latency_ms,
+            rejection_code=rejection_code,
+        )
+
+    @staticmethod
+    def _latency_ms(started: float) -> int:
+        return max(0, round((perf_counter() - started) * 1000))
+
+    @staticmethod
+    def _hash(value: str) -> str:
+        return sha256(value.encode("utf-8")).hexdigest()
 
 
 class ExpressionReviewGateway:

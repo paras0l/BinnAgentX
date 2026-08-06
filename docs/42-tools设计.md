@@ -53,6 +53,7 @@ Application Tool：完成一个完整业务能力
 | `reading.analyze_selection.v1`            | Model                | 分析用户选中的词、短语、句子或段落                     | 精确 span 校验；只分析选区；不得回答阅读题            |
 | `expression.deliver_priority_feedback.v1` | Model + Command      | 对表达 V1 给出最重要的一项反馈，并记录 intervention    | 反馈必须引用用户原文；不能提供成品答案                 |
 | `expression.review_draft.v1`              | Model                | 生成逻辑镜像、学术表达、新闻简洁等对照版本                 | 只允许处理已经保存的 attempt；不能覆盖用户原文         |
+| `expression.generate_from_chinese.v1`     | Model + Command      | 结合任务语境、中文意图和用户 V1 推荐局部英文表达，并解释适配理由与用法 | 必须先保存 V1；首次调用记录 H3；重新生成复用同一介入事实；不得代写全文 |
 | `revision.evaluate_and_record.v1`         | Rule/Model + Command | 对比 V1/V2，判断是否改善并写入 `RevisionEvent`    | 必须引用两个 attempt；低置信度进入人工复核           |
 | `workflow.advance.v1`                     | Command              | 验证当前任务完成，确定下一阶段，匹配材料，创建下一任务并原子落库      | run 更新、task 创建、事件、Outbox、审计、幂等必须同事务 |
 | `workflow.replace_material.v1`            | Command              | 处理“材料见过”或“内容撤回”，选择并分配替代材料             | 只接受规定 reason code；旧分配不能覆盖删除         |
@@ -74,6 +75,19 @@ Application Tool：完成一个完整业务能力
 * 用户显式修改学习目标或偏好
 
 Agent 可以读取这些事实，但不能代替用户创建这些事实，否则会污染“独立作答”和“学习证据”。
+
+## 表达工具的教学边界
+
+`expression.generate_from_chinese.v1` 不是通用翻译接口。执行时必须读取当前表达材料的
+`situation`、`audience`、`purpose`、`target_argument_move`，并把用户已经保存的 V1、中文意图、
+上一版候选表达及可用学习资产传入模型网关。结构化输出固定为：局部推荐表达、语境适配说明、
+1–4 条用法要点。
+
+该工具复用既有 `Tool Registry → Tool Executor → Model Gateway → model_invocations →
+AiIntervention → V2/RevisionEvent` 链路。首次得到可靠结果时只记录一次
+`CANDIDATE_COMPARISON/H3`；用户不满意可再次生成不同策略，但不会创建平行状态机或重复提高帮助
+层级。模型超时、预算不足、关闭或输出校验失败时必须显式返回 unavailable，不能用固定翻译模板
+冒充可靠结果。
 
 ---
 

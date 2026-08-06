@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -12,12 +14,25 @@ from binnagent_agent.agents.level_assessor import (
     LevelAssessmentOutput,
     LevelEvidenceSummary,
 )
+from binnagent_domain.vertical_slice.errors import DomainError
+from sqlalchemy.engine import RowMapping
 from sqlalchemy.ext.asyncio import AsyncConnection
 
 from binnagent_api.database import get_engine
+from binnagent_api.personalized_reading_content import (
+    is_personalized_content,
+    parent_material_id,
+)
+from binnagent_api.personalized_reading_content import (
+    reading_question as personalized_reading_question,
+)
 from binnagent_api.vertical_slice import tables
+from binnagent_api.vertical_slice.content_catalog import LocalContentCatalog
+from binnagent_api.vertical_slice.repository import _profile_from_json
 
 _agent = LevelAssessmentAgent()
+_content_catalog = LocalContentCatalog()
+_READING_CHOICE = re.compile(r"^选择 ([^。\n]+)。", re.UNICODE)
 
 
 async def enqueue_level_assessment(
@@ -133,6 +148,7 @@ async def collect_level_evidence(
                     tables.learning_tasks.c.task_type,
                     tables.learning_tasks.c.state,
                     tables.learning_tasks.c.highest_hint_level,
+                    tables.learning_tasks.c.learner_snapshot_id,
                 ).where(tables.learning_tasks.c.task_id.in_(owned_tasks))
             )
         )
@@ -202,6 +218,18 @@ async def collect_level_evidence(
         .scalars()
         .all()
     )
+    reading = await _collect_reading_response_evidence(
+        connection,
+        learner_id=learner_id,
+        task_rows=task_rows,
+    )
+    grammar_evidence_kinds = (
+        await connection.execute(
+            sa.select(tables.grammar_learning_evidence.c.evidence_kind).where(
+                tables.grammar_learning_evidence.c.learner_id == learner_id
+            )
+        )
+    ).scalars().all()
     return LevelEvidenceSummary(
         completed_tasks=len(completed_rows),
         independent_tasks=independent,
@@ -246,7 +274,156 @@ async def collect_level_evidence(
         difficulty_too_hard=sum(rating == "too_hard" for rating in ratings),
         material_helpful=sum(value == "good" for value in material_sentiments),
         material_unhelpful=sum(value == "bad" for value in material_sentiments),
+        **reading,
+        grammar_independent_correct=sum(
+            value in {"independent_recognition", "independent_production", "delayed_transfer"}
+            for value in grammar_evidence_kinds
+        ),
+        grammar_supported_correct=sum(
+            value in {"supported_recognition", "supported_production"}
+            for value in grammar_evidence_kinds
+        ),
+        grammar_incorrect=sum(value == "attempt_failed" for value in grammar_evidence_kinds),
+        grammar_delayed_transfer=sum(
+            value == "delayed_transfer" for value in grammar_evidence_kinds
+        ),
     )
+
+
+async def _collect_reading_response_evidence(
+    connection: AsyncConnection,
+    *,
+    learner_id: str,
+    task_rows: Sequence[RowMapping],
+) -> dict[str, int]:
+    reading_rows = [
+        row
+        for row in task_rows
+        if str(row["task_type"]) in {"calibration_reading", "matched_reading"}
+    ]
+    counts = {
+        "reading_responses": 0,
+        "reading_correct": 0,
+        "reading_foundation_responses": 0,
+        "reading_standard_responses": 0,
+        "reading_advanced_responses": 0,
+        "reading_foundation_correct": 0,
+        "reading_standard_correct": 0,
+        "reading_advanced_correct": 0,
+        "vocabulary_responses": 0,
+        "vocabulary_correct": 0,
+        "grammar_question_responses": 0,
+        "grammar_question_correct": 0,
+    }
+    if not reading_rows:
+        return counts
+
+    reading_task_ids = [str(row["task_id"]) for row in reading_rows]
+    attempts = (
+        (
+            await connection.execute(
+                sa.select(
+                    tables.attempt_versions.c.task_id,
+                    tables.attempt_versions.c.text,
+                    tables.attempt_versions.c.version,
+                )
+                .where(tables.attempt_versions.c.task_id.in_(reading_task_ids))
+                .order_by(tables.attempt_versions.c.task_id, tables.attempt_versions.c.version)
+            )
+        )
+        .mappings()
+        .all()
+    )
+    first_attempt = {str(row["task_id"]): str(row["text"]) for row in reversed(attempts)}
+    assignments = (
+        (
+            await connection.execute(
+                sa.select(
+                    tables.task_material_assignments.c.task_id,
+                    tables.task_material_assignments.c.content_version_id,
+                ).where(tables.task_material_assignments.c.task_id.in_(reading_task_ids))
+            )
+        )
+        .mappings()
+        .all()
+    )
+    content_by_task = {
+        str(row["task_id"]): str(row["content_version_id"]) for row in assignments
+    }
+    snapshot_ids = {str(row["learner_snapshot_id"]) for row in reading_rows}
+    snapshots = (
+        (
+            await connection.execute(
+                sa.select(tables.learner_profile_snapshots).where(
+                    tables.learner_profile_snapshots.c.learner_snapshot_id.in_(snapshot_ids)
+                )
+            )
+        )
+        .mappings()
+        .all()
+    )
+    profile_by_id = {
+        str(row["learner_snapshot_id"]): _profile_from_json(dict(row["snapshot"]))
+        for row in snapshots
+    }
+    personalized_ids = {
+        parent_material_id(content_id)
+        for content_id in content_by_task.values()
+        if is_personalized_content(content_id)
+    }
+    personalized_rows: Sequence[RowMapping] = ()
+    if personalized_ids:
+        personalized_rows = (
+            (
+                await connection.execute(
+                    sa.select(tables.personalized_training_materials).where(
+                        tables.personalized_training_materials.c.learner_id == learner_id,
+                        tables.personalized_training_materials.c.material_id.in_(personalized_ids),
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+    personalized_by_id = {str(row["material_id"]): row for row in personalized_rows}
+
+    for task_row in reading_rows:
+        task_id = str(task_row["task_id"])
+        match = _READING_CHOICE.match(first_attempt.get(task_id, ""))
+        content_id = content_by_task.get(task_id)
+        profile = profile_by_id.get(str(task_row["learner_snapshot_id"]))
+        if match is None or content_id is None or profile is None:
+            continue
+        try:
+            if is_personalized_content(content_id):
+                material = personalized_by_id.get(parent_material_id(content_id))
+                if material is None:
+                    continue
+                question = personalized_reading_question(material)
+            else:
+                question = _content_catalog.reading_question_for(content_id, task_id, profile)
+        except (DomainError, KeyError, TypeError, ValueError):
+            continue
+        correct_answer = str(question.get("correct_answer", "")).strip()
+        if not correct_answer:
+            continue
+        selected = match.group(1).strip()
+        correct = selected == correct_answer
+        tier = str(question.get("difficulty_tier", "standard"))
+        if tier not in {"foundation", "standard", "advanced"}:
+            tier = "standard"
+        question_type = str(question.get("question_type", "main_idea"))
+        counts["reading_responses"] += 1
+        counts[f"reading_{tier}_responses"] += 1
+        counts["reading_correct"] += int(correct)
+        counts[f"reading_{tier}_correct"] += int(correct)
+        if question_type == "vocabulary_in_context":
+            counts["vocabulary_responses"] += 1
+            counts["vocabulary_correct"] += int(correct)
+        if question_type == "grammar_cloze":
+            counts["grammar_question_responses"] += 1
+            counts["grammar_question_correct"] += int(correct)
+    return counts
 
 
 async def latest_level_assessment(

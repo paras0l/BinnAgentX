@@ -49,6 +49,7 @@ async def test_tool_catalog_policy_and_versioned_prompt_governance() -> None:
     transport = httpx2.ASGITransport(app=create_app())
     async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
         assert (await client.get("/control/v1/tools")).status_code == 403
+        assert (await client.get("/control/v1/agents")).status_code == 403
         tools = await client.get("/control/v1/tools", headers=HEADERS)
         assert tools.status_code == 200, tools.text
         by_name = {item["name"]: item for item in tools.json()}
@@ -58,6 +59,19 @@ async def test_tool_catalog_policy_and_versioned_prompt_governance() -> None:
         assert read_tool["source"] == "agent_memory"
         assert write_tool["requires_idempotency_key"] is True
 
+        agents = await client.get("/control/v1/agents", headers=HEADERS)
+        assert agents.status_code == 200, agents.text
+        agents_by_id = {item["agent_id"]: item for item in agents.json()}
+        personalized_agent = agents_by_id["personalized_content_agent"]
+        assert personalized_agent["availability"] == "available"
+        assert personalized_agent["supports_checkpoint_resume"] is True
+        assert personalized_agent["requires_human_review"] is True
+        assert personalized_agent["prompt_ids"] == [
+            "personalized_reading.generate",
+            "personalized_reading.assess",
+        ]
+        assert agents_by_id["level_assessment_agent"]["model_provider"] == "deterministic"
+
         disabled = await client.patch(
             "/control/v1/tools/obsidian.read_learning_context.v1",
             headers=HEADERS,
@@ -66,6 +80,17 @@ async def test_tool_catalog_policy_and_versioned_prompt_governance() -> None:
         assert disabled.status_code == 200, disabled.text
         assert disabled.json()["enabled"] is False
         assert runtime_registry.is_enabled("obsidian.read_learning_context.v1") is False
+
+        blocked_agents = await client.get("/control/v1/agents", headers=HEADERS)
+        blocked_personalized = next(
+            item
+            for item in blocked_agents.json()
+            if item["agent_id"] == "personalized_content_agent"
+        )
+        assert blocked_personalized["availability"] == "blocked"
+        assert blocked_personalized["blockers"] == [
+            "tool_disabled:obsidian.read_learning_context.v1"
+        ]
 
         conflict = await client.patch(
             "/control/v1/tools/obsidian.read_learning_context.v1",

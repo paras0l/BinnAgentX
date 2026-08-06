@@ -10,6 +10,7 @@ import pytest_asyncio
 import sqlalchemy as sa
 from binnagent_api.database import dispose_engine, get_engine
 from binnagent_api.learner_auth import SYNTHETIC_LEARNER_ID
+from binnagent_api.learner_level_service import collect_level_evidence
 from binnagent_api.main import create_app
 from binnagent_api.vertical_slice import tables
 from binnagent_api.vertical_slice.content_catalog import LocalContentCatalog
@@ -93,6 +94,8 @@ async def _clean() -> None:
         tables.learner_sessions,
         tables.learner_preferences,
         tables.learner_vocabulary_states,
+        tables.learner_grammar_states,
+        tables.grammar_learning_evidence,
         tables.experience_code_redemptions,
         tables.email_verification_challenges,
         tables.audit_events,
@@ -160,6 +163,75 @@ async def test_reading_material_feedback_is_one_shot_and_queues_level_assessment
     assert feedback_rows[0]["task_id"] == task["task_id"]
     assert len(assessment_rows) == 1
     assert assessment_rows[0]["trigger_kind"] == "material_feedback"
+
+
+@pytest.mark.asyncio
+async def test_level_evidence_scores_the_first_reading_choice_against_its_difficulty() -> None:
+    task = await _seed_task(
+        TaskType.MATCHED_READING,
+        exam_track=ExamTrack.ENGLISH_1,
+        self_reported_level=SelfReportedLevel.DEVELOPING,
+    )
+    task_id = str(task["task_id"])
+    now = datetime.now(UTC)
+    async with get_engine().begin() as connection:
+        await connection.execute(
+            tables.learners.insert().values(
+                learner_id=SYNTHETIC_LEARNER_ID,
+                nickname="评测证据测试用户",
+                email="level-evidence@binnagent.invalid",
+                invite_code=f"LEVEL-{uuid4().hex[:8]}",
+                account_type="registered",
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        await connection.execute(
+            tables.workflow_runs.update()
+            .where(
+                tables.workflow_runs.c.workflow_run_id
+                == f"workflow_run_{task_id.removeprefix('task_')}"
+            )
+            .values(learner_id=SYNTHETIC_LEARNER_ID)
+        )
+    profile = LearnerProfileSnapshot(
+        learner_snapshot_id="assessment-test-profile",
+        exam_track=ExamTrack.ENGLISH_1,
+        target_score=70,
+        weekly_minutes=420,
+        self_reported_level=SelfReportedLevel.DEVELOPING,
+        prior_exam_seen=False,
+        session_minutes=45,
+        feedback_density=FeedbackDensity.MINIMAL,
+        timed=False,
+        evidence_count=0,
+        confidence_band="low",
+        created_at=now,
+    )
+    content_version_id = content_catalog.first_for(TaskType.MATCHED_READING).content_version_id
+    question = content_catalog.reading_question_for(content_version_id, task_id, profile)
+
+    transport = httpx2.ASGITransport(app=create_app())
+    async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            f"/learner/v1/tasks/{task_id}/attempts",
+            headers={"Idempotency-Key": "level-evidence-reading-choice-0001"},
+            json={
+                "expected_version": task["version"],
+                "text": f"选择 {question['correct_answer']}。\nThe passage supports this choice.",
+                "independence": "independent",
+            },
+        )
+    assert response.status_code == 200, response.text
+
+    async with get_engine().connect() as connection:
+        evidence = await collect_level_evidence(connection, SYNTHETIC_LEARNER_ID)
+
+    assert evidence.reading_responses == 1
+    assert evidence.reading_correct == 1
+    tier = question.get("difficulty_tier", "standard")
+    assert getattr(evidence, f"reading_{tier}_responses") == 1
+    assert getattr(evidence, f"reading_{tier}_correct") == 1
 
 
 @pytest.mark.asyncio
@@ -595,10 +667,38 @@ async def test_stale_write_returns_only_public_conflict_details() -> None:
             }
         ]
 
+        undone = await client.post(
+            f"/learner/v1/tasks/{payload['task_id']}/annotations/"
+            f"{annotation_payload['annotations'][0]['annotation_id']}/undo",
+            headers={"Idempotency-Key": "annotation-undo-0001"},
+            json={"expected_version": annotation_payload["version"]},
+        )
+        assert undone.status_code == 200, undone.text
+        assert undone.json()["annotation_count"] == 0
+        assert undone.json()["annotations"] == []
+
+        restored = await client.post(
+            f"/learner/v1/tasks/{payload['task_id']}/annotations",
+            headers={"Idempotency-Key": "annotation-restored-0001"},
+            json={
+                "expected_version": undone.json()["version"],
+                "kind": "evidence",
+                "span": {
+                    "paragraph_id": "matched_01_p2",
+                    "start": 403,
+                    "end": 403 + len(quote),
+                    "text_quote": quote,
+                    "text_hash": sha256(quote.encode()).hexdigest(),
+                },
+                "user_explanation": "It supports the claim.",
+            },
+        )
+        assert restored.status_code == 200, restored.text
+
         replacement = await client.post(
             f"/learner/v1/tasks/{payload['task_id']}/material-seen",
             headers={"Idempotency-Key": "material-seen-0001"},
-            json={"expected_version": annotation.json()["version"]},
+            json={"expected_version": restored.json()["version"]},
         )
         assert replacement.status_code == 200
         assert replacement.json()["current_content_version_id"] == "matched_reading_02_v1"
@@ -992,6 +1092,124 @@ async def test_expression_review_requires_saved_work_and_preserves_authored_vers
         assert (
             invocation["input_attempt_version_id"]
             == saved_payload["attempts"][0]["attempt_version_id"]
+        )
+
+
+@pytest.mark.asyncio
+async def test_expression_chinese_assist_is_contextual_regenerable_and_counts_as_one_h3() -> None:
+    transport = httpx2.ASGITransport(app=create_app())
+    async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
+        task = await _seed_task(
+            TaskType.MICRO_EXPRESSION,
+            exam_track=ExamTrack.ENGLISH_1,
+            self_reported_level=SelfReportedLevel.DEVELOPING,
+        )
+        task_id = task["task_id"]
+        intent = "我想表达翻译工具可以帮助核对细节, 但不能替代学习者自己的推理。"
+
+        before_v1 = await client.post(
+            f"/learner/v1/tasks/{task_id}/expression-lab/chinese-assist",
+            headers={"Idempotency-Key": "expression-assist-too-early-0001"},
+            json={
+                "expected_version": task["version"],
+                "chinese_intent": intent,
+                "generation_index": 1,
+                "recent_assets": [],
+            },
+        )
+        assert before_v1.status_code == 422
+        assert before_v1.json()["reason"] == "expression_chinese_assist_requires_saved_v1"
+
+        v1_text = (
+            "Translation tools can help learners check unfamiliar details, but students "
+            "should still reason independently before relying on them."
+        )
+        v1 = await client.post(
+            f"/learner/v1/tasks/{task_id}/attempts",
+            headers={"Idempotency-Key": "expression-assist-v1-0001"},
+            json={
+                "expected_version": task["version"],
+                "text": v1_text,
+                "independence": "independent",
+            },
+        )
+        assert v1.status_code == 200, v1.text
+        v1_payload = v1.json()
+
+        first = await client.post(
+            f"/learner/v1/tasks/{task_id}/expression-lab/chinese-assist",
+            headers={"Idempotency-Key": "expression-assist-generation-0001"},
+            json={
+                "expected_version": v1_payload["version"],
+                "chinese_intent": intent,
+                "generation_index": 1,
+                "recent_assets": [
+                    {"title": "让步表达", "content": "can help ..., but should not replace ..."}
+                ],
+            },
+        )
+        assert first.status_code == 200, first.text
+        first_payload = first.json()
+        assert first_payload["status"] == "generated"
+        assert first_payload["recommended_expression"]
+        assert first_payload["context_fit"]
+        assert first_payload["usage_notes"]
+        assert "当前任务" in first_payload["boundary_note"]
+        assisted_task = first_payload["task"]
+        assert assisted_task["highest_hint_level"] == 3
+        assert assisted_task["intervention_count"] == 1
+        assert assisted_task["interventions"][0]["intervention_type"] == "candidate_comparison"
+        assert assisted_task["completion_gaps"] == ["learner_output_after_intervention"]
+
+        second = await client.post(
+            f"/learner/v1/tasks/{task_id}/expression-lab/chinese-assist",
+            headers={"Idempotency-Key": "expression-assist-generation-0002"},
+            json={
+                "expected_version": assisted_task["version"],
+                "chinese_intent": intent,
+                "generation_index": 2,
+                "previous_candidate": first_payload["recommended_expression"],
+                "recent_assets": [],
+            },
+        )
+        assert second.status_code == 200, second.text
+        second_payload = second.json()
+        assert second_payload["recommended_expression"] != first_payload["recommended_expression"]
+        assert second_payload["task"]["version"] == assisted_task["version"]
+        assert second_payload["task"]["intervention_count"] == 1
+
+        v2 = await client.post(
+            f"/learner/v1/tasks/{task_id}/attempts",
+            headers={"Idempotency-Key": "expression-assist-v2-0001"},
+            json={
+                "expected_version": assisted_task["version"],
+                "text": (
+                    "Although translation tools can clarify unfamiliar details, they should "
+                    "support rather than replace a learner's independent reasoning."
+                ),
+                "independence": "hinted_high",
+            },
+        )
+        assert v2.status_code == 200, v2.text
+        assert v2.json()["attempts"][-1]["independence"] == "hinted_high"
+
+    async with get_engine().connect() as connection:
+        invocations = (
+            (
+                await connection.execute(
+                    sa.select(tables.model_invocations)
+                    .where(tables.model_invocations.c.task_id == task_id)
+                    .order_by(tables.model_invocations.c.created_at)
+                )
+            )
+            .mappings()
+            .all()
+        )
+        assert len(invocations) == 2
+        assert all(item["purpose"] == "expression_chinese_assist" for item in invocations)
+        assert all(
+            item["input_attempt_version_id"] == v1_payload["attempts"][0]["attempt_version_id"]
+            for item in invocations
         )
 
 

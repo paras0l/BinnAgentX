@@ -49,6 +49,10 @@ class AnnotationRequest(BaseModel):
     analysis: dict[str, object] | None = None
 
 
+class RemoveAnnotationRequest(BaseModel):
+    expected_version: Annotated[int, Field(ge=1)]
+
+
 class IntensiveFollowUpInput(BaseModel):
     target_kind: Literal[
         "translation_issue", "knowledge_card", "component_comparison", "explanation"
@@ -183,6 +187,28 @@ class ExpressionReviewView(BaseModel):
     thinking_difference: str
     versions: list[ExpressionStyleVersionView]
     boundary_note: str
+
+
+class ExpressionAssistRequest(BaseModel):
+    expected_version: Annotated[int, Field(ge=1)]
+    chinese_intent: Annotated[str, Field(min_length=2, max_length=1000)]
+    generation_index: Annotated[int, Field(ge=1, le=20)] = 1
+    previous_candidate: Annotated[str, Field(min_length=2, max_length=2000)] | None = None
+    recent_assets: Annotated[
+        list[RecentLearningAssetInput], Field(default_factory=list, max_length=4)
+    ]
+
+
+class ExpressionAssistView(BaseModel):
+    generation_id: str
+    status: Literal["generated", "unavailable"]
+    source: Literal["model", "local_fixture", "unavailable"]
+    recommended_expression: str | None
+    context_fit: str | None
+    usage_notes: list[str]
+    reason_code: str
+    boundary_note: str
+    task: "LearnerTaskView"
 
 
 class AttemptRequest(BaseModel):

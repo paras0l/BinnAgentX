@@ -113,8 +113,13 @@ require_cmd() {
 
 resolve_pnpm() {
   if command -v pnpm >/dev/null 2>&1; then
-    PNPM_CMD=(pnpm)
-    return
+    local pnpm_version
+    pnpm_version="$(pnpm --version 2>/dev/null || true)"
+    if [[ "$pnpm_version" == "11.9.0" ]]; then
+      PNPM_CMD=(pnpm)
+      return
+    fi
+    info "全局 pnpm ${pnpm_version:-不可用} 与项目要求 11.9.0 不一致，改用项目版本"
   fi
   if command -v corepack >/dev/null 2>&1; then
     PNPM_CMD=(corepack pnpm)

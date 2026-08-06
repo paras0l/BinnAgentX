@@ -5,6 +5,7 @@ import httpx2
 import pytest
 from binnagent_agent import (
     AnnotationAnalysisRequest,
+    ExpressionAssistRequest,
     ExpressionReviewRequest,
     PriorityFeedbackRequest,
 )
@@ -13,6 +14,7 @@ from binnagent_api.model_adapters import (
     PersonalizedQuestionOutput,
     PersonalizedReadingAdapter,
     RemoteAnnotationAnalysisAdapter,
+    RemoteExpressionAssistAdapter,
     RemoteExpressionReviewAdapter,
     RemotePriorityFeedbackAdapter,
     annotation_analysis_adapter,
@@ -557,3 +559,67 @@ async def test_longcat_expression_review_disables_thinking_for_final_output() ->
     assert body["thinking"] == {"type": "disabled"}
     assert isinstance(result.payload, dict)
     assert len(result.payload["thinking_difference"]) == 800
+
+
+@pytest.mark.asyncio
+async def test_expression_assist_prompt_uses_task_context_v1_and_previous_candidate() -> None:
+    seen: dict[str, object] = {}
+    content = json.dumps(
+        {
+            "schema_version": "1.0.0",
+            "recommended_expression": (
+                "Although translation tools can clarify details, they should support rather "
+                "than replace independent reasoning."
+            ),
+            "context_fit": "The concession suits the academic audience and balanced purpose.",
+            "usage_notes": [
+                "Use although to concede a limited benefit before stating the boundary.",
+                "Keep support rather than replace as the central contrast.",
+            ],
+        }
+    )
+
+    async def handler(request: httpx2.Request) -> httpx2.Response:
+        seen["body"] = json.loads(request.content)
+        return httpx2.Response(200, json={"choices": [{"message": {"content": content}}]})
+
+    adapter = RemoteExpressionAssistAdapter(
+        provider="longcat",
+        base_url="https://models.example",
+        model="test-model",
+        api_key="test-key",
+        estimated_cost_usd=Decimal("0.02"),
+        max_tokens=1200,
+        timeout_seconds=2,
+        transport=httpx2.MockTransport(handler),
+    )
+    result = await adapter.generate(
+        ExpressionAssistRequest(
+            workflow_run_id="workflow_run_model_0001",
+            task_id="task_model_0001",
+            input_attempt_version_id="attempt_model_0001",
+            content_version_id="micro_expression_01_v1",
+            chinese_intent="我想表达工具只能辅助, 不能替代独立思考。",
+            learner_draft="Tools can help students check details.",
+            situation="A short academic response about learning tools.",
+            audience="An educated general reader.",
+            purpose="State a balanced position.",
+            target_argument_move="Concede a benefit before setting a boundary.",
+            generation_index=2,
+            previous_candidate="Tools can help, but they should not replace thought.",
+            recent_assets=(("让步结构", "Although ..., ..."),),
+        )
+    )
+
+    body = seen["body"]
+    assert isinstance(body, dict)
+    assert body["thinking"] == {"type": "disabled"}
+    messages = body["messages"]
+    assert isinstance(messages, list)
+    prompt_text = "\n".join(str(message["content"]) for message in messages)
+    assert "A short academic response about learning tools." in prompt_text
+    assert "An educated general reader." in prompt_text
+    assert "Tools can help students check details." in prompt_text
+    assert "Tools can help, but they should not replace thought." in prompt_text
+    assert "不是逐词翻译器" in prompt_text
+    assert result.payload == json.loads(content)

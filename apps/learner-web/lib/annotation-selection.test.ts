@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   classifySelection,
   defaultAnalysisQuestion,
+  expandAnnotationSelectionToWordBoundaries,
   normalizeAnnotationSelection,
   recommendedAnnotationKind,
   selectionScope,
@@ -28,6 +29,26 @@ describe("annotation selection routing", () => {
       annotatedText: "exciting",
       trailingWhitespace: " ",
     });
+  });
+
+  it("completes a partially selected English word after trimming extra spaces", () => {
+    const paragraph = "Sixth grade is an exciting year.";
+    const rawStart = paragraph.indexOf("xcitin") - 1;
+    const normalized = normalizeAnnotationSelection(" xcitin ", rawStart);
+
+    expect(expandAnnotationSelectionToWordBoundaries(paragraph, normalized)).toEqual({
+      start: paragraph.indexOf("exciting"),
+      end: paragraph.indexOf("exciting") + "exciting".length,
+      textQuote: "exciting",
+    });
+  });
+
+  it("leaves an intentional complete-word selection unchanged", () => {
+    const paragraph = "Keep the existing space flexible.";
+    const start = paragraph.indexOf("existing space");
+    const normalized = normalizeAnnotationSelection("existing space", start);
+
+    expect(expandAnnotationSelectionToWordBoundaries(paragraph, normalized)).toBe(normalized);
   });
 
   it("routes a word and a short phrase to vocabulary help", () => {

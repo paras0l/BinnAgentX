@@ -24,6 +24,7 @@ import {
   completeRun,
   completeTask,
   endTaskEarly,
+  generateExpressionFromChinese,
   getWorkspace,
   LearnerApiError,
   pauseTask,
@@ -38,6 +39,7 @@ import {
   saveAttempt,
   saveRevision,
   submitMaterialFeedback,
+  undoAnnotation,
   verifyGrammarChallenge,
 } from "../lib/api";
 import { createClientToken } from "../lib/client-id";
@@ -46,6 +48,7 @@ import type {
   AnnotationKind,
   AnnotationView,
   AttemptView,
+  ExpressionAssistView,
   ExpressionMaterialView,
   InterventionView,
   LearnerTaskView,
@@ -76,6 +79,7 @@ import type {
 import {
   classifySelection,
   defaultAnalysisQuestion,
+  expandAnnotationSelectionToWordBoundaries,
   normalizeAnnotationSelection,
   recommendedAnnotationKind,
   selectionScope,
@@ -91,6 +95,7 @@ import {
   type IntensiveReadingSession,
   type SentenceComponentMark,
 } from "../lib/intensive-reading";
+import { announceGeneratedResult } from "../lib/scroll-reveal";
 import { ExpressionLab, type LabTab } from "./expression-lab";
 import { IntensiveReadingPane, IntensiveTemporaryTaskBody } from "./intensive-reading-pane";
 import { layoutKnuthPlassParagraph, type KnuthPlassLine } from "./knuth-plass-layout";
@@ -466,6 +471,7 @@ function ActiveTaskWorkspace({
     stored ? "local" : "clean",
   );
   const [selection, setSelection] = useState<TextSelection | null>(null);
+  const [originalSelection, setOriginalSelection] = useState<TextSelection | null>(null);
   const [selectionAnchor, setSelectionAnchor] = useState<SelectionAnchor | null>(null);
   const [showSelectionToolbar, setShowSelectionToolbar] = useState(false);
   const [annotationKind, setAnnotationKind] = useState<AnnotationKind>("vocabulary");
@@ -473,6 +479,8 @@ function ActiveTaskWorkspace({
   const [annotationAnalysis, setAnnotationAnalysis] = useState<AnnotationAnalysisView | null>(null);
   const [annotationAnalysisError, setAnnotationAnalysisError] = useState<string | null>(null);
   const [isAnnotationAnalysisPending, setIsAnnotationAnalysisPending] = useState(false);
+  const [isAnnotationPersistPending, setIsAnnotationPersistPending] = useState(false);
+  const [savedAnnotationId, setSavedAnnotationId] = useState<string | null>(null);
   const [activeWorkspaceTab, setActiveWorkspaceTab] = useState<WorkspaceTab>("task");
   const expressionTabStorageKey = `binnagent:expression-tabs:${task.task_id}:${task.current_content_version_id}:v1`;
   const [expressionTabLayout, setExpressionTabLayout] = useState(() =>
@@ -541,11 +549,16 @@ function ActiveTaskWorkspace({
   const [grammarCorrection, setGrammarCorrection] = useState("");
   const [grammarFeedback, setGrammarFeedback] = useState<string | null>(null);
   const [isGrammarPending, setIsGrammarPending] = useState(false);
+  const [chineseExpressionIntent, setChineseExpressionIntent] = useState("");
+  const [expressionAssist, setExpressionAssist] = useState<ExpressionAssistView | null>(null);
+  const [expressionAssistGeneration, setExpressionAssistGeneration] = useState(0);
   const [isPending, startTransition] = useTransition();
   const materialRef = useRef<HTMLElement>(null);
   const responsePaneRef = useRef<HTMLElement>(null);
   const responseRef = useRef<HTMLTextAreaElement>(null);
   const annotationExplanationRef = useRef<HTMLTextAreaElement>(null);
+  const annotationAnalysisResultRef = useRef<HTMLElement>(null);
+  const expressionAssistResultRef = useRef<HTMLElement>(null);
   const earlyEndTriggerRef = useRef<HTMLButtonElement>(null);
   const earlyEndConfirmRef = useRef<HTMLElement>(null);
   const temporaryTaskCounterRef = useRef(storedTemporaryWorkspace?.taskCounter ?? 0);
@@ -689,6 +702,11 @@ function ActiveTaskWorkspace({
     latestIntervention &&
     latestAttempt.attempt_version_id === latestIntervention.input_attempt_version_id,
   );
+  const expressionAssistInterventionActive = Boolean(
+    hasUnansweredIntervention &&
+    latestIntervention?.intervention_type === "candidate_comparison" &&
+    latestIntervention.reason_code.startsWith("expression_chinese_assist"),
+  );
   const linkedRevision = latestIntervention
     ? task.revisions.find(
         (revision) => revision.intervention_id === latestIntervention.intervention_id,
@@ -735,16 +753,26 @@ function ActiveTaskWorkspace({
       prefix.toString().length,
     );
     if (!normalizedSelection.textQuote || normalizedSelection.textQuote.length > 1000) return;
-    const selectionRect = range.getBoundingClientRect();
-    const scale = classifySelection(
-      normalizedSelection.textQuote,
-      startParagraph.textContent ?? "",
+    const paragraphText = startParagraph.textContent ?? "";
+    const adjustedSelection = expandAnnotationSelectionToWordBoundaries(
+      paragraphText,
+      normalizedSelection,
     );
+    const paragraphId = startParagraph.dataset.paragraphId ?? "";
+    const selectionRect = range.getBoundingClientRect();
+    const scale = classifySelection(adjustedSelection.textQuote, paragraphText);
     const recommendedKind = recommendedAnnotationKind(scale);
     setSelection({
-      paragraphId: startParagraph.dataset.paragraphId ?? "",
-      ...normalizedSelection,
+      paragraphId,
+      ...adjustedSelection,
     });
+    setOriginalSelection(
+      adjustedSelection.start === normalizedSelection.start &&
+        adjustedSelection.end === normalizedSelection.end
+        ? null
+        : { paragraphId, ...normalizedSelection },
+    );
+    setSavedAnnotationId(null);
     setAnnotationAnalysis(null);
     setAnnotationAnalysisError(null);
     if (allowedAnnotations.includes(recommendedKind)) setAnnotationKind(recommendedKind);
@@ -754,14 +782,20 @@ function ActiveTaskWorkspace({
     });
     setShowSelectionToolbar(true);
     setProgressMessage(
-      selectionScope(scale) === "word_or_phrase"
-        ? "识别为单词或短语：已优先推荐生词解释与语境义。"
-        : "识别为句子或段落：已优先推荐整句翻译与语法结构。",
+      adjustedSelection.start !== normalizedSelection.start ||
+        adjustedSelection.end !== normalizedSelection.end
+        ? `已自动补全为完整单词“${adjustedSelection.textQuote}”；需要时可保留原选中。`
+        : selectionScope(scale) === "word_or_phrase"
+          ? "识别为单词或短语：已优先推荐生词解释与语境义。"
+          : "识别为句子或段落：已优先推荐整句翻译与语法结构。",
     );
     if (preferences.assistanceMode === "proactive") {
       setInlineAssistanceFocus(
         selectionScope(scale) === "word_or_phrase" ? "meaning" : "structure",
       );
+    }
+    if (activeWorkspaceTab !== "annotations") {
+      switchWorkspaceTab("annotations");
     }
     window.requestAnimationFrame(() => {
       responsePaneRef.current?.scrollTo({ top: 0, behavior: "smooth" });
@@ -773,8 +807,22 @@ function ActiveTaskWorkspace({
     setAnnotationAnalysis(null);
     setAnnotationAnalysisError(null);
     setShowSelectionToolbar(false);
+    persistAnnotation({ analysisOverride: null, kindOverride: kind });
     responsePaneRef.current?.scrollTo({ top: 0, behavior: "smooth" });
     window.requestAnimationFrame(() => annotationExplanationRef.current?.focus());
+  };
+
+  const keepOriginalSelection = () => {
+    if (!originalSelection) return;
+    const paragraphText = (material as ReadingMaterialView).paragraphs.find(
+      (paragraph) => paragraph.paragraph_id === originalSelection.paragraphId,
+    )?.text;
+    const scale = classifySelection(originalSelection.textQuote, paragraphText ?? "");
+    setSelection(originalSelection);
+    setOriginalSelection(null);
+    const recommendedKind = recommendedAnnotationKind(scale);
+    if (allowedAnnotations.includes(recommendedKind)) setAnnotationKind(recommendedKind);
+    setProgressMessage(`已保留你的原选区“${originalSelection.textQuote}”。`);
   };
 
   const promptUncertainSelection = () => {
@@ -1137,6 +1185,15 @@ function ActiveTaskWorkspace({
       const result = await analyzeAnnotation(task, selection, learnerQuestion);
       setAnnotationAnalysis(result);
       if (!annotationExplanation.trim()) setAnnotationExplanation(learnerQuestion);
+      persistAnnotation({ analysisOverride: result, explanationOverride: learnerQuestion });
+      window.requestAnimationFrame(() => {
+        announceGeneratedResult({
+          container: responsePaneRef.current,
+          target: annotationAnalysisResultRef.current,
+          topOffset: 72,
+          reducedMotion: preferences.reducedMotion,
+        });
+      });
       const sentence = resolveIntensiveSentence(
         selection.paragraphId,
         paragraphText,
@@ -1162,38 +1219,50 @@ function ActiveTaskWorkspace({
     }
   };
 
-  const submitAnnotation = () => {
-    if (!selection || (!annotationExplanation.trim() && !annotationAnalysis)) {
-      setProgressMessage("先选择原文并写下你的解释，标记才有学习意义。");
-      return;
-    }
+  const persistAnnotation = ({
+    analysisOverride = annotationAnalysis,
+    explanationOverride,
+    kindOverride = annotationKind,
+  }: {
+    analysisOverride?: AnnotationAnalysisView | null;
+    explanationOverride?: string;
+    kindOverride?: AnnotationKind;
+  } = {}) => {
+    if (!selection || isAnnotationPersistPending) return;
     const paragraphText = isReading
       ? ((material as ReadingMaterialView).paragraphs.find(
           (paragraph) => paragraph.paragraph_id === selection.paragraphId,
         )?.text ?? "")
       : "";
     const scale = classifySelection(selection.textQuote, paragraphText);
-    const explanation = annotationExplanation.trim() || defaultAnalysisQuestion(scale);
+    const explanation =
+      explanationOverride?.trim() || annotationExplanation.trim() || defaultAnalysisQuestion(scale);
+    const resolvedAnalysis = analysisOverride;
     onError(null);
+    setIsAnnotationPersistPending(true);
     startTransition(async () => {
       try {
+        const currentTask = savedAnnotationId
+          ? await undoAnnotation(task, savedAnnotationId)
+          : task;
         const updated = await saveAnnotation(
-          task,
-          annotationKind,
+          currentTask,
+          kindOverride,
           selection,
           explanation,
-          annotationAnalysis,
+          resolvedAnalysis,
         );
         onTaskChange(updated);
         const savedAnnotation = updated.annotations.at(-1);
+        setSavedAnnotationId(savedAnnotation?.annotation_id ?? null);
         const assetKind: LearningAssetKind =
-          annotationKind === "vocabulary"
+          kindOverride === "vocabulary"
             ? "vocabulary"
-            : annotationKind === "grammar"
+            : kindOverride === "grammar"
               ? "grammar"
-              : annotationKind === "reusable_expression"
+              : kindOverride === "reusable_expression"
                 ? "writing_expression"
-                : annotationKind === "uncertain"
+                : kindOverride === "uncertain"
                   ? /词|词组|搭配/u.test(annotationExplanation)
                     ? "vocabulary"
                     : "grammar"
@@ -1201,25 +1270,25 @@ function ActiveTaskWorkspace({
         onLearningAssetCapture({
           kind: assetKind,
           title:
-            annotationKind === "uncertain"
+            kindOverride === "uncertain"
               ? `待巩固：${selection.textQuote.slice(0, 42)}`
-              : `${ANNOTATION_LABELS[annotationKind]}：${selection.textQuote.slice(0, 42)}`,
+              : `${ANNOTATION_LABELS[kindOverride]}：${selection.textQuote.slice(0, 42)}`,
           content: selection.textQuote,
-          note: annotationAnalysis
+          note: resolvedAnalysis
             ? [
                 explanation,
-                annotationAnalysis.vocabulary_note
-                  ? `语境义与用法：${annotationAnalysis.vocabulary_note}`
+                resolvedAnalysis.vocabulary_note
+                  ? `语境义与用法：${resolvedAnalysis.vocabulary_note}`
                   : null,
-                annotationAnalysis.translation
-                  ? `选区翻译：${annotationAnalysis.translation}`
+                resolvedAnalysis.translation
+                  ? `选区翻译：${resolvedAnalysis.translation}`
                   : null,
-                annotationAnalysis.grammar_structure.length > 0
-                  ? `语法结构：${annotationAnalysis.grammar_structure.join("；")}`
+                resolvedAnalysis.grammar_structure.length > 0
+                  ? `语法结构：${resolvedAnalysis.grammar_structure.join("；")}`
                   : null,
-                `卡点诊断：${annotationAnalysis.diagnosis}`,
-                `拆解：${annotationAnalysis.breakdown.join("；")}`,
-                `下一步自查：${annotationAnalysis.next_check}`,
+                `卡点诊断：${resolvedAnalysis.diagnosis}`,
+                `拆解：${resolvedAnalysis.breakdown.join("；")}`,
+                `下一步自查：${resolvedAnalysis.next_check}`,
               ]
                 .filter((item): item is string => Boolean(item))
                 .join("\n")
@@ -1243,28 +1312,28 @@ function ActiveTaskWorkspace({
                 content: explanation,
                 origin: "learner",
               },
-              ...(annotationAnalysis
+              ...(resolvedAnalysis
                 ? [
                     {
                       segmentId: "diagnosis",
                       role: "diagnosis" as const,
-                      content: annotationAnalysis.diagnosis,
+                      content: resolvedAnalysis.diagnosis,
                       origin: "agent" as const,
                     },
                     {
                       segmentId: "analysis-support",
                       role: "agent_hint" as const,
                       content: [
-                        annotationAnalysis.vocabulary_note
-                          ? `语境义与用法：${annotationAnalysis.vocabulary_note}`
+                        resolvedAnalysis.vocabulary_note
+                          ? `语境义与用法：${resolvedAnalysis.vocabulary_note}`
                           : null,
-                        annotationAnalysis.translation
-                          ? `选区翻译：${annotationAnalysis.translation}`
+                        resolvedAnalysis.translation
+                          ? `选区翻译：${resolvedAnalysis.translation}`
                           : null,
-                        annotationAnalysis.grammar_structure.length > 0
-                          ? `语法结构：${annotationAnalysis.grammar_structure.join("；")}`
+                        resolvedAnalysis.grammar_structure.length > 0
+                          ? `语法结构：${resolvedAnalysis.grammar_structure.join("；")}`
                           : null,
-                        `拆解：${annotationAnalysis.breakdown.join("；")}`,
+                        `拆解：${resolvedAnalysis.breakdown.join("；")}`,
                       ]
                         .filter((item): item is string => Boolean(item))
                         .join("\n"),
@@ -1273,7 +1342,7 @@ function ActiveTaskWorkspace({
                     {
                       segmentId: "next-check",
                       role: "next_check" as const,
-                      content: annotationAnalysis.next_check,
+                      content: resolvedAnalysis.next_check,
                       origin: "agent" as const,
                     },
                   ]
@@ -1281,18 +1350,44 @@ function ActiveTaskWorkspace({
             ],
           },
         });
-        setShowSavedAnnotations(true);
-        switchWorkspaceTab("annotations");
+        setShowSelectionToolbar(false);
+        setAnnotationAnalysisError(null);
+        setProgressMessage("标注已自动保存；如果不是你想要的范围，可以直接撤销。");
+      } catch (error) {
+        onError(messageFor(error));
+      } finally {
+        setIsAnnotationPersistPending(false);
+      }
+    });
+  };
+
+  const undoCurrentAnnotation = () => {
+    if (!savedAnnotationId || isAnnotationPersistPending) {
+      setSelection(null);
+      setOriginalSelection(null);
+      setSelectionAnchor(null);
+      setShowSelectionToolbar(false);
+      return;
+    }
+    setIsAnnotationPersistPending(true);
+    startTransition(async () => {
+      try {
+        const updated = await undoAnnotation(task, savedAnnotationId);
+        onTaskChange(updated);
+        setSavedAnnotationId(null);
         setSelection(null);
+        setOriginalSelection(null);
         setSelectionAnchor(null);
         setShowSelectionToolbar(false);
         setAnnotationExplanation("");
         setAnnotationAnalysis(null);
         setAnnotationAnalysisError(null);
         window.getSelection()?.removeAllRanges();
-        setProgressMessage("本次已做到：你把自己的判断绑定到了精确原文，而不是只做高亮。");
+        setProgressMessage("这条标注已撤销，原文恢复为未标注状态。");
       } catch (error) {
         onError(messageFor(error));
+      } finally {
+        setIsAnnotationPersistPending(false);
       }
     });
   };
@@ -1573,6 +1668,66 @@ function ActiveTaskWorkspace({
         }
         setProgressMessage("单项反馈只指出一个优先检查方向。请保留自己的立场和措辞，亲自形成 V2。");
         window.requestAnimationFrame(() => responseRef.current?.focus());
+      } catch (error) {
+        onError(messageFor(error));
+      }
+    });
+  };
+
+  const requestExpressionAssist = () => {
+    if (
+      isReading ||
+      !latestAttempt ||
+      !chineseExpressionIntent.trim() ||
+      (hasUnansweredIntervention && !expressionAssistInterventionActive)
+    ) {
+      return;
+    }
+    onError(null);
+    const nextGeneration =
+      expressionAssistGeneration === 0 && expressionAssistInterventionActive
+        ? 2
+        : expressionAssistGeneration + 1;
+    const previousCandidate =
+      expressionAssist?.recommended_expression ??
+      (expressionAssistInterventionActive ? (latestIntervention?.delivered_content ?? null) : null);
+    startTransition(async () => {
+      try {
+        const result = await generateExpressionFromChinese(
+          task,
+          chineseExpressionIntent.trim(),
+          nextGeneration,
+          previousCandidate,
+        );
+        setExpressionAssist(result);
+        setExpressionAssistGeneration(nextGeneration);
+        onTaskChange(result.task);
+        if (result.status === "generated") {
+          setText(latestAttempt.text);
+          saveDraft({
+            schemaVersion: 1,
+            taskId: task.task_id,
+            contentVersionId: task.current_content_version_id,
+            choice: "",
+            text: latestAttempt.text,
+            updatedAt: new Date().toISOString(),
+          });
+          setShowRevisionEditor(true);
+          setProgressMessage(
+            nextGeneration === 1
+              ? "已结合任务语境给出表达建议。请比较理由和用法后，亲自写出 V2。"
+              : "已换一种表达策略。请判断哪一种更符合你的语境，再亲自修改 V2。",
+          );
+          window.requestAnimationFrame(() => {
+            announceGeneratedResult({
+              container: rightExpressionPanelTarget,
+              target: expressionAssistResultRef.current,
+              reducedMotion: preferences.reducedMotion,
+            });
+          });
+        } else {
+          setProgressMessage("本次表达建议暂不可用；你的 V1 和独立性记录均未改变，可以稍后重试。");
+        }
       } catch (error) {
         onError(messageFor(error));
       }
@@ -2000,7 +2155,7 @@ function ActiveTaskWorkspace({
                       tabIndex={activeWorkspaceTab === "annotations" ? 0 : -1}
                       onClick={() => switchWorkspaceTab("annotations")}
                     >
-                      标注列表
+                      标注
                       <span>{savedAnnotations.length}</span>
                     </button>
                   ) : null}
@@ -2067,232 +2222,6 @@ function ActiveTaskWorkspace({
                     role="tabpanel"
                     aria-labelledby="workspace-tab-task"
                   >
-                    {selection && isReading ? (
-                      <section
-                        className="annotation-composer"
-                        aria-labelledby="annotation-title"
-                        data-ui-anchor="composer"
-                      >
-                        <div className="annotation-composer-heading">
-                          <div>
-                            <p className="step-label">正在标记选中的原文</p>
-                            <h3 id="annotation-title">“{selection.textQuote}”</h3>
-                          </div>
-                          <button
-                            type="button"
-                            className="icon-button"
-                            aria-label="取消本次标记"
-                            onClick={() => {
-                              setSelection(null);
-                              setSelectionAnchor(null);
-                              setShowSelectionToolbar(false);
-                              setAnnotationAnalysis(null);
-                              setAnnotationAnalysisError(null);
-                              window.getSelection()?.removeAllRanges();
-                            }}
-                          >
-                            ×
-                          </button>
-                        </div>
-                        {selectedScale && selectedScope ? (
-                          <div
-                            className={`selection-recommendation selection-scope-${selectedScope}`}
-                          >
-                            <span>{SELECTION_SCALE_LABELS[selectedScale]}</span>
-                            <p>
-                              {selectedScope === "word_or_phrase"
-                                ? "优先查生词：看当前语境义、词性和搭配。"
-                                : "优先拆长句：先看完整译文，再看主干、从句和修饰层级。"}
-                            </p>
-                          </div>
-                        ) : null}
-                        <div className="annotation-color-legend" aria-label="高亮颜色语义">
-                          <span className="annotation-kind-vocabulary">暖黄 · 生词</span>
-                          <span className="annotation-kind-reusable_expression">雾蓝 · 好表达</span>
-                          <span className="annotation-kind-grammar">珊瑚 · 语法重点</span>
-                        </div>
-                        <div className="annotation-types" role="group" aria-label="标记类型">
-                          {allowedAnnotations.map((kind) => (
-                            <button
-                              key={kind}
-                              type="button"
-                              className={`annotation-kind-${kind}${annotationKind === kind ? " selected" : ""}`}
-                              onClick={() => chooseAnnotationKind(kind)}
-                            >
-                              {ANNOTATION_LABELS[kind]}
-                            </button>
-                          ))}
-                        </div>
-                        {preferences.assistanceMode !== "quiet" ? (
-                          <InlineAssistancePanel
-                            selection={selection}
-                            material={material as ReadingMaterialView}
-                            focus={inlineAssistanceFocus}
-                            onFocus={setInlineAssistanceFocus}
-                          />
-                        ) : null}
-                        {annotationKind === "uncertain" ? (
-                          <div
-                            className="uncertainty-reasons"
-                            role="group"
-                            aria-label="看不懂的原因"
-                          >
-                            <span>卡在哪里？</span>
-                            {UNCERTAINTY_REASONS.map(([label, explanation]) => (
-                              <button
-                                key={label}
-                                type="button"
-                                onClick={() => {
-                                  if (!annotationExplanation.trim()) {
-                                    setAnnotationExplanation(explanation);
-                                    setAnnotationAnalysis(null);
-                                    setAnnotationAnalysisError(null);
-                                  }
-                                  window.requestAnimationFrame(() =>
-                                    annotationExplanationRef.current?.focus(),
-                                  );
-                                }}
-                              >
-                                {label}
-                              </button>
-                            ))}
-                          </div>
-                        ) : null}
-                        <label>
-                          <span>
-                            {canAnalyzeAnnotation ? "你想重点解决什么？" : "为什么这样标？"}
-                          </span>
-                          <textarea
-                            ref={annotationExplanationRef}
-                            value={annotationExplanation}
-                            onChange={(event) => {
-                              setAnnotationExplanation(event.target.value);
-                              setAnnotationAnalysis(null);
-                              setAnnotationAnalysisError(null);
-                            }}
-                            placeholder={
-                              annotationKind === "vocabulary"
-                                ? "可选：写下你猜的语境义，或直接点击下方查词。"
-                                : annotationKind === "grammar"
-                                  ? "可选：写下没理清的主干、从句或修饰关系。"
-                                  : annotationKind === "uncertain"
-                                    ? "选一个卡点作为开头，再补充具体词、结构或关系。"
-                                    : "写下你的判断。标记数量不算进步，解释才让思考可见。"
-                            }
-                          />
-                        </label>
-                        {canAnalyzeAnnotation ? (
-                          <div className="annotation-analysis-flow">
-                            <div className="annotation-analysis-action">
-                              <button
-                                className="analysis-button"
-                                type="button"
-                                onClick={requestAnnotationAnalysis}
-                                disabled={isAnnotationAnalysisPending || isPending}
-                              >
-                                {isAnnotationAnalysisPending
-                                  ? "正在分析当前选区…"
-                                  : annotationAnalysisButtonLabel}
-                              </button>
-                              <small>
-                                {selectedScope === "word_or_phrase"
-                                  ? "默认优先语境义，不把短语误当整句"
-                                  : "只翻译当前选区，不回答题目、不代读全文"}
-                              </small>
-                            </div>
-                            {isAnnotationAnalysisPending ? (
-                              <div
-                                className="annotation-streaming-placeholder"
-                                role="status"
-                                aria-label="正在生成并稳定排版当前选区分析"
-                              >
-                                <span />
-                                <span />
-                                <span />
-                                <small>内容到达时会在预留区域内逐段排版，避免正文反复跳动。</small>
-                              </div>
-                            ) : null}
-                            {annotationAnalysisError ? (
-                              <p className="annotation-analysis-error" role="alert">
-                                {annotationAnalysisError} 你的文字仍保留，可稍后重试。
-                              </p>
-                            ) : null}
-                            {annotationAnalysis ? (
-                              <article className="annotation-analysis-result" aria-live="polite">
-                                <header>
-                                  <span>{ANALYSIS_FOCUS_LABELS[annotationAnalysis.focus]}</span>
-                                  {typeof annotationAnalysis.learning_count === "number" ? (
-                                    <span
-                                      className="vocabulary-learning-count"
-                                      aria-label={`这个词是第${annotationAnalysis.learning_count}次学习`}
-                                    >
-                                      第{annotationAnalysis.learning_count}次学习
-                                    </span>
-                                  ) : null}
-                                  <small>
-                                    {annotationAnalysis.analysis_status === "resolved"
-                                      ? "已验证分析"
-                                      : annotationAnalysis.analysis_status === "review_required"
-                                        ? "待验证建议"
-                                        : "分析指引（已拒答）"}
-                                  </small>
-                                </header>
-                                {annotationAnalysis.vocabulary_note ? (
-                                  <div className="annotation-primary-help vocabulary-help">
-                                    <strong>语境义、词性与搭配</strong>
-                                    <p>{annotationAnalysis.vocabulary_note}</p>
-                                  </div>
-                                ) : null}
-                                {annotationAnalysis.translation ? (
-                                  <div className="annotation-primary-help translation-help">
-                                    <strong>当前选区完整翻译</strong>
-                                    <p>{annotationAnalysis.translation}</p>
-                                  </div>
-                                ) : null}
-                                {annotationAnalysis.grammar_structure.length > 0 ? (
-                                  <div className="annotation-grammar-structure">
-                                    <strong>
-                                      {annotationAnalysis.analysis_status === "resolved"
-                                        ? "语法结构"
-                                        : "候选结构 / 自查步骤"}
-                                    </strong>
-                                    <ol>
-                                      {annotationAnalysis.grammar_structure.map((item) => (
-                                        <li key={item}>{item}</li>
-                                      ))}
-                                    </ol>
-                                  </div>
-                                ) : null}
-                                <p>{annotationAnalysis.diagnosis}</p>
-                                <ol>
-                                  {annotationAnalysis.breakdown.map((step) => (
-                                    <li key={step}>{step}</li>
-                                  ))}
-                                </ol>
-                                <div className="annotation-next-check">
-                                  <strong>下一步自查</strong>
-                                  <p>{annotationAnalysis.next_check}</p>
-                                </div>
-                                <small className="annotation-analysis-boundary">
-                                  {annotationAnalysis.boundary_note}
-                                </small>
-                              </article>
-                            ) : null}
-                          </div>
-                        ) : null}
-                        <div className="annotation-save-row">
-                          <button
-                            className="secondary-button"
-                            type="button"
-                            onClick={submitAnnotation}
-                            disabled={isPending || isAnnotationAnalysisPending}
-                          >
-                            {annotationAnalysis ? "保存标注与分析" : "保存这条判断"}
-                          </button>
-                        </div>
-                      </section>
-                    ) : null}
-
                     {isReading ? (
                       <section
                         className={
@@ -2435,6 +2364,108 @@ function ActiveTaskWorkspace({
                         <p className="expression-composer-guidance">
                           先完成自己的草稿；白板、临时任务和写后复盘只在需要时辅助你。
                         </p>
+                      </section>
+                    ) : null}
+
+                    {!isReading ? (
+                      <section
+                        className="expression-chinese-assist"
+                        aria-labelledby="expression-chinese-assist-title"
+                        data-ui-anchor="card"
+                      >
+                        <div className="expression-chinese-assist-heading">
+                          <div>
+                            <p className="step-label">表达工具 · 语境推荐</p>
+                            <h2 id="expression-chinese-assist-title">我想表达这个意思</h2>
+                          </div>
+                          <span>H3 辅助</span>
+                        </div>
+                        <p className="expression-chinese-assist-intro">
+                          输入中文意图，Agent 会结合当前情境、受众、写作目的和你的
+                          V1，推荐恰当的英文表达，并解释为什么适用、怎么使用。它不会直接代写整篇答案。
+                        </p>
+                        <form
+                          onSubmit={(event) => {
+                            event.preventDefault();
+                            requestExpressionAssist();
+                          }}
+                        >
+                          <label htmlFor="expression-chinese-intent">你真正想表达的中文意思</label>
+                          <textarea
+                            id="expression-chinese-intent"
+                            value={chineseExpressionIntent}
+                            onChange={(event) => setChineseExpressionIntent(event.target.value)}
+                            placeholder="例如：我想说，公共讨论不应只追求速度，还要给不同意见留下被理解的空间。"
+                            rows={3}
+                            disabled={
+                              isPending ||
+                              !hasAttempt ||
+                              (hasUnansweredIntervention && !expressionAssistInterventionActive)
+                            }
+                          />
+                          <div className="expression-chinese-assist-actions">
+                            <button
+                              className="secondary-button"
+                              type="submit"
+                              disabled={
+                                isPending ||
+                                !hasAttempt ||
+                                !chineseExpressionIntent.trim() ||
+                                (hasUnansweredIntervention && !expressionAssistInterventionActive)
+                              }
+                            >
+                              {isPending
+                                ? "正在结合语境生成…"
+                                : expressionAssist?.status === "generated" ||
+                                    expressionAssistInterventionActive
+                                  ? "换一种表达策略"
+                                  : "结合当前任务推荐英文"}
+                            </button>
+                            <small>
+                              {!hasAttempt
+                                ? "先保存自己的 V1，Agent 才能区分你的原有水平与辅助后的表现。"
+                                : hasUnansweredIntervention && !expressionAssistInterventionActive
+                                  ? "请先完成当前反馈对应的 V2，再使用另一种辅助。"
+                                  : "首次生成会记为 H3；不满意可重新生成，不会重复增加帮助层级。"}
+                            </small>
+                          </div>
+                        </form>
+
+                        {expressionAssist ? (
+                          expressionAssist.status === "generated" &&
+                          expressionAssist.recommended_expression &&
+                          expressionAssist.context_fit ? (
+                            <article
+                              ref={expressionAssistResultRef}
+                              className="expression-chinese-assist-result"
+                              aria-live="polite"
+                              tabIndex={-1}
+                            >
+                              <div>
+                                <p className="step-label">刚刚生成 · 推荐表达</p>
+                                <blockquote>{expressionAssist.recommended_expression}</blockquote>
+                              </div>
+                              <div>
+                                <h3>为什么适合当前语境</h3>
+                                <p>{expressionAssist.context_fit}</p>
+                              </div>
+                              <div>
+                                <h3>用法要点</h3>
+                                <ul>
+                                  {expressionAssist.usage_notes.map((note) => (
+                                    <li key={note}>{note}</li>
+                                  ))}
+                                </ul>
+                              </div>
+                              <small>{expressionAssist.boundary_note}</small>
+                            </article>
+                          ) : (
+                            <p className="expression-chinese-assist-unavailable" role="status">
+                              当前模型服务未能给出可靠建议，因此没有用模板翻译冒充结果。你的 V1
+                              和能力证据保持不变，可以稍后重试。
+                            </p>
+                          )
+                        ) : null}
                       </section>
                     ) : null}
 
@@ -2727,23 +2758,251 @@ function ActiveTaskWorkspace({
                     role="tabpanel"
                     aria-labelledby="workspace-tab-annotations"
                   >
-                    <div className="workspace-panel-intro">
-                      <p className="step-label">原文思考痕迹</p>
-                      <h2>标注列表</h2>
-                      <p>这里展示本步保存的判断、卡点和可迁移表达；点击原文标记也会回到这里。</p>
-                    </div>
+                    {selection && isReading ? (
+                      <section
+                        className="annotation-composer"
+                        aria-labelledby="annotation-title"
+                        data-ui-anchor="composer"
+                      >
+                        <div className="annotation-composer-heading">
+                          <div>
+                            <p className="step-label">正在标记选中的原文</p>
+                            <h3 id="annotation-title">“{selection.textQuote}”</h3>
+                          </div>
+                          <button
+                            type="button"
+                            className="icon-button"
+                            aria-label="取消本次标记"
+                            onClick={() => {
+                              setSelection(null);
+                              setSelectionAnchor(null);
+                              setShowSelectionToolbar(false);
+                              setAnnotationAnalysis(null);
+                              setAnnotationAnalysisError(null);
+                              window.getSelection()?.removeAllRanges();
+                            }}
+                          >
+                            ×
+                          </button>
+                        </div>
+                        {selectedScale && selectedScope ? (
+                          <div
+                            className={`selection-recommendation selection-scope-${selectedScope}`}
+                          >
+                            <span>{SELECTION_SCALE_LABELS[selectedScale]}</span>
+                            <p>
+                              {selectedScope === "word_or_phrase"
+                                ? "优先查生词：看当前语境义、词性和搭配。"
+                                : "优先拆长句：先看完整译文，再看主干、从句和修饰层级。"}
+                            </p>
+                          </div>
+                        ) : null}
+                        <div className="annotation-color-legend" aria-label="高亮颜色语义">
+                          <span className="annotation-kind-vocabulary">暖黄 · 生词</span>
+                          <span className="annotation-kind-reusable_expression">雾蓝 · 好表达</span>
+                          <span className="annotation-kind-grammar">珊瑚 · 语法重点</span>
+                        </div>
+                        <div className="annotation-types" role="group" aria-label="标记类型">
+                          {allowedAnnotations.map((kind) => (
+                            <button
+                              key={kind}
+                              type="button"
+                              className={`annotation-kind-${kind}${annotationKind === kind ? " selected" : ""}`}
+                              onClick={() => chooseAnnotationKind(kind)}
+                            >
+                              {ANNOTATION_LABELS[kind]}
+                            </button>
+                          ))}
+                        </div>
+                        {preferences.assistanceMode !== "quiet" ? (
+                          <InlineAssistancePanel
+                            selection={selection}
+                            material={material as ReadingMaterialView}
+                            focus={inlineAssistanceFocus}
+                            onFocus={setInlineAssistanceFocus}
+                          />
+                        ) : null}
+                        {annotationKind === "uncertain" ? (
+                          <div
+                            className="uncertainty-reasons"
+                            role="group"
+                            aria-label="看不懂的原因"
+                          >
+                            <span>卡在哪里？</span>
+                            {UNCERTAINTY_REASONS.map(([label, explanation]) => (
+                              <button
+                                key={label}
+                                type="button"
+                                onClick={() => {
+                                  if (!annotationExplanation.trim()) {
+                                    setAnnotationExplanation(explanation);
+                                    setAnnotationAnalysis(null);
+                                    setAnnotationAnalysisError(null);
+                                  }
+                                  window.requestAnimationFrame(() =>
+                                    annotationExplanationRef.current?.focus(),
+                                  );
+                                }}
+                              >
+                                {label}
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
+                        <label>
+                          <span>
+                            {canAnalyzeAnnotation ? "你想重点解决什么？" : "为什么这样标？"}
+                          </span>
+                          <textarea
+                            ref={annotationExplanationRef}
+                            value={annotationExplanation}
+                            onChange={(event) => {
+                              setAnnotationExplanation(event.target.value);
+                              setAnnotationAnalysis(null);
+                              setAnnotationAnalysisError(null);
+                            }}
+                            placeholder={
+                              annotationKind === "vocabulary"
+                                ? "可选：写下你猜的语境义，或直接点击下方查词。"
+                                : annotationKind === "grammar"
+                                  ? "可选：写下没理清的主干、从句或修饰关系。"
+                                  : annotationKind === "uncertain"
+                                    ? "选一个卡点作为开头，再补充具体词、结构或关系。"
+                                    : "写下你的判断。标记数量不算进步，解释才让思考可见。"
+                            }
+                          />
+                        </label>
+                        {canAnalyzeAnnotation ? (
+                          <div className="annotation-analysis-flow">
+                            <div className="annotation-analysis-action">
+                              <button
+                                className="analysis-button"
+                                type="button"
+                                onClick={requestAnnotationAnalysis}
+                                disabled={isAnnotationAnalysisPending || isPending}
+                              >
+                                {isAnnotationAnalysisPending
+                                  ? "正在分析当前选区…"
+                                  : annotationAnalysisButtonLabel}
+                              </button>
+                              <small>
+                                {selectedScope === "word_or_phrase"
+                                  ? "默认优先语境义，不把短语误当整句"
+                                  : "只翻译当前选区，不回答题目、不代读全文"}
+                              </small>
+                            </div>
+                            {isAnnotationAnalysisPending ? (
+                              <div
+                                className="annotation-streaming-placeholder"
+                                role="status"
+                                aria-label="正在生成并稳定排版当前选区分析"
+                              >
+                                <span />
+                                <span />
+                                <span />
+                                <small>内容到达时会在预留区域内逐段排版，避免正文反复跳动。</small>
+                              </div>
+                            ) : null}
+                            {annotationAnalysisError ? (
+                              <p className="annotation-analysis-error" role="alert">
+                                {annotationAnalysisError} 你的文字仍保留，可稍后重试。
+                              </p>
+                            ) : null}
+                            {annotationAnalysis ? (
+                              <article
+                                ref={annotationAnalysisResultRef}
+                                className="annotation-analysis-result"
+                                aria-live="polite"
+                                tabIndex={-1}
+                              >
+                                <header>
+                                  <span>
+                                    刚刚生成 · {ANALYSIS_FOCUS_LABELS[annotationAnalysis.focus]}
+                                  </span>
+                                  {typeof annotationAnalysis.learning_count === "number" ? (
+                                    <span
+                                      className="vocabulary-learning-count"
+                                      aria-label={`这个词是第${annotationAnalysis.learning_count}次学习`}
+                                    >
+                                      第{annotationAnalysis.learning_count}次学习
+                                    </span>
+                                  ) : null}
+                                  <small>
+                                    {annotationAnalysis.analysis_status === "resolved"
+                                      ? "已验证分析"
+                                      : annotationAnalysis.analysis_status === "review_required"
+                                        ? "待验证建议"
+                                        : "分析指引（已拒答）"}
+                                  </small>
+                                </header>
+                                {annotationAnalysis.vocabulary_note ? (
+                                  <div className="annotation-primary-help vocabulary-help">
+                                    <strong>语境义、词性与搭配</strong>
+                                    <p>{annotationAnalysis.vocabulary_note}</p>
+                                  </div>
+                                ) : null}
+                                {annotationAnalysis.translation ? (
+                                  <div className="annotation-primary-help translation-help">
+                                    <strong>当前选区完整翻译</strong>
+                                    <p>{annotationAnalysis.translation}</p>
+                                  </div>
+                                ) : null}
+                                {annotationAnalysis.grammar_structure.length > 0 ? (
+                                  <div className="annotation-grammar-structure">
+                                    <strong>
+                                      {annotationAnalysis.analysis_status === "resolved"
+                                        ? "语法结构"
+                                        : "候选结构 / 自查步骤"}
+                                    </strong>
+                                    <ol>
+                                      {annotationAnalysis.grammar_structure.map((item) => (
+                                        <li key={item}>{item}</li>
+                                      ))}
+                                    </ol>
+                                  </div>
+                                ) : null}
+                                <p>{annotationAnalysis.diagnosis}</p>
+                                <ol>
+                                  {annotationAnalysis.breakdown.map((step) => (
+                                    <li key={step}>{step}</li>
+                                  ))}
+                                </ol>
+                                <div className="annotation-next-check">
+                                  <strong>下一步自查</strong>
+                                  <p>{annotationAnalysis.next_check}</p>
+                                </div>
+                                <small className="annotation-analysis-boundary">
+                                  {annotationAnalysis.boundary_note}
+                                </small>
+                              </article>
+                            ) : null}
+                          </div>
+                        ) : null}
+                        <div className="annotation-save-row">
+                          <span role="status">
+                            {isAnnotationPersistPending
+                              ? "正在自动保存…"
+                              : savedAnnotationId
+                                ? "已自动保存"
+                                : "选择标注类型后自动保存"}
+                          </span>
+                          <button
+                            className="secondary-button annotation-undo-button"
+                            type="button"
+                            onClick={undoCurrentAnnotation}
+                            disabled={isPending || isAnnotationAnalysisPending || isAnnotationPersistPending}
+                          >
+                            {savedAnnotationId ? "撤销标注" : "取消本次标注"}
+                          </button>
+                        </div>
+                      </section>
+                    ) : null}
+
                     <SavedAnnotations
                       annotations={savedAnnotations}
                       expanded={showSavedAnnotations}
                       onToggle={() => setShowSavedAnnotations((current) => !current)}
                     />
-                    <button
-                      type="button"
-                      className="quiet-button workspace-panel-return"
-                      onClick={() => switchWorkspaceTab("task")}
-                    >
-                      返回本步任务
-                    </button>
                   </div>,
                   targetForWorkspaceTab("annotations")!,
                   "workspace-annotations",
@@ -2895,6 +3154,15 @@ function ActiveTaskWorkspace({
           data-ui-anchor="popover"
           style={{ left: selectionAnchor.left, top: selectionAnchor.top }}
         >
+          {originalSelection ? (
+            <button
+              type="button"
+              className="keep-original-selection"
+              onClick={keepOriginalSelection}
+            >
+              保留原选中
+            </button>
+          ) : null}
           {(
             [
               ["vocabulary", "生词 / 短语"],

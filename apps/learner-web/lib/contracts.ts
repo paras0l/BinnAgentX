@@ -117,6 +117,18 @@ export interface ExpressionReviewView {
   boundary_note: string;
 }
 
+export interface ExpressionAssistView {
+  generation_id: string;
+  status: "generated" | "unavailable";
+  source: "model" | "local_fixture" | "unavailable";
+  recommended_expression: string | null;
+  context_fit: string | null;
+  usage_notes: string[];
+  reason_code: string;
+  boundary_note: string;
+  task: LearnerTaskView;
+}
+
 export interface InterventionView {
   intervention_id: string;
   input_attempt_version_id: string;

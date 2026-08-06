@@ -10,6 +10,7 @@ from uuid import uuid4
 import sqlalchemy as sa
 from binnagent_agent import (
     AnnotationAnalysisGateway,
+    ExpressionAssistGateway,
     ExpressionReviewGateway,
     GatewayOutcome,
     ModelBudget,
@@ -19,6 +20,7 @@ from binnagent_agent import (
 from binnagent_agent import (
     AnnotationAnalysisRequest as GatewayAnnotationAnalysisRequest,
 )
+from binnagent_agent import ExpressionAssistRequest as GatewayExpressionAssistRequest
 from binnagent_agent import (
     ExpressionReviewRequest as GatewayExpressionReviewRequest,
 )
@@ -42,6 +44,7 @@ from binnagent_domain.vertical_slice.commands import (
     PauseTask,
     RecordIntervention,
     RecordRevision,
+    RemoveAnnotation,
     ReplaceMaterial,
     ResumeTask,
     SaveAttempt,
@@ -66,11 +69,15 @@ from binnagent_api.learner_auth import LearnerIdentity
 from binnagent_api.learner_level_service import enqueue_level_assessment
 from binnagent_api.model_adapters import (
     annotation_analysis_adapter,
+    expression_assist_adapter,
     expression_review_adapter,
     priority_feedback_adapter,
 )
 from binnagent_api.personalized_reading_content import (
     approved_hint as personalized_approved_hint,
+)
+from binnagent_api.personalized_reading_content import (
+    expression_item_for_task as personalized_expression_item_for_task,
 )
 from binnagent_api.personalized_reading_content import (
     grammar_challenge as personalized_grammar_challenge,
@@ -112,6 +119,8 @@ from binnagent_api.vertical_slice.schemas import (
     AttemptRequest,
     AttemptView,
     ControlReplayView,
+    ExpressionAssistRequest,
+    ExpressionAssistView,
     ExpressionReviewRequest,
     ExpressionReviewView,
     ExpressionStyleVersionView,
@@ -124,6 +133,7 @@ from binnagent_api.vertical_slice.schemas import (
     LearnerTaskView,
     MaterialFeedbackRequest,
     MaterialFeedbackView,
+    RemoveAnnotationRequest,
     RevisionRequest,
     RevisionView,
     VersionedCommandRequest,
@@ -442,6 +452,39 @@ async def add_annotation(
             idempotency_key,
             body,
             "add_annotation",
+        )
+    return learner_task_view(task, replayed)
+
+
+@learner_router.post(
+    "/tasks/{task_id}/annotations/{annotation_id}/undo",
+    response_model=LearnerTaskView,
+)
+async def undo_annotation(
+    task_id: str,
+    annotation_id: str,
+    body: RemoveAnnotationRequest,
+    idempotency_key: IdempotencyKey,
+) -> LearnerTaskView:
+    async with get_engine().begin() as connection:
+        replay = await _find_replay(connection, idempotency_key, body, "remove_annotation")
+        if replay is not None:
+            return learner_task_view(replay, True)
+        previous = await repository.load(connection, task_id)
+        transition = previous.remove_annotation(
+            RemoveAnnotation(
+                expected_version=body.expected_version,
+                annotation_id=annotation_id,
+                now=datetime.now(UTC),
+            )
+        )
+        task, replayed = await _save(
+            connection,
+            previous,
+            transition,
+            idempotency_key,
+            body,
+            "remove_annotation",
         )
     return learner_task_view(task, replayed)
 
@@ -777,6 +820,238 @@ async def analyze_annotation(
                     else "当前仅提供分析步骤, 未完成可靠词义或句法解析；不回答题目、不代读全文。"
                 )
             ),
+        )
+        await _complete_model_invocation(
+            connection,
+            context=tool_context,
+            response_payload=response.model_dump(mode="json"),
+            output_hash=result.output_hash,
+        )
+    return response
+
+
+@learner_router.post(
+    "/tasks/{task_id}/expression-lab/chinese-assist",
+    response_model=ExpressionAssistView,
+)
+async def generate_expression_from_chinese(
+    task_id: str,
+    body: ExpressionAssistRequest,
+    request: Request,
+    idempotency_key: IdempotencyKey,
+) -> ExpressionAssistView:
+    identity: LearnerIdentity = request.state.learner_identity
+    async with get_engine().begin() as connection:
+        task = await repository.load(connection, task_id)
+        if body.expected_version != task.version:
+            raise DomainError(
+                PublicErrorCode.SESSION_CONFLICT,
+                "expected_version_mismatch",
+                task.version,
+            )
+        if task.task_type is not TaskType.MICRO_EXPRESSION:
+            raise DomainError(
+                PublicErrorCode.SAVE_NOT_CONFIRMED,
+                "expression_chinese_assist_expression_only",
+            )
+        latest_attempt = task.current_attempts[-1] if task.current_attempts else None
+        if latest_attempt is None:
+            raise DomainError(
+                PublicErrorCode.SAVE_NOT_CONFIRMED,
+                "expression_chinese_assist_requires_saved_v1",
+            )
+        latest_intervention = task.interventions[-1] if task.interventions else None
+        unanswered_intervention = (
+            latest_intervention
+            if latest_intervention is not None
+            and latest_intervention.input_attempt_version_id == latest_attempt.attempt_version_id
+            else None
+        )
+        existing_assist = (
+            unanswered_intervention
+            if unanswered_intervention is not None
+            and unanswered_intervention.intervention_type is InterventionType.CANDIDATE_COMPARISON
+            and unanswered_intervention.reason_code.startswith("expression_chinese_assist")
+            else None
+        )
+        if unanswered_intervention is not None and existing_assist is None:
+            raise DomainError(
+                PublicErrorCode.SAVE_NOT_CONFIRMED,
+                "learner_output_required_after_intervention",
+            )
+
+        personalized_row = await material_row_for_task(connection, task)
+        material = (
+            await personalized_expression_item_for_task(connection, task, personalized_row)
+            if personalized_row is not None
+            else content_catalog.learner_item(task.current_material.content_version_id)
+        )
+        budget_row = (
+            (
+                await connection.execute(
+                    sa.select(
+                        tables.workflow_runs.c.model_call_count,
+                        tables.workflow_runs.c.cost_usd,
+                    ).where(tables.workflow_runs.c.workflow_run_id == task.workflow_run_id)
+                )
+            )
+            .mappings()
+            .one()
+        )
+        settings = get_settings()
+        gateway = ExpressionAssistGateway(
+            expression_assist_adapter(settings),
+            timeout_seconds=settings.expression_review_timeout_seconds,
+            allow_remote=bool(settings.enable_remote_model_calls),
+        )
+
+        async def invoke_expression_assist(tool_runtime: ToolContext) -> ToolResult[object]:
+            memories = await _recall_agent_memory(
+                tool_runtime,
+                agent_name="expression.generate_from_chinese.v1",
+                query=f"{body.chinese_intent}\n{latest_attempt.text}",
+            )
+            result = await gateway.generate(
+                GatewayExpressionAssistRequest(
+                    workflow_run_id=task.workflow_run_id,
+                    task_id=task.task_id,
+                    input_attempt_version_id=latest_attempt.attempt_version_id,
+                    content_version_id=task.current_material.content_version_id,
+                    chinese_intent=body.chinese_intent,
+                    learner_draft=latest_attempt.text,
+                    situation=str(material.get("situation", "")),
+                    audience=str(material.get("audience", "")),
+                    purpose=str(material.get("purpose", "")),
+                    target_argument_move=str(material.get("target_argument_move", "")),
+                    generation_index=body.generation_index,
+                    previous_candidate=body.previous_candidate,
+                    recent_assets=tuple(
+                        [
+                            *((asset.title, asset.content) for asset in body.recent_assets),
+                            *((memory.title, memory.content) for memory in memories),
+                        ][:12]
+                    ),
+                ),
+                ModelBudget(
+                    call_count=int(budget_row["model_call_count"]),
+                    cost_usd=Decimal(str(budget_row["cost_usd"])),
+                    max_calls=settings.model_max_calls_per_slice,
+                    max_cost_usd=settings.model_max_cost_usd_per_slice,
+                ),
+            )
+            return ToolResult(
+                status=ToolStatus.SUCCEEDED,
+                data=result,
+                used_fallback=result.used_fallback,
+                estimated_cost_usd=result.estimated_cost_usd,
+                actual_cost_usd=result.actual_cost_usd,
+            )
+
+        request_digest = _request_hash(body)
+        tool_name = "expression.generate_from_chinese.v1"
+        tool_context = _model_tool_context(
+            task=task,
+            learner_id=identity.learner_id,
+            expected_task_version=body.expected_version,
+            tool_name=tool_name,
+            request_digest=request_digest,
+            timeout_seconds=settings.expression_review_timeout_seconds,
+            idempotency_key=idempotency_key,
+        )
+        cached_response = await _reserve_model_invocation(
+            connection,
+            context=tool_context,
+            tool_name=tool_name,
+            request_hash=request_digest,
+        )
+        if cached_response is not None:
+            return ExpressionAssistView.model_validate(cached_response)
+        tool_result = await tool_executor.execute(tool_name, tool_context, invoke_expression_assist)
+        result = _require_tool_success(tool_result)
+        now = datetime.now(UTC)
+        await connection.execute(
+            tables.model_invocations.insert().values(
+                invocation_id=_id("model_invocation"),
+                workflow_run_id=task.workflow_run_id,
+                task_id=task.task_id,
+                input_attempt_version_id=latest_attempt.attempt_version_id,
+                purpose="expression_chinese_assist",
+                adapter=result.adapter,
+                prompt_version=result.prompt_version,
+                outcome=result.outcome.value,
+                is_remote=result.used_remote_call,
+                estimated_cost_usd=result.estimated_cost_usd,
+                actual_cost_usd=result.actual_cost_usd,
+                latency_ms=result.latency_ms,
+                output_hash=result.output_hash,
+                focus="contextual_expression",
+                evidence_start=None,
+                evidence_end=None,
+                evidence_hash=None,
+                rejection_code=result.rejection_code,
+                created_at=now,
+            )
+        )
+        if result.used_remote_call:
+            await connection.execute(
+                tables.workflow_runs.update()
+                .where(tables.workflow_runs.c.workflow_run_id == task.workflow_run_id)
+                .values(
+                    model_call_count=tables.workflow_runs.c.model_call_count + 1,
+                    cost_usd=tables.workflow_runs.c.cost_usd + result.actual_cost_usd,
+                    updated_at=now,
+                )
+            )
+
+        updated_task = task
+        if result.recommended_expression is not None and existing_assist is None:
+            transition = task.record_intervention(
+                RecordIntervention(
+                    expected_version=body.expected_version,
+                    intervention_id=_id("intervention"),
+                    input_attempt_version_id=latest_attempt.attempt_version_id,
+                    hint_level=3,
+                    intervention_type=InterventionType.CANDIDATE_COMPARISON,
+                    model_adapter=result.adapter,
+                    prompt_version=result.prompt_version,
+                    reason_code="expression_chinese_assist_used",
+                    delivered_content=result.recommended_expression,
+                    result_status=InterventionResult.DELIVERED,
+                    now=now,
+                )
+            )
+            updated_task, _ = await repository.save(
+                connection,
+                task,
+                transition,
+                idempotency_key=idempotency_key,
+                request_hash=request_digest,
+                command_name="learner_requested_expression_chinese_assist",
+                actor=ActorType.SYSTEM,
+            )
+
+        generated = result.recommended_expression is not None
+        response = ExpressionAssistView(
+            generation_id=_id("expression_generation"),
+            status="generated" if generated else "unavailable",
+            source=(
+                "model"
+                if result.outcome is GatewayOutcome.VALIDATED_MODEL
+                else "local_fixture"
+                if generated
+                else "unavailable"
+            ),
+            recommended_expression=result.recommended_expression,
+            context_fit=result.context_fit,
+            usage_notes=list(result.usage_notes),
+            reason_code=result.reason_code,
+            boundary_note=(
+                "这是结合当前任务、受众、写作目的和你的 V1 给出的局部表达建议。"
+                "它属于 H3 模型帮助，不会记为独立作答；请比较、改写后形成自己的下一版。"
+                if generated
+                else "模型当前不可用，没有用固定模板伪造英文表达；你的 V1 保持不变。"
+            ),
+            task=learner_task_view(updated_task),
         )
         await _complete_model_invocation(
             connection,

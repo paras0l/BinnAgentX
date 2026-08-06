@@ -19,6 +19,7 @@ from binnagent_api.content_generation_service import (
 )
 from binnagent_api.database import get_engine
 from binnagent_api.learner_auth import utc_now
+from binnagent_api.personalized_material_service import resume_failed_personalized_material
 from binnagent_api.settings import PROJECT_ROOT, get_settings
 from binnagent_api.vertical_slice import tables
 
@@ -96,6 +97,7 @@ class PersonalizedMaterialJobView(BaseModel):
     next_generation_attempt_at: datetime | None
     claimed_by: str | None
     lease_expires_at: datetime | None
+    can_resume_from_checkpoint: bool
     created_at: datetime
     updated_at: datetime
 
@@ -118,9 +120,21 @@ class PersonalizedMaterialEventView(BaseModel):
     occurred_at: datetime
 
 
+class PersonalizedKnowledgePointView(BaseModel):
+    candidate_ref: str
+    title: str
+    kind: str
+    tags: list[str]
+
+
 class PersonalizedMaterialJobDetail(BaseModel):
     job: PersonalizedMaterialJobView
+    candidate_knowledge_points: list[PersonalizedKnowledgePointView]
     events: list[PersonalizedMaterialEventView]
+
+
+class ResumePersonalizedMaterialRequest(BaseModel):
+    reason: str = Field(min_length=3, max_length=500)
 
 
 class WorkerStatusView(BaseModel):
@@ -337,6 +351,27 @@ async def get_personalized_material_job(
         )
         if row is None:
             raise HTTPException(status_code=404, detail="personalized_material_job_not_found")
+        source_context_ids = row.get("source_context_ids")
+        context_ids = source_context_ids if isinstance(source_context_ids, list) else []
+        context_rows = (
+            (
+                await connection.execute(
+                    sa.select(
+                        tables.obsidian_learning_context.c.context_id,
+                        tables.obsidian_learning_context.c.title,
+                        tables.obsidian_learning_context.c.asset_kind,
+                        tables.obsidian_learning_context.c.tags,
+                    ).where(
+                        tables.obsidian_learning_context.c.learner_id == row["learner_id"],
+                        tables.obsidian_learning_context.c.context_id.in_(context_ids),
+                    )
+                )
+            )
+            .mappings()
+            .all()
+            if context_ids
+            else []
+        )
         events = (
             (
                 await connection.execute(
@@ -349,10 +384,40 @@ async def get_personalized_material_job(
             .mappings()
             .all()
         )
+    contexts_by_id = {str(context["context_id"]): context for context in context_rows}
+    candidate_knowledge_points = [
+        _personalized_knowledge_point_view(contexts_by_id[context_id])
+        for context_id in map(str, context_ids)
+        if context_id in contexts_by_id
+    ]
     return PersonalizedMaterialJobDetail(
         job=_personalized_view(row),
+        candidate_knowledge_points=candidate_knowledge_points,
         events=[_personalized_event_view(event) for event in events],
     )
+
+
+@content_generation_router.post(
+    "/personalized-jobs/{material_id}/resume",
+    response_model=PersonalizedMaterialJobView,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def resume_personalized_material_job(
+    material_id: str,
+    body: ResumePersonalizedMaterialRequest,
+    identity: Annotated[ControlIdentity, Depends(require_control_identity)],
+) -> PersonalizedMaterialJobView:
+    try:
+        row = await resume_failed_personalized_material(
+            material_id=material_id,
+            reviewer_id=identity.role,
+            reason=body.reason,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (RuntimeError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return _personalized_view(row)
 
 
 @content_generation_router.get(
@@ -681,6 +746,11 @@ def _personalized_view(row: Any) -> PersonalizedMaterialJobView:
         next_generation_attempt_at=row.get("next_generation_attempt_at"),
         claimed_by=str(row["claimed_by"]) if row.get("claimed_by") else None,
         lease_expires_at=row.get("lease_expires_at"),
+        can_resume_from_checkpoint=(
+            row.get("runtime_kind") == "langgraph"
+            and row.get("status") == "generation_failed"
+            and bool(row.get("graph_thread_id"))
+        ),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
@@ -700,6 +770,8 @@ def _personalized_event_view(row: Any) -> PersonalizedMaterialEventView:
         "quality_status",
         "question_count",
         "repair_attempts",
+        "failed_node",
+        "recovery_mode",
         "reviewer_id",
     }
     sanitized_detail = (
@@ -715,6 +787,18 @@ def _personalized_event_view(row: Any) -> PersonalizedMaterialEventView:
         message=str(row["message"]),
         detail=sanitized_detail,
         occurred_at=row["occurred_at"],
+    )
+
+
+def _personalized_knowledge_point_view(row: Any) -> PersonalizedKnowledgePointView:
+    tags = row.get("tags")
+    return PersonalizedKnowledgePointView(
+        candidate_ref=f"candidate_{sha256(str(row['context_id']).encode()).hexdigest()[:10]}",
+        title=str(row["title"]),
+        kind=str(row["asset_kind"]),
+        tags=[str(tag) for tag in tags if isinstance(tag, str)][:8]
+        if isinstance(tags, list)
+        else [],
     )
 
 

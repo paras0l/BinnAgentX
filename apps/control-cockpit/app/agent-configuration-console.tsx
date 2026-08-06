@@ -2,7 +2,12 @@
 
 import { useMemo, useState } from "react";
 
-import type { ManagedPrompt, ManagedTool, PromptDraftInput } from "../lib/control-api";
+import type {
+  ManagedAgent,
+  ManagedPrompt,
+  ManagedTool,
+  PromptDraftInput,
+} from "../lib/control-api";
 
 const RISK_LABELS: Record<ManagedTool["risk_level"], string> = {
   low: "低风险",
@@ -11,20 +16,188 @@ const RISK_LABELS: Record<ManagedTool["risk_level"], string> = {
   control: "控制面",
 };
 
+const EXECUTION_LABELS: Record<ManagedAgent["execution_kind"], string> = {
+  workflow: "持久化工作流",
+  model: "模型 Agent",
+  deterministic: "确定性 Agent",
+};
+
+export function AgentsConsole({
+  agents,
+  error,
+  onRefresh,
+  onNavigateDependency,
+}: {
+  agents: ManagedAgent[];
+  error: string | null;
+  onRefresh: () => void;
+  onNavigateDependency: (kind: "prompt" | "tool", id: string) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [domain, setDomain] = useState("all");
+  const domains = useMemo(() => [...new Set(agents.map((agent) => agent.domain))], [agents]);
+  const filtered = useMemo(() => {
+    const normalized = query.trim().toLowerCase();
+    return agents.filter(
+      (agent) =>
+        (domain === "all" || agent.domain === domain) &&
+        (!normalized ||
+          `${agent.agent_id} ${agent.display_name} ${agent.description} ${agent.workflow}`
+            .toLowerCase()
+            .includes(normalized)),
+    );
+  }, [agents, domain, query]);
+
+  return (
+    <section className="configuration-console">
+      <ConfigurationHeader
+        eyebrow="AVAILABLE AGENT CATALOG"
+        title="Agents"
+        detail="展示当前代码已注册的 Agent，以及活动 Prompt、Tool 策略和恢复能力形成的真实可用状态。"
+        onRefresh={onRefresh}
+      />
+      {error ? <div className="error-banner">{error}</div> : null}
+      <div className="configuration-summary">
+        <span>
+          已注册 <strong>{agents.length}</strong>
+        </span>
+        <span>
+          当前可用{" "}
+          <strong>{agents.filter((agent) => agent.availability === "available").length}</strong>
+        </span>
+        <span>
+          支持检查点恢复{" "}
+          <strong>{agents.filter((agent) => agent.supports_checkpoint_resume).length}</strong>
+        </span>
+      </div>
+      <div className="configuration-filters">
+        <input
+          aria-label="搜索 Agent"
+          placeholder="搜索名称、领域、工作流或描述"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+        />
+        <select
+          aria-label="Agent 领域"
+          value={domain}
+          onChange={(event) => setDomain(event.target.value)}
+        >
+          <option value="all">全部领域</option>
+          {domains.map((item) => (
+            <option key={item}>{item}</option>
+          ))}
+        </select>
+      </div>
+      <div className="tool-catalog agent-catalog">
+        {filtered.map((agent) => (
+          <article
+            className={agent.availability === "available" ? "tool-card enabled" : "tool-card"}
+            key={agent.agent_id}
+          >
+            <header>
+              <div>
+                <span>{agent.domain}</span>
+                <h2>{agent.display_name}</h2>
+                <code>{agent.agent_id}</code>
+              </div>
+              <span className={`agent-availability ${agent.availability}`}>
+                {agent.availability === "available" ? "可用" : "依赖阻塞"}
+              </span>
+            </header>
+            <p>{agent.description}</p>
+            <dl>
+              <div>
+                <dt>运行方式</dt>
+                <dd>{EXECUTION_LABELS[agent.execution_kind]}</dd>
+              </div>
+              <div>
+                <dt>模型</dt>
+                <dd>{agent.model_provider}</dd>
+              </div>
+              <div>
+                <dt>工作流</dt>
+                <dd>{agent.workflow}</dd>
+              </div>
+              <div>
+                <dt>控制能力</dt>
+                <dd>
+                  {[
+                    agent.supports_checkpoint_resume ? "检查点恢复" : null,
+                    agent.requires_human_review ? "人工门禁" : null,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ") || "标准执行"}
+                </dd>
+              </div>
+            </dl>
+            <details>
+              <summary>查看 Prompt、Tool 与阻塞项</summary>
+              <div className="agent-dependencies">
+                <span>Prompts</span>
+                {agent.prompt_ids.length ? (
+                  <div className="agent-dependency-links">
+                    {agent.prompt_ids.map((promptId) => (
+                      <button
+                        type="button"
+                        className="agent-dependency-link"
+                        key={promptId}
+                        onClick={() => onNavigateDependency("prompt", promptId)}
+                      >
+                        {promptId}
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <code>无模型 Prompt</code>
+                )}
+                <span>Tools</span>
+                {agent.tool_names.length ? (
+                  <div className="agent-dependency-links">
+                    {agent.tool_names.map((toolName) => (
+                      <button
+                        type="button"
+                        className="agent-dependency-link"
+                        key={toolName}
+                        onClick={() => onNavigateDependency("tool", toolName)}
+                      >
+                        {toolName}
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <code>无 Tool 依赖</code>
+                )}
+                {agent.blockers.length ? (
+                  <>
+                    <span>阻塞项</span>
+                    <code>{agent.blockers.join(" · ")}</code>
+                  </>
+                ) : null}
+              </div>
+            </details>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
 export function ToolsConsole({
   tools,
+  focusToolName,
   pending,
   error,
   onRefresh,
   onToggle,
 }: {
   tools: ManagedTool[];
+  focusToolName?: string | null;
   pending: boolean;
   error: string | null;
   onRefresh: () => void;
   onToggle: (tool: ManagedTool) => void;
 }) {
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(() => focusToolName ?? "");
   const [source, setSource] = useState("all");
   const sources = useMemo(() => [...new Set(tools.map((tool) => tool.source))], [tools]);
   const filtered = useMemo(() => {
@@ -137,6 +310,7 @@ export function ToolsConsole({
 
 export function PromptsConsole({
   prompts,
+  focusPromptId,
   pending,
   error,
   onRefresh,
@@ -145,6 +319,7 @@ export function PromptsConsole({
   onActivate,
 }: {
   prompts: ManagedPrompt[];
+  focusPromptId?: string | null;
   pending: boolean;
   error: string | null;
   onRefresh: () => void;
@@ -157,8 +332,13 @@ export function PromptsConsole({
 }) {
   const [selectedKey, setSelectedKey] = useState("");
   const [creating, setCreating] = useState(false);
+  const focusedPrompt = focusPromptId
+    ? (prompts.find((item) => item.prompt_id === focusPromptId && item.status === "active") ??
+      prompts.find((item) => item.prompt_id === focusPromptId))
+    : null;
   const selected =
     prompts.find((item) => `${item.prompt_id}@${item.prompt_version}` === selectedKey) ??
+    focusedPrompt ??
     prompts[0] ??
     null;
   const [draft, setDraft] = useState<PromptDraftInput | null>(null);

@@ -1509,10 +1509,6 @@ textarea:disabled {
   line-height: 1.6;
 }
 
-.workspace-panel-return {
-  margin-top: 16px;
-}
-
 .anytime-notes {
   display: grid;
   gap: 14px;
@@ -2825,7 +2821,33 @@ textarea:disabled {
 
 .annotation-save-row {
   display: flex;
+  align-items: center;
   justify-content: flex-end;
+  gap: 12px;
+}
+
+.annotation-save-row > span {
+  margin-right: auto;
+  color: var(--theme-ink-muted);
+  font-size: 11px;
+}
+
+.annotation-undo-button {
+  color: var(--theme-danger);
+  border-color: color-mix(in srgb, var(--theme-danger) 38%, var(--theme-line));
+  background: var(--theme-danger-soft);
+}
+
+.annotation-analysis-result,
+.expression-chinese-assist-result {
+  outline: 3px solid transparent;
+  outline-offset: 3px;
+}
+
+.annotation-analysis-result:focus-visible,
+.expression-chinese-assist-result:focus-visible {
+  outline: 3px solid var(--theme-focus);
+  outline-offset: 3px;
 }
 
 .action-footer {
@@ -2954,6 +2976,12 @@ textarea:disabled {
 .selection-toolbar button.annotation-kind-reusable_expression {
   color: #214e67;
   background: #f0f7fb;
+}
+
+.selection-toolbar button.keep-original-selection {
+  color: var(--theme-accent-strong);
+  background: var(--theme-accent-soft);
+  font-weight: 750;
 }
 
 .workspace-footer {
@@ -5986,10 +6014,6 @@ textarea:disabled {
   margin: 0 -12px 24px;
 }
 
-.training-frame .task-tab-panel > .annotation-composer {
-  order: -1;
-}
-
 .training-frame .task-tab-panel > .grammar-challenge-card {
   order: -1;
 }
@@ -6220,6 +6244,134 @@ textarea:disabled {
   line-height: 1.5;
 }
 
+.training-frame .expression-chinese-assist {
+  order: 2;
+  display: grid;
+  gap: 14px;
+  margin: 12px 0 0;
+  border: 1px solid color-mix(in srgb, var(--theme-accent) 28%, var(--theme-line));
+  border-radius: var(--theme-card-radius);
+  padding: clamp(16px, 2vw, 22px);
+  background: color-mix(in srgb, var(--theme-accent-soft) 38%, var(--theme-surface-raised));
+}
+
+.training-frame .expression-chinese-assist-heading,
+.training-frame .expression-chinese-assist-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.training-frame .expression-chinese-assist-heading h2,
+.training-frame .expression-chinese-assist-result h3 {
+  margin: 0;
+  color: var(--theme-ink);
+}
+
+.training-frame .expression-chinese-assist-heading h2 {
+  margin-top: 3px;
+  font-family: var(--theme-font-display);
+  font-size: 20px;
+}
+
+.training-frame .expression-chinese-assist-heading > span {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  padding: 5px 8px;
+  color: var(--theme-warning);
+  background: var(--theme-warning-soft);
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.training-frame .expression-chinese-assist-intro,
+.training-frame .expression-chinese-assist-result p,
+.training-frame .expression-chinese-assist-result ul {
+  margin: 0;
+  color: var(--theme-ink-muted);
+  line-height: 1.65;
+}
+
+.training-frame .expression-chinese-assist form,
+.training-frame .expression-chinese-assist-result,
+.training-frame .expression-chinese-assist-result > div {
+  display: grid;
+  gap: 9px;
+}
+
+.training-frame .expression-chinese-assist label {
+  color: var(--theme-ink);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.training-frame .expression-chinese-assist textarea {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid var(--theme-line-strong);
+  border-radius: var(--theme-control-radius);
+  padding: 11px 12px;
+  color: var(--theme-ink);
+  background: var(--theme-control-background);
+  font: inherit;
+  line-height: 1.6;
+}
+
+.training-frame .expression-chinese-assist textarea:focus-visible {
+  border-color: var(--theme-accent);
+  outline: 3px solid var(--theme-focus);
+  outline-offset: 1px;
+}
+
+.training-frame .expression-chinese-assist-actions small,
+.training-frame .expression-chinese-assist-result > small {
+  color: var(--theme-ink-muted);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.training-frame .expression-chinese-assist-result {
+  border-top: 1px solid var(--theme-line);
+  padding-top: 14px;
+}
+
+.training-frame .expression-chinese-assist-result blockquote {
+  margin: 0;
+  border-left: 3px solid var(--theme-accent);
+  padding: 10px 13px;
+  color: var(--theme-ink);
+  background: var(--theme-surface-raised);
+  font-size: 15px;
+  font-weight: 650;
+  line-height: 1.65;
+}
+
+.training-frame .expression-chinese-assist-result h3 {
+  font-size: 12px;
+}
+
+.training-frame .expression-chinese-assist-result ul {
+  padding-left: 18px;
+}
+
+.training-frame .expression-chinese-assist-unavailable {
+  margin: 0;
+  border-radius: var(--theme-control-radius);
+  padding: 10px 12px;
+  color: var(--theme-warning);
+  background: var(--theme-warning-soft);
+  line-height: 1.6;
+}
+
+@media (max-width: 680px) {
+  .training-frame .expression-chinese-assist-heading,
+  .training-frame .expression-chinese-assist-actions {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
 .training-frame .thinking-scaffold {
   order: 4;
   margin: 18px 0 0;
@@ -6317,6 +6469,10 @@ textarea:disabled {
 .training-frame .saved-annotations {
   order: 7;
   margin-top: 18px;
+}
+
+.training-frame #workspace-panel-annotations .saved-annotations {
+  margin-top: 0;
 }
 
 .training-frame .intervention-offer {

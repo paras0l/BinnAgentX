@@ -64,6 +64,8 @@ from binnagent_api.personalized_package import (
     build_question_artifacts,
     build_transfer_artifacts,
     deterministic_assessment,
+    generated_article_grammar_requirements,
+    generated_article_grammar_target,
     imported_article_targets,
     persisted_expression,
     persisted_grammar,
@@ -645,15 +647,42 @@ async def _generate_langgraph_with_claim(
                 checkpointer=saver,
             )
             config = _graph_config(row)
-            result = await graph.ainvoke(
-                {
-                    "objective_bundle": objective.model_dump(mode="json"),
-                    "repair_attempts": 0,
-                    "workflow_status": "queued",
-                    "graph_version": GRAPH_VERSION,
-                },
-                config,
-            )
+            snapshot = await graph.aget_state(config)
+            resume_from_checkpoint = bool(snapshot.values and snapshot.next)
+            failed_node = str(snapshot.next[0]) if snapshot.next else None
+            if resume_from_checkpoint:
+                await _record_event(
+                    material_id,
+                    event_type="checkpoint_resume_started",
+                    stage="generating",
+                    message="已从保留的失败节点检查点继续执行",
+                    detail={
+                        "failed_node": failed_node,
+                        "recovery_mode": "checkpoint_resume",
+                    },
+                )
+            try:
+                result = await graph.ainvoke(
+                    (
+                        None
+                        if resume_from_checkpoint
+                        else {
+                            "objective_bundle": objective.model_dump(mode="json"),
+                            "repair_attempts": 0,
+                            "workflow_status": "queued",
+                            "graph_version": GRAPH_VERSION,
+                        }
+                    ),
+                    config,
+                )
+            except Exception as exc:
+                failed_snapshot = await graph.aget_state(config)
+                failed_node = str(failed_snapshot.next[0]) if failed_snapshot.next else failed_node
+                return await _handle_langgraph_generation_failure(
+                    row,
+                    exc,
+                    failed_node=failed_node,
+                )
         workflow_status = str(result.get("workflow_status", ""))
         if workflow_status == "completed":
             return "ready"
@@ -670,7 +699,7 @@ async def _generate_langgraph_with_claim(
             return "awaiting_review"
         raise RuntimeError("personalized_graph_terminal_state_missing")
     except Exception as exc:
-        return await _handle_langgraph_generation_failure(row, exc)
+        return await _handle_langgraph_generation_failure(row, exc, failed_node=None)
 
 
 def _build_personalized_material_graph(
@@ -703,6 +732,7 @@ def _build_personalized_material_graph(
             contexts=contexts,
             goal=str(row["requested_goal"]),
             adaptation_profile=adaptation_profile,
+            objective=objective,
         )
         return build_article(
             material_id=material_id,
@@ -972,6 +1002,100 @@ async def review_personalized_material(
         )
         raise
     async with get_engine().connect() as connection:
+        updated = (
+            (
+                await connection.execute(
+                    sa.select(tables.personalized_training_materials).where(
+                        tables.personalized_training_materials.c.material_id == material_id
+                    )
+                )
+            )
+            .mappings()
+            .one()
+        )
+    return dict(updated)
+
+
+async def resume_failed_personalized_material(
+    *,
+    material_id: str,
+    reviewer_id: str,
+    reason: str,
+) -> dict[str, Any]:
+    """Queue one failed LangGraph run from its existing failed-node checkpoint."""
+
+    row, contexts, adaptation_profile = await _personalized_graph_context(material_id)
+    if row["runtime_kind"] != "langgraph":
+        raise ValueError("personalized_checkpoint_resume_requires_langgraph")
+    if row["status"] != "generation_failed":
+        raise ValueError("personalized_checkpoint_resume_not_allowed")
+    if not row.get("graph_thread_id"):
+        raise ValueError("personalized_checkpoint_resume_thread_missing")
+
+    database_url = get_settings().database_url.get_secret_value()
+    async with open_postgres_checkpointer(database_url) as saver:
+        graph = _build_personalized_material_graph(
+            row=dict(row),
+            contexts=contexts,
+            adaptation_profile=adaptation_profile,
+            checkpointer=saver,
+        )
+        snapshot = await graph.aget_state(_graph_config(dict(row)))
+    if not snapshot.values or not snapshot.next:
+        raise ValueError("personalized_checkpoint_resume_state_missing")
+    failed_node = str(snapshot.next[0])
+
+    now = datetime.now(UTC)
+    async with get_engine().begin() as connection:
+        current = (
+            (
+                await connection.execute(
+                    sa.select(tables.personalized_training_materials)
+                    .where(tables.personalized_training_materials.c.material_id == material_id)
+                    .with_for_update()
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if current is None:
+            raise LookupError("personalized_material_not_found")
+        if current["status"] != "generation_failed" or current["claimed_by"] is not None:
+            raise ValueError("personalized_checkpoint_resume_state_changed")
+        await connection.execute(
+            tables.model_invocation_ledger.delete().where(
+                tables.model_invocation_ledger.c.workflow_run_id == material_id,
+                tables.model_invocation_ledger.c.status == "pending",
+            )
+        )
+        await connection.execute(
+            tables.personalized_training_materials.update()
+            .where(tables.personalized_training_materials.c.material_id == material_id)
+            .values(
+                status="requested",
+                generation_attempt_count=0,
+                generation_error_code=None,
+                next_generation_attempt_at=now,
+                claimed_by=None,
+                lease_expires_at=None,
+                completed_at=None,
+                updated_at=now,
+            )
+        )
+        await _insert_event(
+            connection,
+            material_id=material_id,
+            event_type="human_checkpoint_resume_requested",
+            stage="requested",
+            message="人工干预已完成, 等待从原失败节点继续执行",
+            detail={
+                "reviewer_id": reviewer_id,
+                "reason": reason,
+                "failed_node": failed_node,
+                "recovery_mode": "human_checkpoint_resume",
+            },
+            occurred_at=now,
+        )
         updated = (
             (
                 await connection.execute(
@@ -1488,11 +1612,13 @@ async def _cached_personalized_reading(
     contexts: tuple[dict[str, Any], ...],
     goal: str,
     adaptation_profile: dict[str, Any],
+    objective: LearningObjectiveBundle,
 ) -> PersonalizedReadingOutput:
     request = {
         "contexts": contexts,
         "goal": goal,
         "adaptation_profile": adaptation_profile,
+        "objective": objective.model_dump(mode="json"),
         "revision": revision,
     }
     invocation_key = _model_invocation_key(material_id, "article", revision)
@@ -1503,13 +1629,64 @@ async def _cached_personalized_reading(
         request_hash=stable_content_hash(request),
     )
     if cached is not None:
-        return PersonalizedReadingOutput.model_validate(cached)
+        try:
+            cached_output = PersonalizedReadingOutput.model_validate(cached)
+            generated_article_grammar_target(
+                paragraphs=list(cached_output.paragraphs),
+                objective=objective,
+            )
+            return cached_output
+        except (ValidationError, ValueError) as exc:
+            output = deterministic_personalized_reading(
+                contexts,
+                goal=goal,
+                adaptation_profile=adaptation_profile,
+            )
+            generated_article_grammar_target(
+                paragraphs=list(output.paragraphs),
+                objective=objective,
+            )
+            await _record_event(
+                material_id,
+                event_type="reading_deterministic_fallback",
+                stage="generating",
+                message="缓存文章缺少冻结语法目标, 已切换到同目标的可验证阅读",
+                detail={"reason_code": str(exc).split(":", maxsplit=1)[0]},
+            )
+            await _complete_material_model_invocation(
+                invocation_key=invocation_key,
+                response_payload=output.model_dump(mode="json"),
+            )
+            return output
     try:
         output = await generate_personalized_reading(
             contexts,
             goal=goal,
             adaptation_profile=adaptation_profile,
+            required_grammar_targets=generated_article_grammar_requirements(objective),
         )
+        try:
+            generated_article_grammar_target(
+                paragraphs=list(output.paragraphs),
+                objective=objective,
+            )
+        except (ValidationError, ValueError) as exc:
+            output = deterministic_personalized_reading(
+                contexts,
+                goal=goal,
+                adaptation_profile=adaptation_profile,
+            )
+            generated_article_grammar_target(
+                paragraphs=list(output.paragraphs),
+                objective=objective,
+            )
+            await _record_event(
+                material_id,
+                event_type="reading_deterministic_fallback",
+                stage="generating",
+                message="模型文章缺少冻结语法目标, 已切换到同目标的可验证阅读",
+                detail={"reason_code": str(exc).split(":", maxsplit=1)[0]},
+            )
     except Exception:
         await _release_model_invocation(invocation_key)
         raise
@@ -1540,7 +1717,35 @@ async def _cached_personalized_assessment(
         request_hash=stable_content_hash(request),
     )
     if cached is not None:
-        return PersonalizedAssessmentOutput.model_validate(cached)
+        try:
+            cached_output = PersonalizedAssessmentOutput.model_validate(cached)
+            _validate_personalized_assessment(
+                material_id=material_id,
+                objective=objective,
+                article=article,
+                assessment=cached_output,
+            )
+            return cached_output
+        except (ValidationError, ValueError) as exc:
+            output = deterministic_assessment(article=article, objective=objective)
+            _validate_personalized_assessment(
+                material_id=material_id,
+                objective=objective,
+                article=article,
+                assessment=output,
+            )
+            await _record_event(
+                material_id,
+                event_type="assessment_deterministic_fallback",
+                stage="generating",
+                message="缓存题包未通过确定性门, 已生成同文章的可验证题包",
+                detail={"reason_code": type(exc).__name__},
+            )
+            await _complete_material_model_invocation(
+                invocation_key=invocation_key,
+                response_payload=output.model_dump(mode="json"),
+            )
+            return output
     adapter = personalized_assessment_adapter(get_settings())
     fallback_reason: str | None = None
     try:
@@ -1568,6 +1773,12 @@ async def _cached_personalized_assessment(
             ) as exc:
                 fallback_reason = type(exc).__name__
                 output = deterministic_assessment(article=article, objective=objective)
+        _validate_personalized_assessment(
+            material_id=material_id,
+            objective=objective,
+            article=article,
+            assessment=output,
+        )
     except Exception:
         await _release_model_invocation(invocation_key)
         raise
@@ -1715,26 +1926,15 @@ async def _release_model_invocation(invocation_key: str) -> None:
 async def _handle_langgraph_generation_failure(
     row: dict[str, Any],
     exc: Exception,
+    *,
+    failed_node: str | None,
 ) -> str:
     now = datetime.now(UTC)
     attempts = int(row["generation_attempt_count"])
     terminal = attempts >= MAX_GENERATION_ATTEMPTS
     delay = timedelta(seconds=30 * 2 ** max(0, attempts - 1))
     status = "generation_failed" if terminal else "requested"
-    next_graph_thread_id = (
-        row["graph_thread_id"]
-        if terminal
-        else stable_thread_id(
-            "personalized-content",
-            f"{row['material_id']}:auto-retry:{uuid4().hex}",
-        )
-    )
     async with get_engine().begin() as connection:
-        await connection.execute(
-            tables.model_invocation_ledger.delete().where(
-                tables.model_invocation_ledger.c.workflow_run_id == row["material_id"]
-            )
-        )
         result = await connection.execute(
             tables.personalized_training_materials.update()
             .where(
@@ -1747,7 +1947,6 @@ async def _handle_langgraph_generation_failure(
                 next_generation_attempt_at=None if terminal else now + delay,
                 claimed_by=None,
                 lease_expires_at=None,
-                graph_thread_id=next_graph_thread_id,
                 updated_at=now,
             )
         )
@@ -1760,14 +1959,18 @@ async def _handle_langgraph_generation_failure(
             stage=status,
             attempt=attempts,
             message=(
-                "完整个性化材料工作流失败, 已达到最大尝试次数"
+                "失败节点已保留检查点, 等待人工修复后继续"
                 if terminal
-                else "完整个性化材料工作流失败, 已安排安全重试"
+                else "失败节点已保留检查点, 已安排从该节点自动恢复"
             ),
             detail={
                 "error_code": f"{type(exc).__name__}:{str(exc)[:80]}",
                 "diagnostic": str(exc)[:1000],
                 "runtime_kind": "langgraph",
+                "failed_node": failed_node,
+                "recovery_mode": (
+                    "human_checkpoint_resume" if terminal else "automatic_checkpoint_resume"
+                ),
             },
             occurred_at=now,
         )
@@ -1797,6 +2000,7 @@ async def generate_personalized_reading(
     *,
     goal: str,
     adaptation_profile: dict[str, Any] | None = None,
+    required_grammar_targets: list[str] | None = None,
 ) -> PersonalizedReadingOutput:
     resolved_profile = adaptation_profile or {
         "overall_level": "developing",
@@ -1810,13 +2014,27 @@ async def generate_personalized_reading(
             contexts,
             goal=goal,
             adaptation_profile=resolved_profile,
+            required_grammar_targets=required_grammar_targets or [],
         )
-    focus = ", ".join(str(item["title"]) for item in contexts[:3])
+    return deterministic_personalized_reading(
+        contexts,
+        goal=goal,
+        adaptation_profile=resolved_profile,
+    )
+
+
+def deterministic_personalized_reading(
+    contexts: tuple[dict[str, Any], ...],
+    *,
+    goal: str,
+    adaptation_profile: dict[str, Any],
+) -> PersonalizedReadingOutput:
     return PersonalizedReadingOutput(
         title="A Second Look at Familiar Ideas",
         paragraphs=[
             "A learner may meet the same idea in very different settings. Recent notes about "
-            f"{focus} can therefore become more useful when they are tested in a new context "
+            "a familiar language pattern can therefore become more useful when they are tested "
+            "in a new context "
             "rather than simply reread.",
             "Imagine a small research team that changes its plan after an early result appears "
             "convincing. Although the first explanation seems natural, one member checks the "
@@ -1829,7 +2047,7 @@ async def generate_personalized_reading(
         ],
         focus_points=[
             f"目标: {goal}",
-            f"当前适配水平: {resolved_profile['overall_level']}",
+            f"当前适配水平: {adaptation_profile['overall_level']}",
             *[f"迁移复现: {item['title']}" for item in contexts[:3]],
         ][:5],
         source_titles=[str(item["title"]) for item in contexts[:3]],

@@ -52,6 +52,23 @@ export interface ManagedTool {
   updated_at: string | null;
 }
 
+export interface ManagedAgent {
+  project_key: "binnagentx";
+  agent_id: string;
+  display_name: string;
+  description: string;
+  domain: string;
+  execution_kind: "workflow" | "model" | "deterministic";
+  workflow: string;
+  availability: "available" | "blocked";
+  blockers: string[];
+  prompt_ids: string[];
+  tool_names: string[];
+  model_provider: string;
+  supports_checkpoint_resume: boolean;
+  requires_human_review: boolean;
+}
+
 export interface ManagedPrompt {
   project_key: "binnagentx";
   prompt_id: string;
@@ -152,6 +169,7 @@ export interface PersonalizedMaterialJob {
   next_generation_attempt_at: string | null;
   claimed_by: string | null;
   lease_expires_at: string | null;
+  can_resume_from_checkpoint: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -174,8 +192,16 @@ export interface PersonalizedMaterialEvent {
   occurred_at: string;
 }
 
+export interface PersonalizedKnowledgePoint {
+  candidate_ref: string;
+  title: string;
+  kind: string;
+  tags: string[];
+}
+
 export interface PersonalizedMaterialJobDetail {
   job: PersonalizedMaterialJob;
+  candidate_knowledge_points: PersonalizedKnowledgePoint[];
   events: PersonalizedMaterialEvent[];
 }
 
@@ -252,6 +278,10 @@ export function listManagedTools(): Promise<ManagedTool[]> {
   return controlRequest("tools");
 }
 
+export function listManagedAgents(): Promise<ManagedAgent[]> {
+  return controlRequest("agents");
+}
+
 export function updateManagedTool(
   name: string,
   enabled: boolean,
@@ -319,6 +349,16 @@ export function getPersonalizedMaterialJob(
   materialId: string,
 ): Promise<PersonalizedMaterialJobDetail> {
   return controlRequest(`content-generation/personalized-jobs/${materialId}`);
+}
+
+export function resumePersonalizedMaterialJob(
+  materialId: string,
+  reason: string,
+): Promise<PersonalizedMaterialJob> {
+  return controlRequest(`content-generation/personalized-jobs/${materialId}/resume`, {
+    method: "POST",
+    body: JSON.stringify({ reason }),
+  });
 }
 
 export function createContentGenerationJob(seed?: number): Promise<ContentGenerationJob> {

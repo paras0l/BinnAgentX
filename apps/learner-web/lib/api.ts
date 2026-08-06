@@ -6,6 +6,7 @@ import {
 import type {
   AnnotationAnalysisView,
   AnnotationKind,
+  ExpressionAssistView,
   ExpressionReviewView,
   GrammarChallengeUpdateView,
   LearnerProfileInput,
@@ -41,6 +42,7 @@ export interface CurrentLevel {
   >;
   confidence_band: "low" | "medium" | "high";
   evidence_count: number;
+  reason_codes?: string[];
 }
 
 export interface TrainingHistorySummary {
@@ -570,6 +572,17 @@ export async function saveAnnotation(
   });
 }
 
+export function undoAnnotation(
+  task: LearnerTaskView,
+  annotationId: string,
+): Promise<LearnerTaskView> {
+  return command(
+    `/v1/tasks/${task.task_id}/annotations/${annotationId}/undo`,
+    "remove_annotation",
+    { expected_version: task.version },
+  );
+}
+
 export async function analyzeAnnotation(
   task: LearnerTaskView,
   selection: TextSelection,
@@ -641,6 +654,26 @@ export function reviewExpression(
       recent_assets: recentAssets.slice(0, 4),
     }),
   });
+}
+
+export function generateExpressionFromChinese(
+  task: LearnerTaskView,
+  chineseIntent: string,
+  generationIndex: number,
+  previousCandidate: string | null,
+  recentAssets: Array<{ title: string; content: string }> = [],
+): Promise<ExpressionAssistView> {
+  return command(
+    `/v1/tasks/${task.task_id}/expression-lab/chinese-assist`,
+    `expression_chinese_assist_${generationIndex}`,
+    {
+      expected_version: task.version,
+      chinese_intent: chineseIntent,
+      generation_index: generationIndex,
+      ...(previousCandidate ? { previous_candidate: previousCandidate } : {}),
+      recent_assets: recentAssets.slice(0, 4),
+    },
+  );
 }
 
 export function saveAttempt(task: LearnerTaskView, text: string): Promise<LearnerTaskView> {

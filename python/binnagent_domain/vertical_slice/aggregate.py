@@ -13,6 +13,7 @@ from binnagent_domain.vertical_slice.commands import (
     PauseTask,
     RecordIntervention,
     RecordRevision,
+    RemoveAnnotation,
     ReplaceMaterial,
     ResumeTask,
     SaveAttempt,
@@ -139,6 +140,37 @@ class LearningTask:
                     "annotation_saved",
                     command.now,
                     {"annotation_id": annotation.annotation_id, "kind": annotation.kind.value},
+                ),
+            ),
+        )
+
+    def remove_annotation(self, command: RemoveAnnotation) -> Transition:
+        self._guard_mutation(command.expected_version)
+        if self.state not in {TaskState.READING, TaskState.DRAFTING, TaskState.SAVED}:
+            self._invalid_state("annotation_removal_not_allowed")
+        annotation = next(
+            (
+                item
+                for item in self.current_annotations
+                if item.annotation_id == command.annotation_id
+            ),
+            None,
+        )
+        if annotation is None:
+            self._invalid("annotation_not_found")
+        task = self._advance(
+            command.now,
+            annotations=tuple(
+                item for item in self.annotations if item.annotation_id != command.annotation_id
+            ),
+        )
+        return Transition(
+            task,
+            (
+                task._event(
+                    "annotation_removed",
+                    command.now,
+                    {"annotation_id": command.annotation_id},
                 ),
             ),
         )

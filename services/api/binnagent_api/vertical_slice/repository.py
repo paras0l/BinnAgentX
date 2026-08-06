@@ -310,10 +310,29 @@ class VerticalSliceRepository:
                 )
             )
         await self._insert_new_invalidations(connection, previous, task)
+        await self._delete_removed_annotations(connection, previous, task)
         await self._insert_new_annotations(connection, previous, task)
         await self._insert_new_attempts(connection, previous, task)
         await self._insert_new_interventions(connection, previous, task)
         await self._insert_new_revisions(connection, previous, task)
+
+    async def _delete_removed_annotations(
+        self, connection: AsyncConnection, previous: LearningTask | None, task: LearningTask
+    ) -> None:
+        if previous is None or len(task.annotations) >= len(previous.annotations):
+            return
+        remaining_ids = {item.annotation_id for item in task.annotations}
+        removed_ids = [
+            item.annotation_id
+            for item in previous.annotations
+            if item.annotation_id not in remaining_ids
+        ]
+        if removed_ids:
+            await connection.execute(
+                tables.task_annotations.delete().where(
+                    tables.task_annotations.c.annotation_id.in_(removed_ids)
+                )
+            )
 
     async def _insert_new_invalidations(
         self, connection: AsyncConnection, previous: LearningTask | None, task: LearningTask

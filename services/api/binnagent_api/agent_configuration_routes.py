@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection
 
 from binnagent_api.auth import ControlIdentity, require_control_identity
 from binnagent_api.database import get_engine
+from binnagent_api.settings import get_settings
 from binnagent_api.vertical_slice import tables
 
 PROJECT_KEY = "binnagentx"
@@ -52,6 +53,16 @@ _TOOL_METADATA: dict[str, dict[str, Any]] = {
         "display_name": "表达风格复盘",
         "description": "生成逻辑镜像、学术和新闻风格的受约束对照。",
         "input_schema": {"type": "object", "required": ["draft"]},
+        "output_schema": {"type": "object"},
+        "source": "binnagentx_runtime",
+    },
+    "expression.generate_from_chinese.v1": {
+        "display_name": "根据中文意图推荐表达",
+        "description": "结合当前表达任务与已保存草稿生成局部英文表达建议，不扩写整篇答案。",
+        "input_schema": {
+            "type": "object",
+            "required": ["expected_version", "chinese_intent"],
+        },
         "output_schema": {"type": "object"},
         "source": "binnagentx_runtime",
     },
@@ -100,6 +111,128 @@ _TOOL_METADATA: dict[str, dict[str, Any]] = {
     },
 }
 
+_AGENT_CATALOG: tuple[dict[str, Any], ...] = (
+    {
+        "agent_id": "personalized_content_agent",
+        "display_name": "个性化材料生成 Agent",
+        "description": "基于授权学习记忆生成文章、题目、语法分析和迁移任务，并支持检查点恢复。",
+        "domain": "learning_content",
+        "execution_kind": "workflow",
+        "workflow": "personalized-content",
+        "prompt_ids": ["personalized_reading.generate", "personalized_reading.assess"],
+        "tool_names": ["obsidian.read_learning_context.v1"],
+        "supports_checkpoint_resume": True,
+        "requires_human_review": True,
+    },
+    {
+        "agent_id": "reading_assistance_agent",
+        "display_name": "阅读选区分析 Agent",
+        "description": "诊断学习者选中片段的语境义、结构和逻辑，不代做题目。",
+        "domain": "reading_lab",
+        "execution_kind": "model",
+        "workflow": "reading-selection-analysis",
+        "prompt_ids": ["reading.selection_analysis"],
+        "tool_names": ["reading.analyze_selection.v1"],
+        "supports_checkpoint_resume": False,
+        "requires_human_review": False,
+    },
+    {
+        "agent_id": "expression_assistance_agent",
+        "display_name": "语境表达推荐 Agent",
+        "description": "结合当前表达任务、中文意图和学习者草稿推荐局部英文表达。",
+        "domain": "expression_lab",
+        "execution_kind": "model",
+        "workflow": "expression-assistance",
+        "prompt_ids": ["expression.generate_from_chinese"],
+        "tool_names": ["expression.generate_from_chinese.v1"],
+        "supports_checkpoint_resume": False,
+        "requires_human_review": False,
+    },
+    {
+        "agent_id": "expression_feedback_agent",
+        "display_name": "表达反馈 Agent",
+        "description": "提供单项最高优先级反馈，并生成受约束的多风格表达复盘。",
+        "domain": "expression_lab",
+        "execution_kind": "model",
+        "workflow": "expression-feedback",
+        "prompt_ids": ["expression.priority_feedback", "expression.review_draft"],
+        "tool_names": [
+            "expression.deliver_priority_feedback.v1",
+            "expression.review_draft.v1",
+        ],
+        "supports_checkpoint_resume": False,
+        "requires_human_review": False,
+    },
+    {
+        "agent_id": "content_generation_agent",
+        "display_name": "公共材料生成 Agent",
+        "description": "生成全新的阅读或表达训练候选，并进入独立审核与发布链路。",
+        "domain": "content_ops",
+        "execution_kind": "workflow",
+        "workflow": "content-generation",
+        "prompt_ids": [
+            "content_generator.reading_system",
+            "content_generator.reading_user",
+            "content_generator.expression_system",
+            "content_generator.expression_user",
+        ],
+        "tool_names": ["content_ops.generate_candidate.v1"],
+        "supports_checkpoint_resume": False,
+        "requires_human_review": True,
+    },
+    {
+        "agent_id": "content_review_agent",
+        "display_name": "内容审核 Agent",
+        "description": "独立检查答案、证据、难度、提示递进和语言质量，决定批准、返工或拒绝。",
+        "domain": "content_ops",
+        "execution_kind": "model",
+        "workflow": "content-review",
+        "prompt_ids": ["content_reviewer.system", "content_reviewer.user"],
+        "tool_names": [],
+        "supports_checkpoint_resume": False,
+        "requires_human_review": False,
+    },
+    {
+        "agent_id": "obsidian_inbox_organizer",
+        "display_name": "Obsidian Inbox 整理 Agent",
+        "description": "把同步笔记分类到受控学习目录，不删除、改写或访问任意路径。",
+        "domain": "learner_memory",
+        "execution_kind": "workflow",
+        "workflow": "knowledge-organization",
+        "prompt_ids": ["obsidian.inbox_organize"],
+        "tool_names": [
+            "obsidian.read_learning_context.v1",
+            "obsidian.write_learning_note.v1",
+        ],
+        "supports_checkpoint_resume": True,
+        "requires_human_review": True,
+    },
+    {
+        "agent_id": "knowledge_extraction_agent",
+        "display_name": "学习知识提取 Agent",
+        "description": "从授权笔记提取带逐字证据的原子知识候选，不直接写入学习资产。",
+        "domain": "learner_memory",
+        "execution_kind": "model",
+        "workflow": "knowledge-organization",
+        "prompt_ids": [],
+        "tool_names": ["obsidian.read_learning_context.v1"],
+        "supports_checkpoint_resume": True,
+        "requires_human_review": True,
+    },
+    {
+        "agent_id": "level_assessment_agent",
+        "display_name": "学习水平评估 Agent",
+        "description": "基于已评分证据确定阅读、词汇、语法与表达的适配水平。",
+        "domain": "learner_profile",
+        "execution_kind": "deterministic",
+        "workflow": "level-assessment",
+        "prompt_ids": [],
+        "tool_names": [],
+        "supports_checkpoint_resume": False,
+        "requires_human_review": False,
+    },
+)
+
 _DEFAULT_PROMPTS = tuple(
     {
         **definition.model_dump(),
@@ -127,6 +260,23 @@ class ToolView(BaseModel):
     output_schema: dict[str, Any]
     policy_version: int
     updated_at: datetime | None
+
+
+class AgentView(BaseModel):
+    project_key: Literal["binnagentx"]
+    agent_id: str
+    display_name: str
+    description: str
+    domain: str
+    execution_kind: Literal["workflow", "model", "deterministic"]
+    workflow: str
+    availability: Literal["available", "blocked"]
+    blockers: list[str]
+    prompt_ids: list[str]
+    tool_names: list[str]
+    model_provider: str
+    supports_checkpoint_resume: bool
+    requires_human_review: bool
 
 
 class ToolPolicyUpdate(BaseModel):
@@ -196,8 +346,22 @@ def _all_specs() -> tuple[ToolSpec, ...]:
 
 
 async def _seed_prompts(connection: AsyncConnection, role: str) -> None:
+    # Agents and Prompts are loaded in parallel by the control cockpit. Serialize the
+    # one-time seed so concurrent requests cannot violate the partial unique index for
+    # one active version per prompt ID.
+    await connection.execute(sa.select(sa.func.pg_advisory_xact_lock(8_214_117_001)))
     now = datetime.now(UTC)
     for item in _DEFAULT_PROMPTS:
+        existing = await connection.scalar(
+            sa.select(tables.control_prompts.c.prompt_id)
+            .where(
+                tables.control_prompts.c.project_key == PROJECT_KEY,
+                tables.control_prompts.c.prompt_id == item["prompt_id"],
+            )
+            .limit(1)
+        )
+        if existing is not None:
+            continue
         template = str(item["template_text"])
         await connection.execute(
             pg_insert(tables.control_prompts)
@@ -292,6 +456,69 @@ async def list_tools(
             )
         )
     return result
+
+
+@agent_configuration_router.get("/agents", response_model=list[AgentView])
+async def list_agents(
+    identity: Annotated[ControlIdentity, Depends(require_control_identity)],
+) -> list[AgentView]:
+    async with get_engine().begin() as connection:
+        await _seed_prompts(connection, identity.role)
+        active_prompt_ids = set(
+            (
+                await connection.execute(
+                    sa.select(tables.control_prompts.c.prompt_id).where(
+                        tables.control_prompts.c.project_key == PROJECT_KEY,
+                        tables.control_prompts.c.status == "active",
+                    )
+                )
+            ).scalars()
+        )
+        disabled_tool_names = set(
+            (
+                await connection.execute(
+                    sa.select(tables.control_tool_policies.c.tool_name).where(
+                        tables.control_tool_policies.c.project_key == PROJECT_KEY,
+                        tables.control_tool_policies.c.enabled.is_(False),
+                    )
+                )
+            ).scalars()
+        )
+    model_provider = get_settings().model_adapter
+    agents: list[AgentView] = []
+    for definition in _AGENT_CATALOG:
+        prompt_ids = [str(value) for value in definition["prompt_ids"]]
+        tool_names = [str(value) for value in definition["tool_names"]]
+        blockers = [
+            *[
+                f"prompt_not_active:{prompt_id}"
+                for prompt_id in prompt_ids
+                if prompt_id not in active_prompt_ids
+            ],
+            *[
+                f"tool_disabled:{tool_name}"
+                for tool_name in tool_names
+                if tool_name in disabled_tool_names
+            ],
+        ]
+        agents.append(
+            AgentView(
+                project_key=PROJECT_KEY,
+                **{
+                    **definition,
+                    "prompt_ids": prompt_ids,
+                    "tool_names": tool_names,
+                    "availability": "blocked" if blockers else "available",
+                    "blockers": blockers,
+                    "model_provider": (
+                        "deterministic"
+                        if definition["execution_kind"] == "deterministic"
+                        else model_provider
+                    ),
+                },
+            )
+        )
+    return agents
 
 
 @agent_configuration_router.patch("/tools/{tool_name}", response_model=ToolView)

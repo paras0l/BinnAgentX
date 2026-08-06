@@ -1540,6 +1540,12 @@ function LearnerProfilePanel({
   const levelLabel = currentLevel?.overall_level
     ? adaptationLevelLabel(currentLevel.overall_level)
     : "待积累";
+  const vocabularyDirectlyMeasured =
+    currentLevel?.status === "ready" &&
+    !(currentLevel.reason_codes ?? []).includes("vocabulary:not_directly_measured");
+  const writingRubricScored =
+    currentLevel?.status === "ready" &&
+    !(currentLevel.reason_codes ?? []).includes("writing:not_rubric_scored");
 
   return (
     <main className="insight-shell">
@@ -1557,7 +1563,7 @@ function LearnerProfilePanel({
           <strong>{levelLabel}</strong>
           <p>
             {currentLevel?.status === "ready"
-              ? `${confidenceLabel(currentLevel.confidence_band)} · ${currentLevel.evidence_count} 条综合证据`
+              ? `${confidenceLabel(currentLevel.confidence_band)} · ${currentLevel.evidence_count} 条可评分证据`
               : "完成训练并评价难度后更新"}
           </p>
         </article>
@@ -1590,7 +1596,9 @@ function LearnerProfilePanel({
               </li>
               <li>
                 <strong>词汇：</strong>
-                {dimensionLevelLabel(currentLevel.dimensions.vocabulary)}
+                {vocabularyDirectlyMeasured
+                  ? dimensionLevelLabel(currentLevel.dimensions.vocabulary)
+                  : "尚无直接题目证据（暂按保守负荷）"}
               </li>
               <li>
                 <strong>语法：</strong>
@@ -1598,7 +1606,9 @@ function LearnerProfilePanel({
               </li>
               <li>
                 <strong>书面表达：</strong>
-                {dimensionLevelLabel(currentLevel.dimensions.written_expression)}
+                {writingRubricScored
+                  ? dimensionLevelLabel(currentLevel.dimensions.written_expression)
+                  : "尚未经过量表评分（不以完成次数代替）"}
               </li>
             </ul>
           </article>

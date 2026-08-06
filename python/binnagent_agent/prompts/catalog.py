@@ -81,6 +81,25 @@ DEFAULT_PROMPT_REGISTRY = PromptRegistry(
             model_policy={"temperature": 0.2, "max_tokens": 1600},
         ),
         PromptDefinition(
+            prompt_id="expression.generate_from_chinese",
+            prompt_version="v1",
+            owner="expression_lab",
+            purpose="结合当前表达任务与学习者 V1 推荐语境恰当的英文表达。",
+            template_text=(
+                "根据 {{task_context}}、学习者已保存的 {{learner_draft}} 和中文意图 "
+                "{{chinese_intent}}，推荐一条适合当前受众、目的和论证动作的英文表达。"
+                "说明为什么适合此语境，并解释搭配、语气、句法或使用限制。"
+                "不得逐词硬译，不得扩写成整篇答案，只输出 {{output_schema}}。"
+            ),
+            variables=(
+                "task_context",
+                "learner_draft",
+                "chinese_intent",
+                "output_schema",
+            ),
+            model_policy={"temperature": 0.45, "max_tokens": 1000},
+        ),
+        PromptDefinition(
             prompt_id="content_generator.reading_system",
             prompt_version="v1",
             owner="content_ops",

@@ -13,6 +13,7 @@ import {
   getContentGenerationJob,
   getPersonalizedMaterialJob,
   listContentGenerationJobs,
+  listManagedAgents,
   listPersonalizedMaterialJobs,
   listExperienceCodes,
   listManagedLearners,
@@ -20,6 +21,7 @@ import {
   listManagedTools,
   publishContentGenerationJob,
   retryContentGenerationJob,
+  resumePersonalizedMaterialJob,
   revokeExperienceCode,
   revokeManagedLearnerSessions,
   updateManagedPrompt,
@@ -33,6 +35,7 @@ import {
   type ExperienceCode,
   type ExperienceCodeStatus,
   type ManagedLearner,
+  type ManagedAgent,
   type ManagedPrompt,
   type ManagedTool,
   type PromptDraftInput,
@@ -40,9 +43,10 @@ import {
   type PersonalizedMaterialJob,
   type PersonalizedMaterialJobDetail,
 } from "../lib/control-api";
-import { PromptsConsole, ToolsConsole } from "./agent-configuration-console";
+import { AgentsConsole, PromptsConsole, ToolsConsole } from "./agent-configuration-console";
 
-type View = "content" | "tools" | "prompts" | "access" | "users";
+type View = "content" | "agents" | "tools" | "prompts" | "access" | "users";
+type AgentDependencyTarget = { kind: "prompt"; id: string } | { kind: "tool"; id: string } | null;
 
 const JOB_STATUS_LABELS: Record<ContentGenerationJobStatus, string> = {
   queued: "排队中",
@@ -97,6 +101,7 @@ const PERSONALIZED_PAGE_SIZE = 10;
 
 export default function ControlHomePage() {
   const [view, setView] = useState<View>("content");
+  const [agentDependencyTarget, setAgentDependencyTarget] = useState<AgentDependencyTarget>(null);
   const [status, setStatus] = useState<ContentControlStatus | null>(null);
   const [jobs, setJobs] = useState<ContentGenerationJob[]>([]);
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
@@ -115,6 +120,7 @@ export default function ControlHomePage() {
   );
   const [codes, setCodes] = useState<ExperienceCode[]>([]);
   const [users, setUsers] = useState<ManagedLearner[]>([]);
+  const [agents, setAgents] = useState<ManagedAgent[]>([]);
   const [tools, setTools] = useState<ManagedTool[]>([]);
   const [prompts, setPrompts] = useState<ManagedPrompt[]>([]);
   const [contentSeed, setContentSeed] = useState(20260719);
@@ -175,6 +181,7 @@ export default function ControlHomePage() {
       listPersonalizedMaterialJobs(),
       listExperienceCodes(),
       listManagedLearners(),
+      listManagedAgents(),
       listManagedTools(),
       listManagedPrompts(),
     ])
@@ -185,6 +192,7 @@ export default function ControlHomePage() {
           nextPersonalizedJobs,
           nextCodes,
           nextUsers,
+          nextAgents,
           nextTools,
           nextPrompts,
         ]) => {
@@ -200,9 +208,7 @@ export default function ControlHomePage() {
           setPersonalizedTotalItems(nextPersonalizedJobs.total_items);
           setPersonalizedTotalPages(nextPersonalizedJobs.total_pages);
           setExpandedPersonalizedOwners(
-            new Set(
-              nextPersonalizedJobs.items[0] ? [nextPersonalizedJobs.items[0].owner_ref] : [],
-            ),
+            new Set(nextPersonalizedJobs.items[0] ? [nextPersonalizedJobs.items[0].owner_ref] : []),
           );
           setCodes((current) => [
             ...nextCodes,
@@ -211,6 +217,7 @@ export default function ControlHomePage() {
             ),
           ]);
           setUsers(nextUsers);
+          setAgents(nextAgents);
           setTools(nextTools);
           setPrompts(nextPrompts);
           const firstId = nextJobs[0]?.job_id;
@@ -310,6 +317,24 @@ export default function ControlHomePage() {
     });
   };
 
+  const resumePersonalizedJob = (materialId: string) => {
+    setError(null);
+    startTransition(async () => {
+      try {
+        const resumed = await resumePersonalizedMaterialJob(
+          materialId,
+          "控制舱确认干预完成，从失败节点检查点继续",
+        );
+        setPersonalizedJobs((current) =>
+          current.map((job) => (job.material_id === materialId ? resumed : job)),
+        );
+        setPersonalizedDetail(await getPersonalizedMaterialJob(materialId));
+      } catch (reason) {
+        setError(controlErrorMessage(reason));
+      }
+    });
+  };
+
   const showPersonalizedPage = (page: number, query: string) => {
     setError(null);
     startTransition(async () => {
@@ -324,9 +349,7 @@ export default function ControlHomePage() {
         setPersonalizedJobs(result.items);
         setPersonalizedTotalItems(result.total_items);
         setPersonalizedTotalPages(result.total_pages);
-        setExpandedPersonalizedOwners(
-          new Set(result.items[0] ? [result.items[0].owner_ref] : []),
-        );
+        setExpandedPersonalizedOwners(new Set(result.items[0] ? [result.items[0].owner_ref] : []));
         const firstId = result.items[0]?.material_id ?? null;
         setSelectedPersonalizedId(firstId);
         setPersonalizedDetail(firstId ? await getPersonalizedMaterialJob(firstId) : null);
@@ -347,19 +370,58 @@ export default function ControlHomePage() {
           </div>
         </div>
         <nav aria-label="控制舱功能">
-          <button className={view === "content" ? "active" : ""} onClick={() => setView("content")}>
+          <button
+            className={view === "content" ? "active" : ""}
+            onClick={() => {
+              setAgentDependencyTarget(null);
+              setView("content");
+            }}
+          >
             内容与 Agent
           </button>
-          <button className={view === "tools" ? "active" : ""} onClick={() => setView("tools")}>
+          <button
+            className={view === "agents" ? "active" : ""}
+            onClick={() => {
+              setAgentDependencyTarget(null);
+              setView("agents");
+            }}
+          >
+            Agents
+          </button>
+          <button
+            className={view === "tools" ? "active" : ""}
+            onClick={() => {
+              setAgentDependencyTarget(null);
+              setView("tools");
+            }}
+          >
             Tools
           </button>
-          <button className={view === "prompts" ? "active" : ""} onClick={() => setView("prompts")}>
+          <button
+            className={view === "prompts" ? "active" : ""}
+            onClick={() => {
+              setAgentDependencyTarget(null);
+              setView("prompts");
+            }}
+          >
             Prompts
           </button>
-          <button className={view === "access" ? "active" : ""} onClick={() => setView("access")}>
+          <button
+            className={view === "access" ? "active" : ""}
+            onClick={() => {
+              setAgentDependencyTarget(null);
+              setView("access");
+            }}
+          >
             体验访问
           </button>
-          <button className={view === "users" ? "active" : ""} onClick={() => setView("users")}>
+          <button
+            className={view === "users" ? "active" : ""}
+            onClick={() => {
+              setAgentDependencyTarget(null);
+              setView("users");
+            }}
+          >
             用户管理
           </button>
         </nav>
@@ -577,8 +639,8 @@ export default function ControlHomePage() {
                   ← 上一页
                 </button>
                 <span>
-                  共 {personalizedTotalItems} 次 · 第 {personalizedPage} /{" "}
-                  {personalizedTotalPages} 页
+                  共 {personalizedTotalItems} 次 · 第 {personalizedPage} / {personalizedTotalPages}{" "}
+                  页
                 </span>
                 <button
                   aria-label="下一页个性化运行"
@@ -592,7 +654,12 @@ export default function ControlHomePage() {
             </div>
             <aside className="detail-panel" aria-label="个性化材料运行详情">
               {selectedPersonalizedJob ? (
-                <PersonalizedJobDetail detail={personalizedDetail} job={selectedPersonalizedJob} />
+                <PersonalizedJobDetail
+                  detail={personalizedDetail}
+                  job={selectedPersonalizedJob}
+                  pending={isPending}
+                  onResume={resumePersonalizedJob}
+                />
               ) : (
                 <div className="detail-empty">
                   <strong>选择一次个性化生成</strong>
@@ -708,9 +775,29 @@ export default function ControlHomePage() {
             </aside>
           </section>
         </>
+      ) : view === "agents" ? (
+        <AgentsConsole
+          agents={agents}
+          error={error}
+          onNavigateDependency={(kind, id) => {
+            setAgentDependencyTarget({ kind, id });
+            setView(kind === "prompt" ? "prompts" : "tools");
+          }}
+          onRefresh={() => {
+            setError(null);
+            startTransition(async () => {
+              try {
+                setAgents(await listManagedAgents());
+              } catch (reason) {
+                setError(controlErrorMessage(reason));
+              }
+            });
+          }}
+        />
       ) : view === "tools" ? (
         <ToolsConsole
           tools={tools}
+          focusToolName={agentDependencyTarget?.kind === "tool" ? agentDependencyTarget.id : null}
           pending={isPending}
           error={error}
           onRefresh={() => {
@@ -744,6 +831,7 @@ export default function ControlHomePage() {
       ) : view === "prompts" ? (
         <PromptsConsole
           prompts={prompts}
+          focusPromptId={agentDependencyTarget?.kind === "prompt" ? agentDependencyTarget.id : null}
           pending={isPending}
           error={error}
           onRefresh={() => {
@@ -1051,11 +1139,16 @@ function StatusCard({
 function PersonalizedJobDetail({
   detail,
   job,
+  pending,
+  onResume,
 }: {
   detail: PersonalizedMaterialJobDetail | null;
   job: PersonalizedMaterialJob;
+  pending: boolean;
+  onResume: (materialId: string) => void;
 }) {
-  const latestEvent = detail?.events[0];
+  const matchingDetail = detail?.job.material_id === job.material_id ? detail : null;
+  const latestEvent = matchingDetail?.events[0];
   return (
     <>
       <div className="detail-header">
@@ -1068,7 +1161,7 @@ function PersonalizedJobDetail({
       <div className="current-activity">
         <span>当前阶段</span>
         <strong>{latestEvent?.message ?? personalizedStageLabel(job)}</strong>
-        <small>仅展示去内容化运行元数据</small>
+        <small>展示运行元数据与候选知识点，不展示正文摘录</small>
         {["requested", "generating", "validating"].includes(job.status) ? (
           <span className="activity-pulse">最后活动 {relativeTime(job.updated_at)}</span>
         ) : null}
@@ -1091,10 +1184,50 @@ function PersonalizedJobDetail({
           <dd>{job.owner_ref}</dd>
         </div>
       </dl>
+      <section className="candidate-knowledge-section">
+        <div className="candidate-knowledge-heading">
+          <div>
+            <span>生成输入</span>
+            <h3>候选知识点</h3>
+          </div>
+          <small>{matchingDetail?.candidate_knowledge_points.length ?? 0} 项</small>
+        </div>
+        {matchingDetail?.candidate_knowledge_points.length ? (
+          <div className="candidate-knowledge-list">
+            {matchingDetail.candidate_knowledge_points.map((point) => (
+              <article key={point.candidate_ref}>
+                <div>
+                  <span>{knowledgePointKindLabel(point.kind)}</span>
+                  <small>{point.candidate_ref}</small>
+                </div>
+                <strong>{point.title}</strong>
+                {point.tags.length ? (
+                  <p>
+                    {point.tags.map((tag) => (
+                      <span key={tag}>{tag}</span>
+                    ))}
+                  </p>
+                ) : null}
+              </article>
+            ))}
+          </div>
+        ) : (
+          <p className="candidate-knowledge-empty">本次运行没有可展示的候选知识点元数据。</p>
+        )}
+      </section>
       {job.generation_error_code ? (
         <section className="failure-box">
           <strong>失败诊断</strong>
           <p>{friendlyFailure(job.generation_error_code)}</p>
+          {job.can_resume_from_checkpoint ? (
+            <button
+              className="checkpoint-resume-button"
+              disabled={pending}
+              onClick={() => onResume(job.material_id)}
+            >
+              {pending ? "正在恢复…" : "从失败节点继续"}
+            </button>
+          ) : null}
           <details>
             <summary>查看原始错误</summary>
             <pre>{job.generation_error_code}</pre>
@@ -1104,13 +1237,13 @@ function PersonalizedJobDetail({
       <section className="timeline-section">
         <div className="timeline-heading">
           <h3>个性化生成时间线</h3>
-          <span>{detail?.events.length ?? 0} 条事件</span>
+          <span>{matchingDetail?.events.length ?? 0} 条事件</span>
         </div>
         <div className="timeline">
-          {detail?.events.map((event) => (
+          {matchingDetail?.events.map((event) => (
             <PersonalizedTimelineEvent event={event} key={event.event_id} />
           ))}
-          {detail && detail.events.length === 0 ? (
+          {matchingDetail && matchingDetail.events.length === 0 ? (
             <p className="empty-state">旧任务没有阶段事件；重新生成后会完整记录。</p>
           ) : null}
         </div>
@@ -1121,6 +1254,7 @@ function PersonalizedJobDetail({
 
 function PersonalizedTimelineEvent({ event }: { event: PersonalizedMaterialEvent }) {
   const errorCode = typeof event.detail.error_code === "string" ? event.detail.error_code : null;
+  const failedNode = typeof event.detail.failed_node === "string" ? event.detail.failed_node : null;
   return (
     <article className={`timeline-event ${event.stage}`}>
       <i />
@@ -1128,6 +1262,7 @@ function PersonalizedTimelineEvent({ event }: { event: PersonalizedMaterialEvent
         <span>{event.attempt ? `生成 Agent · 第 ${event.attempt} 次` : "系统"}</span>
         <strong>{event.message}</strong>
         <small>{formatDate(event.occurred_at)}</small>
+        {failedNode ? <small>失败节点：{personalizedNodeLabel(failedNode)}</small> : null}
         {errorCode ? <small>{friendlyFailure(errorCode)}</small> : null}
       </div>
     </article>
@@ -1404,6 +1539,33 @@ function personalizedStatusLabel(status: PersonalizedMaterialJob["status"]): str
       rejected: "质量未通过",
     } as const
   )[status];
+}
+function knowledgePointKindLabel(kind: string): string {
+  return (
+    (
+      {
+        vocabulary: "词汇",
+        grammar: "语法",
+        reading: "阅读",
+        expression: "表达",
+      } as Record<string, string>
+    )[kind] ?? kind
+  );
+}
+function personalizedNodeLabel(node: string): string {
+  return (
+    (
+      {
+        article: "文章生成",
+        question: "题目生成",
+        language: "语法分析",
+        transfer: "迁移任务",
+        quality: "质量校验",
+        review: "审核决策",
+        publish: "发布",
+      } as Record<string, string>
+    )[node] ?? node
+  );
 }
 function personalizedStageLabel(job: PersonalizedMaterialJob): string {
   if (job.status === "requested" && job.next_generation_attempt_at)

@@ -43,6 +43,103 @@ def test_imported_assessment_fallback_keeps_question_types_and_stems_distinct() 
     assert len({tuple(question.hints) for question in output.questions}) == 3
 
 
+def test_generated_assessment_rejects_article_without_frozen_grammar_target() -> None:
+    material_id = "material_missing_grammar_target"
+    objective = build_objective_bundle(
+        material_id=material_id,
+        learner_id="learner_missing_grammar_target",
+        source_asset_ids=["asset_grammar"],
+        goal="复核让步关系",
+        adaptation_profile={"overall_level": "developing"},
+    )
+    article = build_article(
+        material_id=material_id,
+        objective=objective,
+        output=PersonalizedReadingOutput(
+            title="A Missing Target",
+            paragraphs=[
+                "A learner considers an unfamiliar claim.",
+                "However, the evidence points in a different direction.",
+                "The learner revises the conclusion after checking the evidence.",
+            ],
+            focus_points=["concession"],
+            source_titles=[],
+        ),
+    )
+
+    with pytest.raises(ValueError, match="personalized_article_grammar_target_missing"):
+        deterministic_assessment(article=article, objective=objective)
+
+
+@pytest.mark.asyncio
+async def test_personalized_reading_missing_frozen_target_uses_validated_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    material_id = "material_reading_target_fallback"
+    objective = build_objective_bundle(
+        material_id=material_id,
+        learner_id="learner_reading_target_fallback",
+        source_asset_ids=["asset_grammar"],
+        goal="复核让步关系",
+        adaptation_profile={"overall_level": "developing"},
+    )
+    events: list[dict[str, object]] = []
+    completed: list[dict[str, object]] = []
+
+    async def reserve(**_: object) -> None:
+        return None
+
+    async def generate(*_: object, **__: object) -> PersonalizedReadingOutput:
+        return PersonalizedReadingOutput(
+            title="A Model Reading Without the Target",
+            paragraphs=[
+                "A learner considers an unfamiliar claim.",
+                "However, the evidence points in a different direction.",
+                "The learner revises the conclusion after checking the evidence.",
+            ],
+            focus_points=["concession"],
+            source_titles=[],
+        )
+
+    async def complete(**kwargs: object) -> None:
+        completed.append(kwargs)
+
+    async def record(_: str, **kwargs: object) -> None:
+        events.append(kwargs)
+
+    monkeypatch.setattr(
+        personalized_material_service,
+        "_reserve_or_load_model_invocation",
+        reserve,
+    )
+    monkeypatch.setattr(personalized_material_service, "generate_personalized_reading", generate)
+    monkeypatch.setattr(
+        personalized_material_service,
+        "_complete_material_model_invocation",
+        complete,
+    )
+    monkeypatch.setattr(personalized_material_service, "_record_event", record)
+
+    output = await personalized_material_service._cached_personalized_reading(
+        material_id=material_id,
+        revision=0,
+        contexts=(
+            {
+                "title": "Although 引导让步状语从句",
+                "excerpt": "A concession contrasts expectations with reality.",
+            },
+        ),
+        goal="复核让步关系",
+        adaptation_profile={"overall_level": "developing"},
+        objective=objective,
+    )
+
+    assert sum(paragraph.count("Although") for paragraph in output.paragraphs) == 1
+    assert completed
+    assert events[0]["event_type"] == "reading_deterministic_fallback"
+    assert events[0]["detail"] == {"reason_code": "personalized_article_grammar_target_missing"}
+
+
 @pytest.mark.asyncio
 async def test_personalized_assessment_transport_error_uses_existing_fallback(
     monkeypatch: pytest.MonkeyPatch,

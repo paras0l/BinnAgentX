@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Literal
 
 from fastapi import APIRouter, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from binnagent_api.database import get_engine
 from binnagent_api.learner_auth import LearnerIdentity
@@ -20,6 +20,7 @@ class CurrentLevelView(BaseModel):
     dimensions: dict[str, str]
     confidence_band: str
     evidence_count: int
+    reason_codes: list[str] = Field(default_factory=list)
 
 
 @learner_profile_router.get("/current-level", response_model=CurrentLevelView)
@@ -34,6 +35,7 @@ async def get_current_level(request: Request) -> CurrentLevelView:
             dimensions={},
             confidence_band="low",
             evidence_count=0,
+            reason_codes=[],
         )
     return CurrentLevelView(
         status="ready",
@@ -41,4 +43,5 @@ async def get_current_level(request: Request) -> CurrentLevelView:
         dimensions=assessment.dimensions.model_dump(),
         confidence_band=assessment.confidence_band,
         evidence_count=assessment.evidence_count,
+        reason_codes=assessment.reason_codes,
     )

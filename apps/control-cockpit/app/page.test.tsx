@@ -34,6 +34,7 @@ const PERSONALIZED_JOB = {
   next_generation_attempt_at: null,
   claimed_by: null,
   lease_expires_at: null,
+  can_resume_from_checkpoint: true,
   created_at: "2026-07-21T12:00:00Z",
   updated_at: "2026-07-21T12:03:00Z",
 } as const;
@@ -73,6 +74,23 @@ const TOOL = {
   updated_at: null,
 };
 
+const AGENT = {
+  project_key: "binnagentx",
+  agent_id: "personalized_content_agent",
+  display_name: "个性化材料生成 Agent",
+  description: "基于授权学习记忆生成完整材料包，并支持检查点恢复。",
+  domain: "learning_content",
+  execution_kind: "workflow",
+  workflow: "personalized-content",
+  availability: "available",
+  blockers: [],
+  prompt_ids: ["personalized_reading.generate", "personalized_reading.assess"],
+  tool_names: ["obsidian.read_learning_context.v1"],
+  model_provider: "longcat",
+  supports_checkpoint_resume: true,
+  requires_human_review: true,
+} as const;
+
 const PROMPT = {
   project_key: "binnagentx",
   prompt_id: "personalized_reading.generate",
@@ -98,6 +116,7 @@ describe("control cockpit home", () => {
   });
 
   beforeEach(() => {
+    let personalizedResumed = false;
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -119,7 +138,8 @@ describe("control cockpit home", () => {
             });
           }
           return Response.json({
-            items: page === 1 ? [PERSONALIZED_JOB, SECOND_PERSONALIZED_JOB] : [THIRD_PERSONALIZED_JOB],
+            items:
+              page === 1 ? [PERSONALIZED_JOB, SECOND_PERSONALIZED_JOB] : [THIRD_PERSONALIZED_JOB],
             page,
             page_size: 10,
             total_items: 11,
@@ -127,8 +147,25 @@ describe("control cockpit home", () => {
           });
         }
         if (url.endsWith(`content-generation/personalized-jobs/${PERSONALIZED_JOB.material_id}`)) {
+          const job = personalizedResumed
+            ? {
+                ...PERSONALIZED_JOB,
+                status: "requested",
+                generation_attempt_count: 0,
+                generation_error_code: null,
+                can_resume_from_checkpoint: false,
+              }
+            : PERSONALIZED_JOB;
           return Response.json({
-            job: PERSONALIZED_JOB,
+            job,
+            candidate_knowledge_points: [
+              {
+                candidate_ref: "candidate_7f3d8240aa",
+                title: "Although 引导让步状语从句",
+                kind: "grammar",
+                tags: ["让步", "从句"],
+              },
+            ],
             events: [
               {
                 event_id: 1,
@@ -136,23 +173,53 @@ describe("control cockpit home", () => {
                 stage: "generation_failed",
                 attempt: 3,
                 message: "个性化材料生成失败, 已达到最大尝试次数",
-                detail: { error_code: PERSONALIZED_JOB.generation_error_code },
+                detail: {
+                  error_code: PERSONALIZED_JOB.generation_error_code,
+                  failed_node: "article",
+                  recovery_mode: "human_checkpoint_resume",
+                },
                 occurred_at: PERSONALIZED_JOB.updated_at,
               },
             ],
           });
         }
         if (
-          url.endsWith(`content-generation/personalized-jobs/${SECOND_PERSONALIZED_JOB.material_id}`)
+          url.endsWith(
+            `content-generation/personalized-jobs/${PERSONALIZED_JOB.material_id}/resume`,
+          ) &&
+          init?.method === "POST"
         ) {
-          return Response.json({ job: SECOND_PERSONALIZED_JOB, events: [] });
+          personalizedResumed = true;
+          return Response.json({
+            ...PERSONALIZED_JOB,
+            status: "requested",
+            generation_attempt_count: 0,
+            generation_error_code: null,
+            can_resume_from_checkpoint: false,
+          });
+        }
+        if (
+          url.endsWith(
+            `content-generation/personalized-jobs/${SECOND_PERSONALIZED_JOB.material_id}`,
+          )
+        ) {
+          return Response.json({
+            job: SECOND_PERSONALIZED_JOB,
+            candidate_knowledge_points: [],
+            events: [],
+          });
         }
         if (
           url.endsWith(`content-generation/personalized-jobs/${THIRD_PERSONALIZED_JOB.material_id}`)
         ) {
-          return Response.json({ job: THIRD_PERSONALIZED_JOB, events: [] });
+          return Response.json({
+            job: THIRD_PERSONALIZED_JOB,
+            candidate_knowledge_points: [],
+            events: [],
+          });
         }
         if (url.endsWith("content-generation/jobs")) return Response.json([]);
+        if (url.endsWith("/agents")) return Response.json([AGENT]);
         if (url.endsWith("/tools")) return Response.json([TOOL]);
         if (url.includes("/tools/") && init?.method === "PATCH") {
           return Response.json({ ...TOOL, enabled: false, policy_version: 2 });
@@ -220,6 +287,11 @@ describe("control cockpit home", () => {
     expect(screen.queryByText("复习让步结构")).not.toBeInTheDocument();
     expect(screen.queryByText("learner_managed_0001")).not.toBeInTheDocument();
     expect(screen.getAllByText(/旧版要求迁移重点逐字包含笔记标题/).length).toBeGreaterThan(0);
+    expect(screen.getByRole("heading", { name: "候选知识点" })).toBeVisible();
+    expect(screen.getByText("Although 引导让步状语从句")).toBeVisible();
+    expect(screen.getByText("语法")).toBeVisible();
+    expect(screen.getByText("让步")).toBeVisible();
+    expect(screen.getByText("失败节点：文章生成")).toBeVisible();
     expect(screen.getByRole("heading", { name: "个性化生成时间线" })).toBeVisible();
   });
 
@@ -241,8 +313,27 @@ describe("control cockpit home", () => {
       target: { value: SECOND_PERSONALIZED_JOB.owner_ref },
     });
     fireEvent.click(screen.getByRole("button", { name: "查询" }));
-    expect(await screen.findByRole("heading", { name: SECOND_PERSONALIZED_JOB.owner_ref })).toBeVisible();
-    expect(screen.queryByRole("heading", { name: THIRD_PERSONALIZED_JOB.owner_ref })).not.toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: SECOND_PERSONALIZED_JOB.owner_ref }),
+    ).toBeVisible();
+    expect(
+      screen.queryByRole("heading", { name: THIRD_PERSONALIZED_JOB.owner_ref }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("resumes a failed personalized run from its checkpoint", async () => {
+    render(<ControlHomePage />);
+
+    const resume = await screen.findByRole("button", { name: "从失败节点继续" });
+    fireEvent.click(resume);
+
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "从失败节点继续" })).not.toBeInTheDocument(),
+    );
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining(`${PERSONALIZED_JOB.material_id}/resume`),
+      expect.objectContaining({ method: "POST" }),
+    );
   });
 
   it("creates an experience code and exposes plaintext only in the one-time result", async () => {
@@ -278,6 +369,30 @@ describe("control cockpit home", () => {
     expect(screen.getByText("obsidian:read")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "停用" }));
     expect(await screen.findByRole("button", { name: "启用" })).toBeVisible();
+  });
+
+  it("shows available agents and their runtime dependencies", async () => {
+    render(<ControlHomePage />);
+    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+
+    expect(await screen.findByRole("heading", { name: "Agents" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "个性化材料生成 Agent" })).toBeVisible();
+    expect(screen.getByText("可用")).toBeVisible();
+    expect(screen.getByText("持久化工作流")).toBeVisible();
+    expect(screen.getByText("检查点恢复 · 人工门禁")).toBeVisible();
+    fireEvent.click(screen.getByText("查看 Prompt、Tool 与阻塞项"));
+    fireEvent.click(screen.getByRole("button", { name: "personalized_reading.generate" }));
+
+    expect(await screen.findByRole("heading", { name: "Prompt 管理" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "personalized_reading.generate@v1" })).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Agents" }));
+    fireEvent.click(screen.getByText("查看 Prompt、Tool 与阻塞项"));
+    fireEvent.click(screen.getByRole("button", { name: "obsidian.read_learning_context.v1" }));
+
+    expect(await screen.findByRole("heading", { name: "Tools 管理" })).toBeVisible();
+    expect(screen.getByDisplayValue("obsidian.read_learning_context.v1")).toBeVisible();
+    expect(screen.getByText("检索学习者记忆（Obsidian）")).toBeVisible();
   });
 
   it("shows versioned BinnAgentX prompts without crossing project boundaries", async () => {

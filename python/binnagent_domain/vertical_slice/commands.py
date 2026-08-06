@@ -37,6 +37,13 @@ class AddAnnotation:
 
 
 @dataclass(frozen=True, slots=True)
+class RemoveAnnotation:
+    expected_version: int
+    annotation_id: str
+    now: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class SaveAttempt:
     expected_version: int
     attempt_version_id: str

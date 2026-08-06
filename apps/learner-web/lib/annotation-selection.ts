@@ -32,6 +32,37 @@ export function normalizeAnnotationSelection(
   };
 }
 
+function isEnglishWordCharacter(value: string | undefined): boolean {
+  return value !== undefined && /[A-Za-z'’–-]/u.test(value);
+}
+
+export function expandAnnotationSelectionToWordBoundaries(
+  paragraphText: string,
+  selection: NormalizedAnnotationSelection,
+): NormalizedAnnotationSelection {
+  let { start, end } = selection;
+  const startsInsideWord =
+    /[A-Za-z]/u.test(paragraphText[start] ?? "") &&
+    isEnglishWordCharacter(paragraphText[start - 1]);
+  const endsInsideWord =
+    /[A-Za-z]/u.test(paragraphText[end - 1] ?? "") &&
+    isEnglishWordCharacter(paragraphText[end]);
+
+  if (startsInsideWord) {
+    while (start > 0 && isEnglishWordCharacter(paragraphText[start - 1])) start -= 1;
+  }
+  if (endsInsideWord) {
+    while (end < paragraphText.length && isEnglishWordCharacter(paragraphText[end])) end += 1;
+  }
+
+  if (start === selection.start && end === selection.end) return selection;
+  return {
+    start,
+    end,
+    textQuote: paragraphText.slice(start, end),
+  };
+}
+
 export function splitAnnotationDisplayText(value: string): AnnotationDisplayText {
   const normalized = normalizeAnnotationSelection(value, 0);
   return {

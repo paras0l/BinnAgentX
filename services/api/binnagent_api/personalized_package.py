@@ -40,6 +40,52 @@ from binnagent_api.model_adapters import (
     PersonalizedTransferOutput,
 )
 
+_GENERATED_GRAMMAR_ANCHORS: dict[str, tuple[str, str]] = {
+    "clause.adverbial.concession.although.v1": ("Although", "Whenever"),
+}
+
+
+def generated_article_grammar_requirements(
+    objective: LearningObjectiveBundle,
+) -> list[str]:
+    requirements: list[str] = []
+    for target in objective.target_grammar_structures:
+        anchor = _GENERATED_GRAMMAR_ANCHORS.get(target.construction_id)
+        if anchor is None:
+            raise ValueError(
+                f"personalized_article_grammar_target_unsupported:{target.construction_id}"
+            )
+        requirements.append(
+            f"{target.construction_id}; required_anchor={anchor[0]}; occurrence=exactly_once"
+        )
+    return requirements
+
+
+def generated_article_grammar_target(
+    *,
+    paragraphs: list[str],
+    objective: LearningObjectiveBundle,
+) -> tuple[int, str, str]:
+    """Resolve the frozen grammar target to one exact, unique article span."""
+
+    construction_id = objective.target_grammar_structures[0].construction_id
+    anchor = _GENERATED_GRAMMAR_ANCHORS.get(construction_id)
+    if anchor is None:
+        raise ValueError(f"personalized_article_grammar_target_unsupported:{construction_id}")
+    canonical, replacement = anchor
+    matches = [
+        (paragraph_index, match.group(0))
+        for paragraph_index, paragraph in enumerate(paragraphs)
+        for match in re.finditer(rf"\b{re.escape(canonical)}\b", paragraph, flags=re.IGNORECASE)
+    ]
+    if not matches:
+        raise ValueError(f"personalized_article_grammar_target_missing:{construction_id}")
+    if len(matches) != 1:
+        raise ValueError(f"personalized_article_grammar_target_not_unique:{construction_id}")
+    paragraph_index, correct_text = matches[0]
+    incorrect_text = replacement.lower() if correct_text.islower() else replacement
+    return paragraph_index, correct_text, incorrect_text
+
 
 def build_objective_bundle(
     *,
@@ -191,9 +237,9 @@ def deterministic_assessment(
     if article["artifact"].get("producer_version") == "imported-reading-v1":
         return _deterministic_imported_assessment(article=article, objective=objective)
     evidence = [_evidence_excerpt(paragraph) for paragraph in paragraphs[:3]]
-    grammar_index = next(
-        (index for index, paragraph in enumerate(paragraphs) if "Although " in paragraph),
-        1,
+    grammar_index, grammar_correct_text, grammar_incorrect_text = generated_article_grammar_target(
+        paragraphs=paragraphs,
+        objective=objective,
     )
     target = objective.target_discourse_moves[0]
     return PersonalizedAssessmentOutput(
@@ -311,8 +357,8 @@ def deterministic_assessment(
                 paragraph_index=grammar_index,
                 construction_id="clause.adverbial.concession.although.v1",
                 target_facets=[GrammarFacet.MEANING, GrammarFacet.USE],
-                correct_text="Although",
-                incorrect_text="Whenever",
+                correct_text=grammar_correct_text,
+                incorrect_text=grammar_incorrect_text,
                 error_type="subordinator_logic",
                 hint="Decide whether the dependent clause expresses cause or concession.",
                 explanation=(
@@ -384,9 +430,7 @@ def _deterministic_imported_assessment(
         PersonalizedQuestionOutput(
             question_type="evidence_reasoning",
             difficulty_tier="standard",
-            stem=(
-                f'A reader cites "{evidence[1]}". What does a source check show?'
-            ),
+            stem=(f'A reader cites "{evidence[1]}". What does a source check show?'),
             options=[
                 PersonalizedQuestionOptionOutput(
                     option_id="A",
