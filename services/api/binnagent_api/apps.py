@@ -2,12 +2,17 @@ import re
 from typing import Annotated
 
 import sqlalchemy as sa
+from binnagent_domain.model_errors import (
+    LearnerBalanceInsufficientError,
+    ProviderBalanceInsufficientError,
+)
 from binnagent_domain.public_errors import PublicErrorCode
 from binnagent_domain.vertical_slice.errors import DomainError
 from fastapi import Depends, FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
 from binnagent_api.agent_configuration_routes import agent_configuration_router
+from binnagent_api.agent_operations_routes import agent_operations_router
 from binnagent_api.auth import ControlIdentity, require_control_identity
 from binnagent_api.auth_routes import auth_router
 from binnagent_api.content_generation import content_generation_router
@@ -20,6 +25,11 @@ from binnagent_api.learner_auth import resolve_request_identity
 from binnagent_api.learner_history_routes import learner_history_router
 from binnagent_api.learner_preference_routes import learner_preference_router
 from binnagent_api.learner_profile_routes import learner_profile_router
+from binnagent_api.learner_usage import (
+    reset_learner_usage_context,
+    set_learner_usage_context,
+)
+from binnagent_api.learner_usage_routes import learner_usage_router
 from binnagent_api.learning_asset_routes import learning_asset_router, obsidian_sync_router
 from binnagent_api.settings import get_settings
 from binnagent_api.training_material_routes import training_material_router
@@ -65,7 +75,11 @@ def create_learner_app() -> FastAPI:
                 content={"detail": "resource_not_found"},
             )
         request.state.learner_identity = identity
-        return await call_next(request)
+        usage_context = set_learner_usage_context(identity.learner_id)
+        try:
+            return await call_next(request)
+        finally:
+            reset_learner_usage_context(usage_context)
 
     learner.include_router(auth_router)
     learner.include_router(learner_router)
@@ -76,6 +90,7 @@ def create_learner_app() -> FastAPI:
     learner.include_router(learner_profile_router)
     learner.include_router(learner_history_router)
     learner.include_router(learner_preference_router)
+    learner.include_router(learner_usage_router)
     _register_error_handlers(learner)
     return learner
 
@@ -155,12 +170,42 @@ def create_control_app() -> FastAPI:
     control.include_router(experience_control_router)
     control.include_router(user_management_router)
     control.include_router(agent_configuration_router)
+    control.include_router(agent_operations_router)
     control.include_router(knowledge_organization_control_router)
     _register_error_handlers(control)
     return control
 
 
 def _register_error_handlers(app: FastAPI) -> None:
+    @app.exception_handler(ProviderBalanceInsufficientError)
+    async def provider_balance_insufficient(
+        _: Request, exc: ProviderBalanceInsufficientError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={
+                "code": PublicErrorCode.MODEL_PROVIDER_BALANCE_INSUFFICIENT.value,
+                "reason": "provider_balance_insufficient",
+                "provider": exc.provider,
+                "can_switch_model": True,
+            },
+        )
+
+    @app.exception_handler(LearnerBalanceInsufficientError)
+    async def learner_balance_insufficient(
+        _: Request, exc: LearnerBalanceInsufficientError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=status.HTTP_402_PAYMENT_REQUIRED,
+            content={
+                "code": PublicErrorCode.LEARNER_MODEL_BALANCE_INSUFFICIENT.value,
+                "reason": "learner_usage_limit_exhausted",
+                "can_switch_model": False,
+                "token_limit": exc.token_limit,
+                "used_tokens": exc.used_tokens,
+            },
+        )
+
     @app.exception_handler(DomainError)
     async def domain_error(_: Request, exc: DomainError) -> JSONResponse:
         status_code = (

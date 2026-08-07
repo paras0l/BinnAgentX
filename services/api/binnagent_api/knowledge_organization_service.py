@@ -20,6 +20,7 @@ from binnagent_agent.agents.knowledge_extractor import (
     AtomicKnowledgeExtractionItem,
     create_atomic_knowledge_extractor,
 )
+from binnagent_agent.observability import observe, stable_trace_id
 from binnagent_agent.workflows import (
     GRAPH_VERSION,
     build_knowledge_organization_graph,
@@ -44,6 +45,7 @@ from binnagent_domain.learning.knowledge_organization import (
     KnowledgeSourceRecord,
     candidate_idempotency_key,
 )
+from binnagent_domain.model_errors import provider_balance_error_from
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -53,6 +55,12 @@ from binnagent_api.database import get_engine
 from binnagent_api.knowledge_extraction_service import (
     longcat_knowledge_adapter,
     model_from_settings,
+)
+from binnagent_api.learner_usage import (
+    ensure_model_usage_available,
+    learner_usage_scope,
+    provider_token_usage,
+    record_model_usage,
 )
 from binnagent_api.learning_evidence_service import refresh_asset_projection
 from binnagent_api.settings import get_settings
@@ -135,13 +143,15 @@ async def process_next_knowledge_organization() -> bool:
         claimed = dict(run)
 
     if claimed.get("runtime_kind") == "langgraph":
-        return await _process_langgraph_knowledge_organization(
-            claimed,
-            source_rows=source_rows,
-        )
+        with learner_usage_scope(str(claimed["learner_id"])):
+            return await _process_langgraph_knowledge_organization(
+                claimed,
+                source_rows=source_rows,
+            )
 
     try:
-        extracted = await _extract_sources(source_rows)
+        with learner_usage_scope(str(claimed["learner_id"])):
+            extracted = await _extract_sources(source_rows)
         if not extracted:
             async with get_engine().begin() as connection:
                 result = await connection.execute(
@@ -413,20 +423,65 @@ async def _extract_sources(
             )
             await _complete_extraction(invocation_key, output)
         else:
+            await ensure_model_usage_available()
             try:
                 source_prompt = f"<authorized_note>\n{content}\n</authorized_note>"
-                if longcat is not None:
-                    output = await longcat.extract_atomic(source_prompt)
-                else:
-                    if model is None:
-                        raise RuntimeError("atomic_knowledge_extraction_model_missing")
-                    result = await asyncio.wait_for(
-                        create_atomic_knowledge_extractor(model).run(source_prompt),
-                        timeout=settings.model_timeout_seconds,
+                with observe(
+                    "knowledge.atomic.extract",
+                    as_type="agent",
+                    input=source_prompt,
+                    metadata={
+                        "project_key": "binnagentx",
+                        "operation": "atomic_knowledge_extraction",
+                        "provider": settings.model_adapter,
+                        "source_record_id": source.source_record_id,
+                        "source_count": len(source_rows),
+                    },
+                    model=(
+                        settings.ollama_chat_model
+                        if settings.model_adapter == "ollama"
+                        else settings.deepseek_chat_model
+                        if settings.model_adapter == "deepseek"
+                        else settings.longcat_chat_model
+                    ),
+                    trace_id=stable_trace_id("knowledge_atomic", invocation_key),
+                    version=ATOMIC_EXTRACTOR_VERSION,
+                ) as observation:
+                    if longcat is not None:
+                        output = await longcat.extract_atomic(source_prompt)
+                    else:
+                        if model is None:
+                            raise RuntimeError("atomic_knowledge_extraction_model_missing")
+                        result = await asyncio.wait_for(
+                            create_atomic_knowledge_extractor(model).run(source_prompt),
+                            timeout=settings.model_timeout_seconds,
+                        )
+                        output = result.output
+                    if observation is not None:
+                        observation.update(output=output.model_dump(mode="json"))
+                    input_tokens, output_tokens, counting_method = provider_token_usage(
+                        {}, request_payload=source_prompt, output=output.model_dump_json()
                     )
-                    output = result.output
-            except Exception:
+                    await record_model_usage(
+                        provider=settings.model_adapter,
+                        model=(
+                            settings.ollama_chat_model
+                            if settings.model_adapter == "ollama"
+                            else settings.deepseek_chat_model
+                            if settings.model_adapter == "deepseek"
+                            else settings.longcat_chat_model
+                        ),
+                        operation="atomic_knowledge_extraction",
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        cost_usd=settings.model_estimated_cost_usd,
+                        counting_method=counting_method,
+                    )
+            except Exception as exc:
                 await _release_extraction(invocation_key)
+                balance_error = provider_balance_error_from(exc, provider=settings.model_adapter)
+                if balance_error is not None:
+                    raise balance_error from exc
                 raise
             await _complete_extraction(invocation_key, output)
         candidates.extend(_validated_candidates(source, content, output))

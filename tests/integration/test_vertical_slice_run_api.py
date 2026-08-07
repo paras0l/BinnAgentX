@@ -161,6 +161,7 @@ async def _clean() -> None:
         tables.run_task_completion_events,
         tables.run_task_refs,
         tables.revision_events,
+        tables.tool_usage_ledger,
         tables.model_invocations,
         tables.ai_interventions,
         tables.attempt_versions,
@@ -353,6 +354,23 @@ async def test_complete_cross_task_run_with_conservative_matching_and_replay() -
         )
         run = await _advance_run(client, run_id, run["version"], "run-advance-cal-a-0001")
         assert run["stage"] == "calibration_b"
+        async with get_engine().connect() as connection:
+            tool_audits = (
+                (
+                    await connection.execute(
+                        sa.select(tables.audit_events).where(
+                            tables.audit_events.c.workflow_run_id == run_id,
+                            tables.audit_events.c.action == "tool.workflow.advance.v1",
+                        )
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        assert len(tool_audits) == 1
+        assert tool_audits[0]["reason_code"] == "succeeded"
+        assert tool_audits[0]["invocation_key"]
+        assert int(tool_audits[0]["target_version"]) == run["version"]
 
         duplicate = await _advance_run(client, run_id, 1, "run-advance-cal-a-0001")
         assert duplicate["replayed"] is True
@@ -523,6 +541,21 @@ async def test_complete_cross_task_run_with_conservative_matching_and_replay() -
         event_types = [item["event_type"] for item in replay.json()["event_chain"]]
         assert "material_match_decided" in event_types
         assert "vertical_slice_run_completed" in event_types
+
+        unauthorized_runs = await client.get("/control/v1/runs")
+        assert unauthorized_runs.status_code == 403
+        listed_runs = await client.get(
+            "/control/v1/runs",
+            params={"query": run_id, "page": 1, "page_size": 10},
+            headers={"X-BinnAgent-Control-Role": "developer_reviewer"},
+        )
+        assert listed_runs.status_code == 200, listed_runs.text
+        assert listed_runs.json()["total_items"] == 1
+        listed = listed_runs.json()["items"][0]
+        assert listed["workflow_run_id"] == run_id
+        assert listed["lifecycle"] == "completed"
+        assert listed["task_count"] == 4
+        assert listed["checkpoint_id"]
 
     async with get_engine().connect() as connection:
         task_count = await connection.scalar(

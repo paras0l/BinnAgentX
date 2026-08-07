@@ -97,6 +97,22 @@ describe("learner home", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        if (String(input).endsWith("/v1/usage")) {
+          return new Response(
+            JSON.stringify({
+              learner_id: "learner_synthetic_local",
+              token_limit: 1_000_000,
+              input_tokens: 7_500,
+              output_tokens: 2_500,
+              used_tokens: 10_000,
+              remaining_tokens: 990_000,
+              remaining_percent: 99,
+              cost_cny: "0.135856",
+              reset_at: null,
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
         if (String(input).endsWith("/v1/preferences")) {
           if (init?.method === "PUT") {
             serverPreferences = JSON.parse(String(init.body)) as typeof serverPreferences;
@@ -130,6 +146,9 @@ describe("learner home", () => {
     render(<LearnerHomePage />);
 
     expect(await screen.findByRole("heading", { name: "语境实验室 × 表达实验室" })).toBeVisible();
+    expect(screen.getByText("Usage Remaining")).toBeVisible();
+    expect(screen.getByText("99.0%")).toBeVisible();
+    expect(screen.getByText(/已用 1万 · ¥0\.1359/)).toBeVisible();
     expect(screen.getByText(/不会给出伪精确能力分/)).toBeVisible();
     expect(screen.getByRole("button", { name: "开始独立校准" })).toBeEnabled();
     expect(screen.queryByText(/聊天/)).not.toBeInTheDocument();

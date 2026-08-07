@@ -34,6 +34,7 @@ import {
   getResumeWorkspace,
   getCurrentLevel,
   getLearnerPreferences,
+  getLearnerUsage,
   getTrainingHistory,
   getWorkspace,
   getKnowledgeVaultStatus,
@@ -52,6 +53,7 @@ import {
   starLearningAsset,
   triggerObsidianInboxOrganization,
   type KnowledgeVaultStatus,
+  type LearnerUsage,
   type CurrentLevel,
   type ObsidianPluginSyncStatus,
   type PersonalizedTrainingMaterial,
@@ -139,6 +141,15 @@ function errorMessage(error: unknown): string {
     : "当前步骤暂时不可用。你的本地草稿不会因此被清空。";
 }
 
+const COMPACT_TOKEN_FORMATTER = new Intl.NumberFormat("zh-CN", {
+  notation: "compact",
+  maximumFractionDigits: 1,
+});
+
+function compactTokenCount(value: number): string {
+  return COMPACT_TOKEN_FORMATTER.format(value);
+}
+
 export function completedStageProgress(stageIndex: number, stageCount: number): number {
   if (stageIndex <= 0) return 0;
   return Math.round((stageIndex / Math.max(stageCount - 1, 1)) * 100);
@@ -170,6 +181,7 @@ export function LearningExperience({
   const [isHistoryPending, setIsHistoryPending] = useState(true);
   const [historyLoadFailed, setHistoryLoadFailed] = useState(false);
   const [currentLevel, setCurrentLevel] = useState<CurrentLevel | null>(null);
+  const [learnerUsage, setLearnerUsage] = useState<LearnerUsage | null>(null);
   const [isGeneratingMaterial, setIsGeneratingMaterial] = useState(false);
   const [configureObsidianRequested, setConfigureObsidianRequested] = useState(false);
   const [surface, setSurface] = useState<
@@ -193,6 +205,23 @@ export function LearningExperience({
       contentRef.current.scrollTop = 0;
     }
   }, [surface]);
+
+  useEffect(() => {
+    let active = true;
+    const refreshUsage = () => {
+      void getLearnerUsage()
+        .then((usage) => {
+          if (active) setLearnerUsage(usage);
+        })
+        .catch(() => undefined);
+    };
+    refreshUsage();
+    const timer = window.setInterval(refreshUsage, 30_000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [identity.learner_id]);
 
   useEffect(() => {
     let active = true;
@@ -959,6 +988,26 @@ export function LearningExperience({
               <Sparkle size={18} weight="fill" />
               <span>皮肤图鉴</span>
             </button>
+          ) : null}
+          {learnerUsage ? (
+            <div className="learner-usage-meter" aria-label="模型词元用量">
+              <span className="learner-usage-heading">
+                <small>Usage Remaining</small>
+                <strong>{learnerUsage.remaining_percent.toFixed(1)}%</strong>
+              </span>
+              <progress
+                max={100}
+                value={learnerUsage.remaining_percent}
+                aria-label="剩余词元百分比"
+              />
+              <span className="learner-usage-detail">
+                <small>可用 {compactTokenCount(learnerUsage.remaining_tokens)} 词元</small>
+                <small>
+                  已用 {compactTokenCount(learnerUsage.used_tokens)} · ¥
+                  {Number(learnerUsage.cost_cny).toFixed(4)}
+                </small>
+              </span>
+            </div>
           ) : null}
           <div className="account-bar-identity" data-ui-anchor="account-area">
             <span>

@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
+from hashlib import sha256
 from threading import Lock
 from typing import Any
 
@@ -68,6 +69,8 @@ def observe(
     metadata: dict[str, Any] | None = None,
     model: str | None = None,
     model_parameters: dict[str, Any] | None = None,
+    trace_id: str | None = None,
+    version: str | None = None,
 ) -> Iterator[Any]:
     client = _get_client()
     if client is None:
@@ -75,18 +78,26 @@ def observe(
         return
     try:
         manager = client.start_as_current_observation(
+            trace_context={"trace_id": trace_id} if trace_id else None,
             name=name,
             as_type=as_type,
             input=input,
             metadata=metadata,
             model=model,
             model_parameters=model_parameters,
+            version=version,
         )
     except Exception:
         yield None
         return
     with manager as observation:
         yield observation
+
+
+def stable_trace_id(scope: str, reference: str) -> str:
+    """Return a Langfuse-compatible trace id without exposing raw business identifiers."""
+
+    return sha256(f"binnagentx:{scope}:{reference}".encode()).hexdigest()[:32]
 
 
 def observation_ids(observation: Any) -> tuple[str | None, str | None]:

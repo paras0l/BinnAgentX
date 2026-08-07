@@ -1,4 +1,5 @@
 from collections.abc import AsyncIterator
+from decimal import Decimal
 
 import httpx2
 import pytest
@@ -7,6 +8,7 @@ import sqlalchemy as sa
 from binnagent_api import auth_routes
 from binnagent_api.database import dispose_engine, get_engine
 from binnagent_api.learner_auth import SYNTHETIC_LEARNER_ID, utc_now
+from binnagent_api.learner_usage import learner_usage_scope, record_model_usage
 from binnagent_api.main import create_app
 from binnagent_api.settings import get_settings
 from binnagent_api.vertical_slice import tables
@@ -29,6 +31,8 @@ async def session_auth(monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[None]:
 
 async def _clean() -> None:
     ordered = [
+        tables.learner_model_usage_events,
+        tables.learner_usage_resets,
         tables.learner_sessions,
         tables.learner_preferences,
         tables.obsidian_organizer_runs,
@@ -279,6 +283,47 @@ async def test_control_user_management_lists_accounts_and_revokes_sessions() -> 
         assert managed["active_session_count"] == 1
         assert managed["asset_count"] == 0
         assert managed["obsidian_paired"] is False
+        assert managed["remaining_percent"] == 100.0
+
+        with learner_usage_scope(learner_id):
+            await record_model_usage(
+                provider="deepseek",
+                model="deepseek-chat",
+                operation="expression_chinese_assist",
+                input_tokens=600,
+                output_tokens=400,
+                cost_usd=Decimal("0.012500"),
+                counting_method="provider",
+            )
+        usage = await client.get("/learner/v1/usage")
+        assert usage.status_code == 200, usage.text
+        assert usage.json()["used_tokens"] == 1000
+        assert usage.json()["remaining_tokens"] == 999000
+        assert usage.json()["cost_cny"] == "0.084910"
+
+        reset = await client.post(
+            "/control/v1/users/usage/reset",
+            headers=control_headers,
+            json={"scope": "selected", "learner_ids": [learner_id]},
+        )
+        assert reset.status_code == 200, reset.text
+        assert reset.json()["reset_count"] == 1
+        reset_usage = await client.get("/learner/v1/usage")
+        assert reset_usage.json()["used_tokens"] == 0
+        reset_all = await client.post(
+            "/control/v1/users/usage/reset",
+            headers=control_headers,
+            json={"scope": "all"},
+        )
+        assert reset_all.status_code == 200, reset_all.text
+        assert reset_all.json()["reset_count"] == 1
+        async with get_engine().connect() as connection:
+            assert (
+                await connection.scalar(
+                    sa.select(sa.func.count()).select_from(tables.learner_model_usage_events)
+                )
+                == 1
+            )
 
         revoked = await client.post(
             f"/control/v1/users/{learner_id}/revoke-sessions",

@@ -190,6 +190,60 @@ textarea:disabled {
   gap: 14px;
 }
 
+.learner-usage-meter {
+  display: grid;
+  min-width: 220px;
+  gap: 2px;
+  color: #5d625e;
+  font-size: 10px;
+  line-height: 1.1;
+}
+
+.learner-usage-heading,
+.learner-usage-detail {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.learner-usage-meter strong {
+  color: #315f49;
+  font-size: 12px;
+}
+
+.learner-usage-meter progress {
+  width: 100%;
+  height: 4px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  background: #dfe4e0;
+  accent-color: #557d68;
+}
+
+.learner-usage-meter progress::-webkit-progress-bar {
+  border-radius: inherit;
+  background: #dfe4e0;
+}
+
+.learner-usage-meter progress::-webkit-progress-value {
+  border-radius: inherit;
+  background: #557d68;
+}
+
+.learner-usage-detail small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.learner-usage-detail small:last-child {
+  color: #777b77;
+  text-align: right;
+}
+
 .account-bar-identity > span {
   display: grid;
   min-width: 0;
@@ -5382,6 +5436,15 @@ textarea:disabled {
   height: 48px;
   justify-content: flex-end;
   gap: 10px;
+}
+
+.training-frame .learner-usage-meter {
+  position: fixed;
+  z-index: 48;
+  top: 13px;
+  right: 286px;
+  width: 250px;
+  min-width: 0;
 }
 
 .training-frame .account-bar-identity > span {

@@ -10,10 +10,17 @@ from binnagent_agent.agents.knowledge_extractor import (
     LongCatKnowledgeAdapter,
     create_knowledge_extractor,
 )
+from binnagent_agent.observability import observe
+from binnagent_domain.model_errors import ModelBalanceError, provider_balance_error_from
 from pydantic_ai.models import Model
 from pydantic_ai.models.openai import OpenAIChatModel
 from pydantic_ai.providers.openai import OpenAIProvider
 
+from binnagent_api.learner_usage import (
+    ensure_model_usage_available,
+    provider_token_usage,
+    record_model_usage,
+)
 from binnagent_api.settings import Settings, get_settings
 
 logger = logging.getLogger("binnagent.knowledge_extraction")
@@ -33,18 +40,50 @@ async def enrich_review_contexts(
         f"<note source_title={item['title']!r} kind={item['kind']!r}>\n{item['excerpt']}\n</note>"
         for item in contexts
     )
+    await ensure_model_usage_available()
     try:
-        if longcat is not None:
-            output = await longcat.extract(source)
-        else:
-            if model is None:
-                raise RuntimeError("knowledge_extraction_model_missing")
-            result = await asyncio.wait_for(
-                create_knowledge_extractor(model).run(source),
-                timeout=settings.model_timeout_seconds,
+        with observe(
+            "knowledge.review_context.extract",
+            as_type="agent",
+            input=source,
+            metadata={
+                "project_key": "binnagentx",
+                "operation": "knowledge_review_context_extraction",
+                "provider": settings.model_adapter,
+                "context_count": len(contexts),
+            },
+            model=_model_name(settings),
+        ) as observation:
+            if longcat is not None:
+                output = await longcat.extract(source)
+            else:
+                if model is None:
+                    raise RuntimeError("knowledge_extraction_model_missing")
+                result = await asyncio.wait_for(
+                    create_knowledge_extractor(model).run(source),
+                    timeout=settings.model_timeout_seconds,
+                )
+                output = result.output
+            if observation is not None:
+                observation.update(output=output.model_dump(mode="json"))
+            input_tokens, output_tokens, counting_method = provider_token_usage(
+                {}, request_payload=source, output=output.model_dump_json()
             )
-            output = result.output
+            await record_model_usage(
+                provider=settings.model_adapter,
+                model=_model_name(settings),
+                operation="knowledge_review_context_extraction",
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cost_usd=settings.model_estimated_cost_usd,
+                counting_method=counting_method,
+            )
+    except ModelBalanceError:
+        raise
     except Exception as exc:
+        balance_error = provider_balance_error_from(exc, provider=settings.model_adapter)
+        if balance_error is not None:
+            raise balance_error from exc
         error_code = f"{type(exc).__name__}:{str(exc)[:80]}"
         logger.warning("knowledge extraction fallback: %s", error_code)
         return contexts, False, error_code
@@ -107,3 +146,11 @@ def model_from_settings(settings: Settings) -> Model | None:
         return None
     provider = OpenAIProvider(base_url=base_url, api_key=api_key)
     return OpenAIChatModel(cast(Any, model_name), provider=provider)
+
+
+def _model_name(settings: Settings) -> str:
+    if settings.model_adapter == "ollama":
+        return settings.ollama_chat_model
+    if settings.model_adapter == "deepseek":
+        return settings.deepseek_chat_model
+    return settings.longcat_chat_model

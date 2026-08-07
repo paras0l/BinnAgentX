@@ -2,7 +2,7 @@ import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
-from typing import Annotated, cast
+from typing import Annotated
 from uuid import uuid4
 
 import sqlalchemy as sa
@@ -46,7 +46,7 @@ from binnagent_domain.vertical_slice.run import (
     RunTransition,
     VerticalSliceRun,
 )
-from fastapi import APIRouter, Depends, Header, Request
+from fastapi import APIRouter, Depends, Header, Query, Request
 from pydantic import BaseModel
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
@@ -78,6 +78,9 @@ from binnagent_api.personalized_reading_content import (
 from binnagent_api.personalized_reading_content import (
     reading_question as personalized_reading_question,
 )
+from binnagent_api.tool_audit import SqlAlchemyToolAuditPort
+from binnagent_api.tool_policy import SqlAlchemyToolPolicyPort
+from binnagent_api.tool_usage import SqlAlchemyToolUsagePort
 from binnagent_api.vertical_slice import tables
 from binnagent_api.vertical_slice.content_catalog import LocalContentCatalog
 from binnagent_api.vertical_slice.grammar_challenges import (
@@ -92,7 +95,9 @@ from binnagent_api.vertical_slice.schemas import (
     AdvanceRunRequest,
     CalibrationFallbackRequest,
     ContinueRunRequest,
+    ControlRunPageView,
     ControlRunReplayView,
+    ControlRunSummaryView,
     CreateRunRequest,
     DifficultyFeedbackRequest,
     LearnerExpressionMaterialView,
@@ -121,6 +126,82 @@ RunIdempotencyKey = Annotated[
     str,
     Header(alias="Idempotency-Key", min_length=8, max_length=128, pattern=r"^[A-Za-z0-9_.:-]+$"),
 ]
+
+
+@control_run_router.get("", response_model=ControlRunPageView)
+async def list_control_runs(
+    _: Annotated[ControlIdentity, Depends(require_control_identity)],
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 20,
+    query: Annotated[str, Query(max_length=128)] = "",
+) -> ControlRunPageView:
+    filters: list[sa.ColumnElement[bool]] = []
+    normalized = query.strip()
+    if normalized:
+        pattern = f"%{normalized}%"
+        filters.append(
+            sa.or_(
+                tables.workflow_runs.c.workflow_run_id.ilike(pattern),
+                tables.workflow_runs.c.learner_id.ilike(pattern),
+                tables.workflow_runs.c.state.ilike(pattern),
+                tables.workflow_runs.c.stage.ilike(pattern),
+            )
+        )
+    task_count = (
+        sa.select(sa.func.count())
+        .select_from(tables.run_task_refs)
+        .where(tables.run_task_refs.c.workflow_run_id == tables.workflow_runs.c.workflow_run_id)
+        .correlate(tables.workflow_runs)
+        .scalar_subquery()
+        .label("task_count")
+    )
+    async with get_engine().connect() as connection:
+        total_items = int(
+            await connection.scalar(
+                sa.select(sa.func.count()).select_from(tables.workflow_runs).where(*filters)
+            )
+            or 0
+        )
+        rows = (
+            (
+                await connection.execute(
+                    sa.select(tables.workflow_runs, task_count)
+                    .where(*filters)
+                    .order_by(
+                        tables.workflow_runs.c.updated_at.desc(),
+                        tables.workflow_runs.c.workflow_run_id,
+                    )
+                    .offset((page - 1) * page_size)
+                    .limit(page_size)
+                )
+            )
+            .mappings()
+            .all()
+        )
+    total_pages = max(1, (total_items + page_size - 1) // page_size)
+    return ControlRunPageView(
+        items=[
+            ControlRunSummaryView(
+                workflow_run_id=str(row["workflow_run_id"]),
+                learner_id=(str(row["learner_id"]) if row["learner_id"] is not None else None),
+                run_kind=str(row["run_kind"]),
+                lifecycle=str(row["state"]),
+                stage=(str(row["stage"]) if row["stage"] is not None else None),
+                version=int(row["version"]),
+                checkpoint_id=str(row["checkpoint_id"]),
+                task_count=int(row["task_count"]),
+                model_call_count=int(row["model_call_count"]),
+                cost_usd=row["cost_usd"],
+                created_at=row["created_at"],
+                updated_at=row["updated_at"],
+            )
+            for row in rows
+        ],
+        page=page,
+        page_size=page_size,
+        total_items=total_items,
+        total_pages=total_pages,
+    )
 
 
 async def _workspace_view(
@@ -594,7 +675,16 @@ async def advance_run(
                 command_name="advance_run",
                 actor=ActorType.LEARNER,
             )
-            return ToolResult(status=ToolStatus.SUCCEEDED, data=(saved_run, replayed))
+            return ToolResult(
+                status=ToolStatus.SUCCEEDED,
+                data=_run_view(saved_run, replayed=replayed),
+                version_before=run.version,
+                version_after=saved_run.version,
+                side_effect_ids=[
+                    saved_run.workflow_run_id,
+                    *([next_task_id] if next_task_id else []),
+                ],
+            )
 
         request_digest = _request_hash(body)
         tool_result = await workflow_tool_executor.execute(
@@ -614,11 +704,14 @@ async def advance_run(
                 deadline_at=datetime.now(UTC) + timedelta(seconds=20),
             ),
             advance_workflow,
+            payload=body.model_dump(mode="json"),
+            usage_port=SqlAlchemyToolUsagePort(connection),
+            audit_port=SqlAlchemyToolAuditPort(connection),
+            policy_port=SqlAlchemyToolPolicyPort(connection),
         )
         if tool_result.status is not ToolStatus.SUCCEEDED or tool_result.data is None:
             raise DomainError(PublicErrorCode.SAVE_NOT_CONFIRMED, tool_result.reason_codes[0])
-        saved, replayed = cast(tuple[VerticalSliceRun, bool], tool_result.data)
-    return _run_view(saved, replayed=replayed)
+        return LearnerRunView.model_validate(tool_result.data)
 
 
 @learner_run_router.post("/{workflow_run_id}/difficulty-feedback", response_model=LearnerRunView)

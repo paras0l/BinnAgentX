@@ -15,6 +15,7 @@ x-python-service: &python-service
   environment:
     BINNAGENT_DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-binnagent}:${POSTGRES_PASSWORD:-binnagent_dev_only}@postgres:5432/${POSTGRES_DB:-binnagent}
     BINNAGENT_OLLAMA_BASE_URL: ${BINNAGENT_DOCKER_OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+    BINNAGENT_LANGFUSE_BASE_URL: ${BINNAGENT_DOCKER_LANGFUSE_BASE_URL:-http://host.docker.internal:3100}
     BINNAGENT_LANGFUSE_EXTERNAL_URL: ${BINNAGENT_LANGFUSE_EXTERNAL_URL:-http://localhost:3100}
   extra_hosts:
     - "host.docker.internal:host-gateway"

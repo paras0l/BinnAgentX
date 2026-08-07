@@ -2,7 +2,9 @@
 
 from binnagent_agent.tools.contracts import (
     EvidenceRef,
+    ExpectedVersionScope,
     ToolActorType,
+    ToolAuditStrategy,
     ToolContext,
     ToolKind,
     ToolResult,
@@ -16,8 +18,10 @@ from binnagent_agent.tools.runtime_context import RuntimeContextSnapshot, get_ru
 
 __all__ = [
     "EvidenceRef",
+    "ExpectedVersionScope",
     "RuntimeContextSnapshot",
     "ToolActorType",
+    "ToolAuditStrategy",
     "ToolContext",
     "ToolExecutor",
     "ToolKind",

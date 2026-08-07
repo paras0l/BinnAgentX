@@ -15,6 +15,9 @@ from binnagent_agent.tools import (
 from pydantic import BaseModel, ConfigDict, Field
 
 from binnagent_api.agent_memory import obsidian_memory
+from binnagent_api.database import get_engine
+from binnagent_api.tool_policy import SqlAlchemyToolPolicyPort
+from binnagent_api.tool_usage import SqlAlchemyToolUsagePort
 
 _executor = ToolExecutor(runtime_registry)
 
@@ -91,7 +94,15 @@ async def read_obsidian_learning_context(
             ),
         )
 
-    return await _executor.execute(tool_name, context, handler)
+    async with get_engine().begin() as connection:
+        return await _executor.execute(
+            tool_name,
+            context,
+            handler,
+            payload=payload.model_dump(mode="json"),
+            usage_port=SqlAlchemyToolUsagePort(connection),
+            policy_port=SqlAlchemyToolPolicyPort(connection),
+        )
 
 
 async def write_obsidian_learning_note(
@@ -124,4 +135,12 @@ async def write_obsidian_learning_note(
             side_effect_ids=[receipt.memory_id],
         )
 
-    return await _executor.execute(tool_name, context, handler)
+    async with get_engine().begin() as connection:
+        return await _executor.execute(
+            tool_name,
+            context,
+            handler,
+            payload=payload.model_dump(mode="json"),
+            usage_port=SqlAlchemyToolUsagePort(connection),
+            policy_port=SqlAlchemyToolPolicyPort(connection),
+        )

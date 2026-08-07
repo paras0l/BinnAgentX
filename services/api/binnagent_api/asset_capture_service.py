@@ -15,7 +15,9 @@ from binnagent_agent.agents.knowledge_extractor import (
     AssetWriteGateOutput,
     create_asset_write_gate,
 )
+from binnagent_agent.observability import observe, stable_trace_id
 from binnagent_agent.workflows import GRAPH_VERSION, stable_thread_id
+from binnagent_domain.model_errors import ModelBalanceError, provider_balance_error_from
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncConnection
 
@@ -29,6 +31,11 @@ from binnagent_api.database import get_engine
 from binnagent_api.knowledge_extraction_service import (
     longcat_knowledge_adapter,
     model_from_settings,
+)
+from binnagent_api.learner_usage import (
+    ensure_model_usage_available,
+    provider_token_usage,
+    record_model_usage,
 )
 from binnagent_api.settings import get_settings
 from binnagent_api.vertical_slice import tables
@@ -271,24 +278,72 @@ async def _write_gate_output(
     )
     if cached is not None:
         return AssetWriteGateOutput.model_validate(cached)
+    await ensure_model_usage_available()
     try:
         source = (
             "<asset_capture>\n"
             + json.dumps(request_payload, ensure_ascii=False)
             + "\n</asset_capture>"
         )
-        if longcat is not None:
-            output = await longcat.decide_write(source)
-        else:
-            if model is None:
-                raise RuntimeError("asset_write_gate_model_missing")
-            result = await asyncio.wait_for(
-                create_asset_write_gate(model).run(source),
-                timeout=settings.model_timeout_seconds,
+        with observe(
+            "knowledge.asset_write_gate",
+            as_type="guardrail",
+            input=source,
+            metadata={
+                "project_key": "binnagentx",
+                "operation": "learning_asset_write_gate",
+                "provider": settings.model_adapter,
+                "asset_id": asset_id,
+                "message_id": str(message_id),
+            },
+            model=(
+                settings.ollama_chat_model
+                if settings.model_adapter == "ollama"
+                else settings.deepseek_chat_model
+                if settings.model_adapter == "deepseek"
+                else settings.longcat_chat_model
+            ),
+            trace_id=stable_trace_id("asset_write_gate", invocation_key),
+            version=WRITE_GATE_VERSION,
+        ) as observation:
+            if longcat is not None:
+                output = await longcat.decide_write(source)
+            else:
+                if model is None:
+                    raise RuntimeError("asset_write_gate_model_missing")
+                result = await asyncio.wait_for(
+                    create_asset_write_gate(model).run(source),
+                    timeout=settings.model_timeout_seconds,
+                )
+                output = result.output
+            if observation is not None:
+                observation.update(output=output.model_dump(mode="json"))
+            input_tokens, output_tokens, counting_method = provider_token_usage(
+                {}, request_payload=source, output=output.model_dump_json()
             )
-            output = result.output
-    except Exception:
+            await record_model_usage(
+                provider=settings.model_adapter,
+                model=(
+                    settings.ollama_chat_model
+                    if settings.model_adapter == "ollama"
+                    else settings.deepseek_chat_model
+                    if settings.model_adapter == "deepseek"
+                    else settings.longcat_chat_model
+                ),
+                operation="learning_asset_write_gate",
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cost_usd=settings.model_estimated_cost_usd,
+                counting_method=counting_method,
+            )
+    except ModelBalanceError:
         await _release(invocation_key)
+        raise
+    except Exception as exc:
+        await _release(invocation_key)
+        balance_error = provider_balance_error_from(exc, provider=settings.model_adapter)
+        if balance_error is not None:
+            raise balance_error from exc
         return AssetWriteGateOutput(
             decision=baseline.decision.value,
             retained_segment_ids=baseline.retained_segment_ids,

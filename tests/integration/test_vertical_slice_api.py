@@ -108,6 +108,7 @@ async def _clean() -> None:
         tables.run_task_completion_events,
         tables.run_task_refs,
         tables.revision_events,
+        tables.tool_usage_ledger,
         tables.model_invocation_ledger,
         tables.model_invocations,
         tables.ai_interventions,

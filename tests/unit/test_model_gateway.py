@@ -10,6 +10,7 @@ from binnagent_agent import (
     PriorityFeedbackGateway,
     PriorityFeedbackRequest,
 )
+from binnagent_domain.model_errors import ProviderBalanceInsufficientError
 
 
 def request() -> PriorityFeedbackRequest:
@@ -52,6 +53,11 @@ class StubRemoteAdapter:
             actual_cost_usd=Decimal("0.04"),
             prompt_version="v42",
         )
+
+
+class BalanceErrorAdapter(StubRemoteAdapter):
+    async def generate(self, _: PriorityFeedbackRequest) -> ModelAdapterResponse:
+        raise ProviderBalanceInsufficientError("deepseek")
 
 
 def valid_payload() -> dict[str, object]:
@@ -127,6 +133,16 @@ async def test_timeout_uses_reviewed_fallback_and_conservatively_charges_estimat
     assert result.used_remote_call is True
     assert result.actual_cost_usd == adapter.estimated_cost_usd
     assert result.delivered_content == request().fallback_feedback
+
+
+@pytest.mark.asyncio
+async def test_provider_balance_error_is_not_hidden_by_gateway_fallback() -> None:
+    adapter = BalanceErrorAdapter(valid_payload())
+
+    with pytest.raises(ProviderBalanceInsufficientError):
+        await PriorityFeedbackGateway(adapter, timeout_seconds=1, allow_remote=True).generate(
+            request(), budget()
+        )
 
 
 @pytest.mark.asyncio

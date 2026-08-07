@@ -427,6 +427,29 @@ class ControlRunReplayView(LearnerRunView):
     event_chain: list[dict[str, object]]
 
 
+class ControlRunSummaryView(BaseModel):
+    workflow_run_id: str
+    learner_id: str | None
+    run_kind: str
+    lifecycle: str
+    stage: str | None
+    version: int
+    checkpoint_id: str
+    task_count: int
+    model_call_count: int
+    cost_usd: Decimal
+    created_at: datetime
+    updated_at: datetime
+
+
+class ControlRunPageView(BaseModel):
+    items: list[ControlRunSummaryView]
+    page: int
+    page_size: int
+    total_items: int
+    total_pages: int
+
+
 class LearnerParagraphView(BaseModel):
     paragraph_id: str
     text: str

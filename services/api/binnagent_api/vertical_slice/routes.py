@@ -73,6 +73,7 @@ from binnagent_api.model_adapters import (
     expression_review_adapter,
     priority_feedback_adapter,
 )
+from binnagent_api.model_tool_runtime import SqlAlchemyModelToolRuntime
 from binnagent_api.personalized_reading_content import (
     approved_hint as personalized_approved_hint,
 )
@@ -98,6 +99,8 @@ from binnagent_api.personalized_reading_content import (
     validate_span as personalized_validate_span,
 )
 from binnagent_api.settings import get_settings
+from binnagent_api.tool_audit import SqlAlchemyToolAuditPort
+from binnagent_api.tool_policy import SqlAlchemyToolPolicyPort
 from binnagent_api.vertical_slice import tables
 from binnagent_api.vertical_slice.content_catalog import LocalContentCatalog
 from binnagent_api.vertical_slice.grammar_challenges import (
@@ -211,69 +214,6 @@ async def _recall_agent_memory(
             task_id=context.task_id,
         ),
         MemoryQuery(text=query, limit=limit),
-    )
-
-
-async def _reserve_model_invocation(
-    connection: AsyncConnection,
-    *,
-    context: ToolContext,
-    tool_name: str,
-    request_hash: str,
-) -> dict[str, Any] | None:
-    if context.task_id is None:
-        raise ValueError("model_tool_requires_task_id")
-    now = datetime.now(UTC)
-    inserted = await connection.execute(
-        pg_insert(tables.model_invocation_ledger)
-        .values(
-            invocation_key=context.invocation_key,
-            tool_name=tool_name,
-            workflow_run_id=context.workflow_run_id,
-            task_id=context.task_id,
-            request_hash=request_hash,
-            status="pending",
-            response_payload=None,
-            output_hash=None,
-            created_at=now,
-            updated_at=now,
-        )
-        .on_conflict_do_nothing(index_elements=["invocation_key"])
-    )
-    if inserted.rowcount:
-        return None
-    row = (
-        (
-            await connection.execute(
-                sa.select(tables.model_invocation_ledger).where(
-                    tables.model_invocation_ledger.c.invocation_key == context.invocation_key
-                )
-            )
-        )
-        .mappings()
-        .one()
-    )
-    if row["status"] == "completed" and row["response_payload"] is not None:
-        return dict(row["response_payload"])
-    raise DomainError(PublicErrorCode.SAVE_NOT_CONFIRMED, "model_invocation_in_progress")
-
-
-async def _complete_model_invocation(
-    connection: AsyncConnection,
-    *,
-    context: ToolContext,
-    response_payload: dict[str, Any],
-    output_hash: str,
-) -> None:
-    await connection.execute(
-        tables.model_invocation_ledger.update()
-        .where(tables.model_invocation_ledger.c.invocation_key == context.invocation_key)
-        .values(
-            status="completed",
-            response_payload=response_payload,
-            output_hash=output_hash,
-            updated_at=datetime.now(UTC),
-        )
     )
 
 
@@ -665,8 +605,8 @@ async def analyze_annotation(
             request_digest=request_digest,
             timeout_seconds=settings.annotation_analysis_timeout_seconds,
         )
-        cached_response = await _reserve_model_invocation(
-            connection,
+        model_tool_runtime = SqlAlchemyModelToolRuntime(connection)
+        cached_response = await model_tool_runtime.reserve(
             context=tool_context,
             tool_name=tool_name,
             request_hash=request_digest,
@@ -689,145 +629,167 @@ async def analyze_annotation(
             cached_response.setdefault("confidence", None)
             cached_response.setdefault("provider_ref", None)
             return AnnotationAnalysisView.model_validate(cached_response)
-        tool_result = await tool_executor.execute(tool_name, tool_context, invoke_annotation_model)
-        result = _require_tool_success(tool_result)
-        now = datetime.now(UTC)
-        await connection.execute(
-            tables.model_invocations.insert().values(
-                invocation_id=_id("model_invocation"),
-                workflow_run_id=task.workflow_run_id,
-                task_id=task.task_id,
-                input_attempt_version_id=f"annotation_analysis_{request_digest[:48]}",
-                purpose="annotation_confusion_analysis",
-                adapter=result.adapter,
-                prompt_version=result.prompt_version,
-                outcome=result.outcome.value,
-                is_remote=result.used_remote_call,
+
+        async def analyze_selection_application(tool_runtime: ToolContext) -> ToolResult[object]:
+            gateway_tool_result = await invoke_annotation_model(tool_runtime)
+            result = _require_tool_success(gateway_tool_result)
+            now = datetime.now(UTC)
+            await connection.execute(
+                tables.model_invocations.insert().values(
+                    invocation_id=_id("model_invocation"),
+                    invocation_key=tool_runtime.invocation_key,
+                    workflow_run_id=task.workflow_run_id,
+                    task_id=task.task_id,
+                    input_attempt_version_id=f"annotation_analysis_{request_digest[:48]}",
+                    purpose="annotation_confusion_analysis",
+                    adapter=result.adapter,
+                    prompt_version=result.prompt_version,
+                    outcome=result.outcome.value,
+                    is_remote=result.used_remote_call,
+                    estimated_cost_usd=result.estimated_cost_usd,
+                    actual_cost_usd=result.actual_cost_usd,
+                    latency_ms=result.latency_ms,
+                    output_hash=result.output_hash,
+                    focus=result.focus,
+                    evidence_start=result.evidence_start,
+                    evidence_end=result.evidence_end,
+                    evidence_hash=result.evidence_hash,
+                    rejection_code=result.rejection_code,
+                    created_at=now,
+                )
+            )
+            if result.used_remote_call:
+                await connection.execute(
+                    tables.workflow_runs.update()
+                    .where(tables.workflow_runs.c.workflow_run_id == task.workflow_run_id)
+                    .values(
+                        model_call_count=tables.workflow_runs.c.model_call_count + 1,
+                        cost_usd=tables.workflow_runs.c.cost_usd + result.actual_cost_usd,
+                        updated_at=now,
+                    )
+                )
+            learning_count = (
+                await record_vocabulary_learning(
+                    connection,
+                    learner_id=identity.learner_id,
+                    entry=dictionary_entry,
+                    increment=True,
+                )
+                if result.outcome is GatewayOutcome.VALIDATED_LOCAL_RESOURCE
+                and dictionary_entry is not None
+                else None
+            )
+            response = AnnotationAnalysisView(
+                analysis_id=_id("annotation_analysis"),
+                analysis_status=(
+                    "resolved"
+                    if result.outcome is GatewayOutcome.VALIDATED_LOCAL_RESOURCE
+                    else (
+                        "review_required"
+                        if result.outcome is GatewayOutcome.VALIDATED_MODEL
+                        else "abstained"
+                    )
+                ),
+                confidence=None,
+                provider_ref=(
+                    f"dictionary:{result.prompt_version}"
+                    if result.outcome is GatewayOutcome.VALIDATED_LOCAL_RESOURCE
+                    else (
+                        f"model:{result.adapter}:{result.prompt_version}"
+                        if result.outcome is GatewayOutcome.VALIDATED_MODEL
+                        else None
+                    )
+                ),
+                focus=result.focus,
+                selection_scope=result.selection_scope,
+                translation=result.translation,
+                vocabulary_note=result.vocabulary_note,
+                learning_count=learning_count,
+                grammar_structure=list(result.grammar_structure),
+                sentence_components=[
+                    {
+                        "role": role,
+                        "start": start,
+                        "end": end,
+                        "text_quote": text_quote,
+                        "explanation": explanation,
+                    }
+                    for role, start, end, text_quote, explanation in result.sentence_components
+                ],
+                grammar_points=[
+                    {"text_quote": text_quote, "explanation": explanation}
+                    for text_quote, explanation in result.grammar_points
+                ],
+                collocations=[
+                    {"text_quote": text_quote, "explanation": explanation}
+                    for text_quote, explanation in result.collocations
+                ],
+                familiar_word_senses=[
+                    {"text_quote": text_quote, "explanation": explanation}
+                    for text_quote, explanation in result.familiar_word_senses
+                ],
+                translation_review=(
+                    result.translation_review.model_dump(mode="json")
+                    if result.translation_review is not None
+                    else None
+                ),
+                knowledge_cards=[card.model_dump(mode="json") for card in result.knowledge_cards],
+                follow_up_answer=(
+                    result.follow_up_answer.model_dump(mode="json")
+                    if result.follow_up_answer is not None
+                    else None
+                ),
+                diagnosis=result.diagnosis,
+                breakdown=list(result.breakdown),
+                next_check=result.next_check,
+                source=(
+                    "local_dictionary"
+                    if result.outcome is GatewayOutcome.VALIDATED_LOCAL_RESOURCE
+                    else (
+                        "model"
+                        if result.outcome is GatewayOutcome.VALIDATED_MODEL
+                        else "local_fallback"
+                    )
+                ),
+                reason_code=result.reason_code,
+                boundary_note=(
+                    "释义来自已冻结的考研5530词典；具体语境义仍需结合原句的词性、搭配和逻辑判断。"
+                    if result.outcome is GatewayOutcome.VALIDATED_LOCAL_RESOURCE
+                    else (
+                        "当前结果尚未经过已冻结词典或句法 Provider 验证, 只能作为分析建议；"
+                        "低置信度结果不会写成已确认知识。"
+                        if result.outcome is GatewayOutcome.VALIDATED_MODEL
+                        else (
+                            "当前仅提供分析步骤, 未完成可靠词义或句法解析；不回答题目、不代读全文。"
+                        )
+                    )
+                ),
+            )
+            await model_tool_runtime.complete(
+                context=tool_runtime,
+                response_payload=response.model_dump(mode="json"),
+                output_hash=result.output_hash,
+            )
+            return ToolResult(
+                status=ToolStatus.SUCCEEDED,
+                data=response,
+                used_fallback=result.used_fallback,
                 estimated_cost_usd=result.estimated_cost_usd,
                 actual_cost_usd=result.actual_cost_usd,
-                latency_ms=result.latency_ms,
-                output_hash=result.output_hash,
-                focus=result.focus,
-                evidence_start=result.evidence_start,
-                evidence_end=result.evidence_end,
-                evidence_hash=result.evidence_hash,
-                rejection_code=result.rejection_code,
-                created_at=now,
+                version_before=task.version,
+                version_after=task.version,
             )
-        )
-        if result.used_remote_call:
-            await connection.execute(
-                tables.workflow_runs.update()
-                .where(tables.workflow_runs.c.workflow_run_id == task.workflow_run_id)
-                .values(
-                    model_call_count=tables.workflow_runs.c.model_call_count + 1,
-                    cost_usd=tables.workflow_runs.c.cost_usd + result.actual_cost_usd,
-                    updated_at=now,
-                )
-            )
-        learning_count = (
-            await record_vocabulary_learning(
-                connection,
-                learner_id=identity.learner_id,
-                entry=dictionary_entry,
-                increment=True,
-            )
-            if result.outcome is GatewayOutcome.VALIDATED_LOCAL_RESOURCE
-            and dictionary_entry is not None
-            else None
-        )
 
-        response = AnnotationAnalysisView(
-            analysis_id=_id("annotation_analysis"),
-            analysis_status=(
-                "resolved"
-                if result.outcome is GatewayOutcome.VALIDATED_LOCAL_RESOURCE
-                else (
-                    "review_required"
-                    if result.outcome is GatewayOutcome.VALIDATED_MODEL
-                    else "abstained"
-                )
-            ),
-            confidence=None,
-            provider_ref=(
-                f"dictionary:{result.prompt_version}"
-                if result.outcome is GatewayOutcome.VALIDATED_LOCAL_RESOURCE
-                else (
-                    f"model:{result.adapter}:{result.prompt_version}"
-                    if result.outcome is GatewayOutcome.VALIDATED_MODEL
-                    else None
-                )
-            ),
-            focus=result.focus,
-            selection_scope=result.selection_scope,
-            translation=result.translation,
-            vocabulary_note=result.vocabulary_note,
-            learning_count=learning_count,
-            grammar_structure=list(result.grammar_structure),
-            sentence_components=[
-                {
-                    "role": role,
-                    "start": start,
-                    "end": end,
-                    "text_quote": text_quote,
-                    "explanation": explanation,
-                }
-                for role, start, end, text_quote, explanation in result.sentence_components
-            ],
-            grammar_points=[
-                {"text_quote": text_quote, "explanation": explanation}
-                for text_quote, explanation in result.grammar_points
-            ],
-            collocations=[
-                {"text_quote": text_quote, "explanation": explanation}
-                for text_quote, explanation in result.collocations
-            ],
-            familiar_word_senses=[
-                {"text_quote": text_quote, "explanation": explanation}
-                for text_quote, explanation in result.familiar_word_senses
-            ],
-            translation_review=(
-                result.translation_review.model_dump(mode="json")
-                if result.translation_review is not None
-                else None
-            ),
-            knowledge_cards=[card.model_dump(mode="json") for card in result.knowledge_cards],
-            follow_up_answer=(
-                result.follow_up_answer.model_dump(mode="json")
-                if result.follow_up_answer is not None
-                else None
-            ),
-            diagnosis=result.diagnosis,
-            breakdown=list(result.breakdown),
-            next_check=result.next_check,
-            source=(
-                "local_dictionary"
-                if result.outcome is GatewayOutcome.VALIDATED_LOCAL_RESOURCE
-                else (
-                    "model"
-                    if result.outcome is GatewayOutcome.VALIDATED_MODEL
-                    else "local_fallback"
-                )
-            ),
-            reason_code=result.reason_code,
-            boundary_note=(
-                "释义来自已冻结的考研5530词典；具体语境义仍需结合原句的词性、搭配和逻辑判断。"
-                if result.outcome is GatewayOutcome.VALIDATED_LOCAL_RESOURCE
-                else (
-                    "当前结果尚未经过已冻结词典或句法 Provider 验证, 只能作为分析建议；"
-                    "低置信度结果不会写成已确认知识。"
-                    if result.outcome is GatewayOutcome.VALIDATED_MODEL
-                    else "当前仅提供分析步骤, 未完成可靠词义或句法解析；不回答题目、不代读全文。"
-                )
-            ),
+        tool_result = await tool_executor.execute(
+            tool_name,
+            tool_context,
+            analyze_selection_application,
+            payload=body.model_dump(mode="json"),
+            usage_port=model_tool_runtime,
+            audit_port=SqlAlchemyToolAuditPort(connection),
+            policy_port=SqlAlchemyToolPolicyPort(connection),
         )
-        await _complete_model_invocation(
-            connection,
-            context=tool_context,
-            response_payload=response.model_dump(mode="json"),
-            output_hash=result.output_hash,
-        )
-    return response
+        return AnnotationAnalysisView.model_validate(_require_tool_success(tool_result))
 
 
 @learner_router.post(
@@ -958,108 +920,132 @@ async def generate_expression_from_chinese(
             timeout_seconds=settings.expression_review_timeout_seconds,
             idempotency_key=idempotency_key,
         )
-        cached_response = await _reserve_model_invocation(
-            connection,
+        model_tool_runtime = SqlAlchemyModelToolRuntime(connection)
+        cached_response = await model_tool_runtime.reserve(
             context=tool_context,
             tool_name=tool_name,
             request_hash=request_digest,
         )
         if cached_response is not None:
             return ExpressionAssistView.model_validate(cached_response)
-        tool_result = await tool_executor.execute(tool_name, tool_context, invoke_expression_assist)
-        result = _require_tool_success(tool_result)
-        now = datetime.now(UTC)
-        await connection.execute(
-            tables.model_invocations.insert().values(
-                invocation_id=_id("model_invocation"),
-                workflow_run_id=task.workflow_run_id,
-                task_id=task.task_id,
-                input_attempt_version_id=latest_attempt.attempt_version_id,
-                purpose="expression_chinese_assist",
-                adapter=result.adapter,
-                prompt_version=result.prompt_version,
-                outcome=result.outcome.value,
-                is_remote=result.used_remote_call,
+
+        async def generate_from_chinese_application(
+            tool_runtime: ToolContext,
+        ) -> ToolResult[object]:
+            gateway_tool_result = await invoke_expression_assist(tool_runtime)
+            result = _require_tool_success(gateway_tool_result)
+            now = datetime.now(UTC)
+            await connection.execute(
+                tables.model_invocations.insert().values(
+                    invocation_id=_id("model_invocation"),
+                    invocation_key=tool_runtime.invocation_key,
+                    workflow_run_id=task.workflow_run_id,
+                    task_id=task.task_id,
+                    input_attempt_version_id=latest_attempt.attempt_version_id,
+                    purpose="expression_chinese_assist",
+                    adapter=result.adapter,
+                    prompt_version=result.prompt_version,
+                    outcome=result.outcome.value,
+                    is_remote=result.used_remote_call,
+                    estimated_cost_usd=result.estimated_cost_usd,
+                    actual_cost_usd=result.actual_cost_usd,
+                    latency_ms=result.latency_ms,
+                    output_hash=result.output_hash,
+                    focus="contextual_expression",
+                    evidence_start=None,
+                    evidence_end=None,
+                    evidence_hash=None,
+                    rejection_code=result.rejection_code,
+                    created_at=now,
+                )
+            )
+            if result.used_remote_call:
+                await connection.execute(
+                    tables.workflow_runs.update()
+                    .where(tables.workflow_runs.c.workflow_run_id == task.workflow_run_id)
+                    .values(
+                        model_call_count=tables.workflow_runs.c.model_call_count + 1,
+                        cost_usd=tables.workflow_runs.c.cost_usd + result.actual_cost_usd,
+                        updated_at=now,
+                    )
+                )
+            updated_task = task
+            side_effect_ids: list[str] = []
+            if result.recommended_expression is not None and existing_assist is None:
+                transition = task.record_intervention(
+                    RecordIntervention(
+                        expected_version=body.expected_version,
+                        intervention_id=_id("intervention"),
+                        input_attempt_version_id=latest_attempt.attempt_version_id,
+                        hint_level=3,
+                        intervention_type=InterventionType.CANDIDATE_COMPARISON,
+                        model_adapter=result.adapter,
+                        prompt_version=result.prompt_version,
+                        reason_code="expression_chinese_assist_used",
+                        delivered_content=result.recommended_expression,
+                        result_status=InterventionResult.DELIVERED,
+                        now=now,
+                    )
+                )
+                updated_task, _ = await repository.save(
+                    connection,
+                    task,
+                    transition,
+                    idempotency_key=idempotency_key,
+                    request_hash=request_digest,
+                    command_name="learner_requested_expression_chinese_assist",
+                    actor=ActorType.SYSTEM,
+                )
+                side_effect_ids.append(updated_task.interventions[-1].intervention_id)
+            generated = result.recommended_expression is not None
+            response = ExpressionAssistView(
+                generation_id=_id("expression_generation"),
+                status="generated" if generated else "unavailable",
+                source=(
+                    "model"
+                    if result.outcome is GatewayOutcome.VALIDATED_MODEL
+                    else "local_fixture"
+                    if generated
+                    else "unavailable"
+                ),
+                recommended_expression=result.recommended_expression,
+                context_fit=result.context_fit,
+                usage_notes=list(result.usage_notes),
+                reason_code=result.reason_code,
+                boundary_note=(
+                    "这是结合当前任务、受众、写作目的和你的 V1 给出的局部表达建议。"
+                    "它属于 H3 模型帮助，不会记为独立作答；请比较、改写后形成自己的下一版。"
+                    if generated
+                    else "模型当前不可用，没有用固定模板伪造英文表达；你的 V1 保持不变。"
+                ),
+                task=learner_task_view(updated_task),
+            )
+            await model_tool_runtime.complete(
+                context=tool_runtime,
+                response_payload=response.model_dump(mode="json"),
+                output_hash=result.output_hash,
+            )
+            return ToolResult(
+                status=ToolStatus.SUCCEEDED,
+                data=response,
+                used_fallback=result.used_fallback,
                 estimated_cost_usd=result.estimated_cost_usd,
                 actual_cost_usd=result.actual_cost_usd,
-                latency_ms=result.latency_ms,
-                output_hash=result.output_hash,
-                focus="contextual_expression",
-                evidence_start=None,
-                evidence_end=None,
-                evidence_hash=None,
-                rejection_code=result.rejection_code,
-                created_at=now,
-            )
-        )
-        if result.used_remote_call:
-            await connection.execute(
-                tables.workflow_runs.update()
-                .where(tables.workflow_runs.c.workflow_run_id == task.workflow_run_id)
-                .values(
-                    model_call_count=tables.workflow_runs.c.model_call_count + 1,
-                    cost_usd=tables.workflow_runs.c.cost_usd + result.actual_cost_usd,
-                    updated_at=now,
-                )
+                version_before=task.version,
+                version_after=updated_task.version,
+                side_effect_ids=side_effect_ids,
             )
 
-        updated_task = task
-        if result.recommended_expression is not None and existing_assist is None:
-            transition = task.record_intervention(
-                RecordIntervention(
-                    expected_version=body.expected_version,
-                    intervention_id=_id("intervention"),
-                    input_attempt_version_id=latest_attempt.attempt_version_id,
-                    hint_level=3,
-                    intervention_type=InterventionType.CANDIDATE_COMPARISON,
-                    model_adapter=result.adapter,
-                    prompt_version=result.prompt_version,
-                    reason_code="expression_chinese_assist_used",
-                    delivered_content=result.recommended_expression,
-                    result_status=InterventionResult.DELIVERED,
-                    now=now,
-                )
-            )
-            updated_task, _ = await repository.save(
-                connection,
-                task,
-                transition,
-                idempotency_key=idempotency_key,
-                request_hash=request_digest,
-                command_name="learner_requested_expression_chinese_assist",
-                actor=ActorType.SYSTEM,
-            )
-
-        generated = result.recommended_expression is not None
-        response = ExpressionAssistView(
-            generation_id=_id("expression_generation"),
-            status="generated" if generated else "unavailable",
-            source=(
-                "model"
-                if result.outcome is GatewayOutcome.VALIDATED_MODEL
-                else "local_fixture"
-                if generated
-                else "unavailable"
-            ),
-            recommended_expression=result.recommended_expression,
-            context_fit=result.context_fit,
-            usage_notes=list(result.usage_notes),
-            reason_code=result.reason_code,
-            boundary_note=(
-                "这是结合当前任务、受众、写作目的和你的 V1 给出的局部表达建议。"
-                "它属于 H3 模型帮助，不会记为独立作答；请比较、改写后形成自己的下一版。"
-                if generated
-                else "模型当前不可用，没有用固定模板伪造英文表达；你的 V1 保持不变。"
-            ),
-            task=learner_task_view(updated_task),
+        tool_result = await tool_executor.execute(
+            tool_name,
+            tool_context,
+            generate_from_chinese_application,
+            payload=body.model_dump(mode="json"),
+            usage_port=model_tool_runtime,
+            audit_port=SqlAlchemyToolAuditPort(connection),
+            policy_port=SqlAlchemyToolPolicyPort(connection),
         )
-        await _complete_model_invocation(
-            connection,
-            context=tool_context,
-            response_payload=response.model_dump(mode="json"),
-            output_hash=result.output_hash,
-        )
-    return response
+        return ExpressionAssistView.model_validate(_require_tool_success(tool_result))
 
 
 @learner_router.post(
@@ -1158,76 +1144,98 @@ async def review_expression(
             request_digest=request_digest,
             timeout_seconds=settings.expression_review_timeout_seconds,
         )
-        cached_response = await _reserve_model_invocation(
-            connection,
+        model_tool_runtime = SqlAlchemyModelToolRuntime(connection)
+        cached_response = await model_tool_runtime.reserve(
             context=tool_context,
             tool_name=tool_name,
             request_hash=request_digest,
         )
         if cached_response is not None:
             return ExpressionReviewView.model_validate(cached_response)
-        tool_result = await tool_executor.execute(tool_name, tool_context, invoke_expression_review)
-        result = _require_tool_success(tool_result)
-        now = datetime.now(UTC)
-        await connection.execute(
-            tables.model_invocations.insert().values(
-                invocation_id=_id("model_invocation"),
-                workflow_run_id=task.workflow_run_id,
-                task_id=task.task_id,
-                input_attempt_version_id=attempt.attempt_version_id,
-                purpose="expression_style_review",
-                adapter=result.adapter,
-                prompt_version=result.prompt_version,
-                outcome=result.outcome.value,
-                is_remote=result.used_remote_call,
+
+        async def review_draft_application(tool_runtime: ToolContext) -> ToolResult[object]:
+            gateway_tool_result = await invoke_expression_review(tool_runtime)
+            result = _require_tool_success(gateway_tool_result)
+            now = datetime.now(UTC)
+            await connection.execute(
+                tables.model_invocations.insert().values(
+                    invocation_id=_id("model_invocation"),
+                    invocation_key=tool_runtime.invocation_key,
+                    workflow_run_id=task.workflow_run_id,
+                    task_id=task.task_id,
+                    input_attempt_version_id=attempt.attempt_version_id,
+                    purpose="expression_style_review",
+                    adapter=result.adapter,
+                    prompt_version=result.prompt_version,
+                    outcome=result.outcome.value,
+                    is_remote=result.used_remote_call,
+                    estimated_cost_usd=result.estimated_cost_usd,
+                    actual_cost_usd=result.actual_cost_usd,
+                    latency_ms=result.latency_ms,
+                    output_hash=result.output_hash,
+                    focus="style_transfer",
+                    evidence_start=result.evidence_start,
+                    evidence_end=result.evidence_end,
+                    evidence_hash=result.evidence_hash,
+                    rejection_code=result.rejection_code,
+                    created_at=now,
+                )
+            )
+            if result.used_remote_call:
+                await connection.execute(
+                    tables.workflow_runs.update()
+                    .where(tables.workflow_runs.c.workflow_run_id == task.workflow_run_id)
+                    .values(
+                        model_call_count=tables.workflow_runs.c.model_call_count + 1,
+                        cost_usd=tables.workflow_runs.c.cost_usd + result.actual_cost_usd,
+                        updated_at=now,
+                    )
+                )
+            response = ExpressionReviewView(
+                review_id=_id("expression_review"),
+                source=(
+                    "model"
+                    if result.outcome is GatewayOutcome.VALIDATED_MODEL
+                    else "local_fallback"
+                ),
+                reason_code=result.reason_code,
+                thinking_difference=result.thinking_difference,
+                versions=[
+                    ExpressionStyleVersionView(
+                        style=version.style,
+                        label=version.label,
+                        text=version.text,
+                        explanation=version.explanation,
+                    )
+                    for version in result.versions
+                ],
+                boundary_note="风格版本用于比较思维与表达差异，不覆盖学习者原文，也不计为独立输出。",
+            )
+            await model_tool_runtime.complete(
+                context=tool_runtime,
+                response_payload=response.model_dump(mode="json"),
+                output_hash=result.output_hash,
+            )
+            return ToolResult(
+                status=ToolStatus.SUCCEEDED,
+                data=response,
+                used_fallback=result.used_fallback,
                 estimated_cost_usd=result.estimated_cost_usd,
                 actual_cost_usd=result.actual_cost_usd,
-                latency_ms=result.latency_ms,
-                output_hash=result.output_hash,
-                focus="style_transfer",
-                evidence_start=result.evidence_start,
-                evidence_end=result.evidence_end,
-                evidence_hash=result.evidence_hash,
-                rejection_code=result.rejection_code,
-                created_at=now,
-            )
-        )
-        if result.used_remote_call:
-            await connection.execute(
-                tables.workflow_runs.update()
-                .where(tables.workflow_runs.c.workflow_run_id == task.workflow_run_id)
-                .values(
-                    model_call_count=tables.workflow_runs.c.model_call_count + 1,
-                    cost_usd=tables.workflow_runs.c.cost_usd + result.actual_cost_usd,
-                    updated_at=now,
-                )
+                version_before=task.version,
+                version_after=task.version,
             )
 
-        response = ExpressionReviewView(
-            review_id=_id("expression_review"),
-            source=(
-                "model" if result.outcome is GatewayOutcome.VALIDATED_MODEL else "local_fallback"
-            ),
-            reason_code=result.reason_code,
-            thinking_difference=result.thinking_difference,
-            versions=[
-                ExpressionStyleVersionView(
-                    style=version.style,
-                    label=version.label,
-                    text=version.text,
-                    explanation=version.explanation,
-                )
-                for version in result.versions
-            ],
-            boundary_note="风格版本用于比较思维与表达差异，不覆盖学习者原文，也不计为独立输出。",
+        tool_result = await tool_executor.execute(
+            tool_name,
+            tool_context,
+            review_draft_application,
+            payload=body.model_dump(mode="json"),
+            usage_port=model_tool_runtime,
+            audit_port=SqlAlchemyToolAuditPort(connection),
+            policy_port=SqlAlchemyToolPolicyPort(connection),
         )
-        await _complete_model_invocation(
-            connection,
-            context=tool_context,
-            response_payload=response.model_dump(mode="json"),
-            output_hash=result.output_hash,
-        )
-    return response
+        return ExpressionReviewView.model_validate(_require_tool_success(tool_result))
 
 
 @learner_router.post("/tasks/{task_id}/attempts", response_model=LearnerTaskView)
@@ -1452,86 +1460,110 @@ async def request_priority_feedback(
             timeout_seconds=settings.model_timeout_seconds,
             idempotency_key=idempotency_key,
         )
-        cached_response = await _reserve_model_invocation(
-            connection,
+        model_tool_runtime = SqlAlchemyModelToolRuntime(connection)
+        cached_response = await model_tool_runtime.reserve(
             context=tool_context,
             tool_name=tool_name,
             request_hash=request_digest,
         )
         if cached_response is not None:
             return LearnerTaskView.model_validate(cached_response)
-        tool_result = await tool_executor.execute(tool_name, tool_context, invoke_priority_feedback)
-        gateway_result = _require_tool_success(tool_result)
-        now = datetime.now(UTC)
-        await connection.execute(
-            tables.model_invocations.insert().values(
-                invocation_id=_id("model_invocation"),
-                workflow_run_id=previous.workflow_run_id,
-                task_id=previous.task_id,
-                input_attempt_version_id=body.input_attempt_version_id,
-                purpose="expression_priority_feedback",
-                adapter=gateway_result.adapter,
-                prompt_version=gateway_result.prompt_version,
-                outcome=gateway_result.outcome.value,
-                is_remote=gateway_result.used_remote_call,
-                estimated_cost_usd=gateway_result.estimated_cost_usd,
-                actual_cost_usd=gateway_result.actual_cost_usd,
-                latency_ms=gateway_result.latency_ms,
-                output_hash=gateway_result.output_hash,
-                focus=gateway_result.focus,
-                evidence_start=gateway_result.evidence_start,
-                evidence_end=gateway_result.evidence_end,
-                evidence_hash=gateway_result.evidence_hash,
-                rejection_code=gateway_result.rejection_code,
-                created_at=now,
-            )
-        )
-        if gateway_result.used_remote_call:
+
+        async def deliver_priority_feedback_application(
+            tool_runtime: ToolContext,
+        ) -> ToolResult[object]:
+            gateway_tool_result = await invoke_priority_feedback(tool_runtime)
+            gateway_result = _require_tool_success(gateway_tool_result)
+            now = datetime.now(UTC)
             await connection.execute(
-                tables.workflow_runs.update()
-                .where(tables.workflow_runs.c.workflow_run_id == previous.workflow_run_id)
-                .values(
-                    model_call_count=tables.workflow_runs.c.model_call_count + 1,
-                    cost_usd=tables.workflow_runs.c.cost_usd + gateway_result.actual_cost_usd,
-                    updated_at=now,
+                tables.model_invocations.insert().values(
+                    invocation_id=_id("model_invocation"),
+                    invocation_key=tool_runtime.invocation_key,
+                    workflow_run_id=previous.workflow_run_id,
+                    task_id=previous.task_id,
+                    input_attempt_version_id=body.input_attempt_version_id,
+                    purpose="expression_priority_feedback",
+                    adapter=gateway_result.adapter,
+                    prompt_version=gateway_result.prompt_version,
+                    outcome=gateway_result.outcome.value,
+                    is_remote=gateway_result.used_remote_call,
+                    estimated_cost_usd=gateway_result.estimated_cost_usd,
+                    actual_cost_usd=gateway_result.actual_cost_usd,
+                    latency_ms=gateway_result.latency_ms,
+                    output_hash=gateway_result.output_hash,
+                    focus=gateway_result.focus,
+                    evidence_start=gateway_result.evidence_start,
+                    evidence_end=gateway_result.evidence_end,
+                    evidence_hash=gateway_result.evidence_hash,
+                    rejection_code=gateway_result.rejection_code,
+                    created_at=now,
                 )
             )
-        transition = previous.record_intervention(
-            RecordIntervention(
-                expected_version=body.expected_version,
-                intervention_id=_id("intervention"),
-                input_attempt_version_id=body.input_attempt_version_id,
-                hint_level=2,
-                intervention_type=InterventionType.PRIORITY_FEEDBACK,
-                model_adapter=gateway_result.adapter,
-                prompt_version=gateway_result.prompt_version,
-                reason_code=gateway_result.reason_code,
-                delivered_content=gateway_result.delivered_content,
-                result_status=(
-                    InterventionResult.FALLBACK
-                    if gateway_result.used_fallback
-                    else InterventionResult.DELIVERED
-                ),
-                now=now,
+            if gateway_result.used_remote_call:
+                await connection.execute(
+                    tables.workflow_runs.update()
+                    .where(tables.workflow_runs.c.workflow_run_id == previous.workflow_run_id)
+                    .values(
+                        model_call_count=tables.workflow_runs.c.model_call_count + 1,
+                        cost_usd=tables.workflow_runs.c.cost_usd + gateway_result.actual_cost_usd,
+                        updated_at=now,
+                    )
+                )
+            transition = previous.record_intervention(
+                RecordIntervention(
+                    expected_version=body.expected_version,
+                    intervention_id=_id("intervention"),
+                    input_attempt_version_id=body.input_attempt_version_id,
+                    hint_level=2,
+                    intervention_type=InterventionType.PRIORITY_FEEDBACK,
+                    model_adapter=gateway_result.adapter,
+                    prompt_version=gateway_result.prompt_version,
+                    reason_code=gateway_result.reason_code,
+                    delivered_content=gateway_result.delivered_content,
+                    result_status=(
+                        InterventionResult.FALLBACK
+                        if gateway_result.used_fallback
+                        else InterventionResult.DELIVERED
+                    ),
+                    now=now,
+                )
             )
+            task, replayed = await repository.save(
+                connection,
+                previous,
+                transition,
+                idempotency_key=idempotency_key,
+                request_hash=request_digest,
+                command_name="learner_requested_priority_feedback",
+                actor=ActorType.SYSTEM,
+            )
+            response = learner_task_view(task, replayed)
+            await model_tool_runtime.complete(
+                context=tool_runtime,
+                response_payload=response.model_dump(mode="json"),
+                output_hash=gateway_result.output_hash,
+            )
+            return ToolResult(
+                status=ToolStatus.SUCCEEDED,
+                data=response,
+                used_fallback=gateway_result.used_fallback,
+                estimated_cost_usd=gateway_result.estimated_cost_usd,
+                actual_cost_usd=gateway_result.actual_cost_usd,
+                version_before=previous.version,
+                version_after=task.version,
+                side_effect_ids=[task.interventions[-1].intervention_id],
+            )
+
+        tool_result = await tool_executor.execute(
+            tool_name,
+            tool_context,
+            deliver_priority_feedback_application,
+            payload=body.model_dump(mode="json"),
+            usage_port=model_tool_runtime,
+            audit_port=SqlAlchemyToolAuditPort(connection),
+            policy_port=SqlAlchemyToolPolicyPort(connection),
         )
-        task, replayed = await repository.save(
-            connection,
-            previous,
-            transition,
-            idempotency_key=idempotency_key,
-            request_hash=request_digest,
-            command_name="learner_requested_priority_feedback",
-            actor=ActorType.SYSTEM,
-        )
-        response = learner_task_view(task, replayed)
-        await _complete_model_invocation(
-            connection,
-            context=tool_context,
-            response_payload=response.model_dump(mode="json"),
-            output_hash=gateway_result.output_hash,
-        )
-    return response
+        return LearnerTaskView.model_validate(_require_tool_success(tool_result))
 
 
 @learner_router.post("/tasks/{task_id}/revisions", response_model=LearnerTaskView)

@@ -1522,7 +1522,7 @@ async def test_bidirectional_sync_personalized_reading_and_annotation_export(
             item for item in failed_queue.json() if item["material_id"] == due_material_id
         )
         assert failed["status"] == "generation_failed"
-        assert failed["failure_reason"] == "个性化材料生成失败, 已达到最大尝试次数"
+        assert failed["failure_reason"] == "失败节点已保留检查点, 等待人工修复后继续"
         assert await enqueue_due_personalized_material() is False
 
         retried = await client.post(f"/learner/v1/training-materials/{due_material_id}/retry")

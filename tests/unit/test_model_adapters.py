@@ -10,6 +10,7 @@ from binnagent_agent import (
     PriorityFeedbackRequest,
 )
 from binnagent_agent.prompts import RenderedPrompt
+from binnagent_api import model_adapters
 from binnagent_api.model_adapters import (
     PersonalizedQuestionOutput,
     PersonalizedReadingAdapter,
@@ -22,6 +23,10 @@ from binnagent_api.model_adapters import (
     personalized_reading_adapter,
 )
 from binnagent_api.settings import Settings
+from binnagent_domain.model_errors import (
+    LearnerBalanceInsufficientError,
+    ProviderBalanceInsufficientError,
+)
 
 
 def _request() -> PriorityFeedbackRequest:
@@ -78,6 +83,7 @@ def test_expression_review_uses_dedicated_model_budget_and_timeout() -> None:
 
     adapter = expression_review_adapter(settings)
 
+    assert isinstance(adapter, RemoteExpressionReviewAdapter)
     assert adapter._timeout_seconds == 30
     assert adapter._max_tokens == 2000
 
@@ -94,6 +100,7 @@ def test_annotation_analysis_uses_dedicated_model_budget_and_timeout() -> None:
 
     adapter = annotation_analysis_adapter(settings)
 
+    assert isinstance(adapter, RemoteAnnotationAnalysisAdapter)
     assert adapter._timeout_seconds == 45
     assert adapter._max_tokens == 2400
 
@@ -322,6 +329,63 @@ async def test_remote_provider_requires_its_api_key_before_network_access() -> N
 
     with pytest.raises(RuntimeError, match="longcat_api_key_not_configured"):
         await adapter.generate(_request())
+
+
+@pytest.mark.asyncio
+async def test_exhausted_learner_is_rejected_before_network_access(monkeypatch) -> None:
+    attempts = 0
+
+    async def reject_usage() -> None:
+        raise LearnerBalanceInsufficientError("learner_1", 100, 100)
+
+    async def handler(_: httpx2.Request) -> httpx2.Response:
+        nonlocal attempts
+        attempts += 1
+        return httpx2.Response(500)
+
+    monkeypatch.setattr(model_adapters, "ensure_model_usage_available", reject_usage)
+    adapter = RemotePriorityFeedbackAdapter(
+        provider="deepseek",
+        base_url="https://models.example",
+        model="test-model",
+        api_key="test-key",
+        estimated_cost_usd=Decimal("0.02"),
+        max_tokens=400,
+        timeout_seconds=2,
+        transport=httpx2.MockTransport(handler),
+    )
+
+    with pytest.raises(LearnerBalanceInsufficientError):
+        await adapter.generate(_request())
+
+    assert attempts == 0
+
+
+@pytest.mark.asyncio
+async def test_provider_payment_required_is_exposed_without_retry() -> None:
+    attempts = 0
+
+    async def handler(_: httpx2.Request) -> httpx2.Response:
+        nonlocal attempts
+        attempts += 1
+        return httpx2.Response(402, json={"error": {"message": "Insufficient Balance"}})
+
+    adapter = RemotePriorityFeedbackAdapter(
+        provider="deepseek",
+        base_url="https://models.example",
+        model="test-model",
+        api_key="test-key",
+        estimated_cost_usd=Decimal("0.02"),
+        max_tokens=400,
+        timeout_seconds=2,
+        transport=httpx2.MockTransport(handler),
+    )
+
+    with pytest.raises(ProviderBalanceInsufficientError) as raised:
+        await adapter.generate(_request())
+
+    assert raised.value.provider == "deepseek"
+    assert attempts == 1
 
 
 @pytest.mark.asyncio

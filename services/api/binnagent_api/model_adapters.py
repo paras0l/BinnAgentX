@@ -37,14 +37,21 @@ from binnagent_agent.gateways.model import (
     ExpressionReviewAdapter,
     PriorityFeedbackAdapter,
 )
+from binnagent_agent.observability import observe
 from binnagent_agent.prompts import DEFAULT_PROMPT_REGISTRY, PromptRuntimePort, RenderedPrompt
 from binnagent_domain.learning.grammar_ontology import (
     GrammarFacet,
     load_grammar_catalog,
     resolve_construction_id,
 )
+from binnagent_domain.model_errors import provider_balance_error_from
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from binnagent_api.learner_usage import (
+    ensure_model_usage_available,
+    provider_token_usage,
+    record_model_usage,
+)
 from binnagent_api.prompt_runtime import prompt_runtime
 from binnagent_api.settings import Settings, get_settings
 
@@ -194,7 +201,14 @@ class _RemoteModelAdapterBase:
             return await self._prompt_resolver.resolve(prompt_id, variables)
         return DEFAULT_PROMPT_REGISTRY.render(prompt_id, variables)
 
-    async def _generate_payload(self, payload: dict[str, Any]) -> ModelAdapterResponse:
+    async def _generate_payload(
+        self,
+        payload: dict[str, Any],
+        *,
+        trace_name: str | None = None,
+        trace_metadata: dict[str, Any] | None = None,
+    ) -> ModelAdapterResponse:
+        await ensure_model_usage_available()
         if self._provider != "ollama" and not self._api_key:
             raise RuntimeError(f"{self._provider}_api_key_not_configured")
         headers = {"Content-Type": "application/json"}
@@ -203,17 +217,70 @@ class _RemoteModelAdapterBase:
         attempts = 2
         for attempt in range(attempts):
             try:
-                async with httpx2.AsyncClient(
-                    base_url=self._base_url,
-                    timeout=self._timeout_seconds,
-                    headers=headers,
-                    transport=self._transport,
-                ) as client:
-                    response = await client.post(self._path(), json=payload)
-                    response.raise_for_status()
-                    content = self._content(response.json())
+                with observe(
+                    trace_name or "model.provider.request",
+                    as_type="generation",
+                    input=payload.get("messages"),
+                    metadata={
+                        "project_key": "binnagentx",
+                        "provider": self._provider,
+                        "provider_attempt": attempt + 1,
+                        "provider_attempt_limit": attempts,
+                        **(trace_metadata or {}),
+                    },
+                    model=self._model,
+                    model_parameters={
+                        "temperature": payload.get("temperature"),
+                        "max_tokens": payload.get("max_tokens"),
+                    },
+                ) as observation:
+                    async with httpx2.AsyncClient(
+                        base_url=self._base_url,
+                        timeout=self._timeout_seconds,
+                        headers=headers,
+                        transport=self._transport,
+                    ) as client:
+                        response = await client.post(self._path(), json=payload)
+                        response.raise_for_status()
+                        response_payload = response.json()
+                        content = self._content(response_payload)
+                    input_tokens, output_tokens, counting_method = provider_token_usage(
+                        response_payload,
+                        request_payload=payload.get("messages", payload),
+                        output=content,
+                    )
+                    await record_model_usage(
+                        provider=self._provider,
+                        model=self._model,
+                        operation=str(
+                            (trace_metadata or {}).get("operation")
+                            or trace_name
+                            or "model_provider_request"
+                        ),
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        cost_usd=self.estimated_cost_usd,
+                        counting_method=counting_method,
+                    )
+                    if observation is not None:
+                        observation.update(
+                            output=content,
+                            metadata={
+                                "project_key": "binnagentx",
+                                "provider": self._provider,
+                                "provider_attempt": attempt + 1,
+                                "provider_attempt_limit": attempts,
+                                **(trace_metadata or {}),
+                                "input_tokens": input_tokens,
+                                "output_tokens": output_tokens,
+                                "token_counting_method": counting_method,
+                            },
+                        )
                 break
             except (httpx2.TransportError, httpx2.HTTPStatusError) as exc:
+                balance_error = provider_balance_error_from(exc, provider=self._provider)
+                if balance_error is not None:
+                    raise balance_error from exc
                 if attempt + 1 >= attempts or not _retryable_provider_error(exc):
                     raise
                 await asyncio.sleep(0.25)
@@ -322,7 +389,16 @@ class RemoteInboxClassificationAdapter(_RemoteModelAdapterBase):
             max_tokens=max_tokens,
             longcat_thinking="disabled",
         )
-        response = await self._generate_payload(payload)
+        response = await self._generate_payload(
+            payload,
+            trace_name="knowledge.inbox.classification.provider",
+            trace_metadata={
+                "operation": "obsidian_inbox_classification",
+                "note_count": len(notes),
+                "prompt_id": OBSIDIAN_INBOX_ORGANIZER_PROMPT_ID,
+                "prompt_version": rendered.prompt_version,
+            },
+        )
         return InboxAdapterResult(
             output=InboxClassificationOutput.model_validate(response.payload),
             prompt_version=rendered.prompt_version,
@@ -415,7 +491,16 @@ class PersonalizedReadingAdapter(_RemoteModelAdapterBase):
             max_tokens=max_tokens,
             longcat_thinking="disabled",
         )
-        response = await self._generate_payload(payload)
+        response = await self._generate_payload(
+            payload,
+            trace_name="personalized.reading.generate.provider",
+            trace_metadata={
+                "operation": "personalized_reading_generation",
+                "context_count": len(contexts),
+                "prompt_id": "personalized_reading.generate",
+                "prompt_version": rendered.prompt_version,
+            },
+        )
         return PersonalizedReadingOutput.model_validate(response.payload)
 
 
@@ -475,7 +560,16 @@ class PersonalizedAssessmentAdapter(_RemoteModelAdapterBase):
             max_tokens=max_tokens,
             longcat_thinking="disabled",
         )
-        response = await self._generate_payload(payload)
+        response = await self._generate_payload(
+            payload,
+            trace_name="personalized.assessment.generate.provider",
+            trace_metadata={
+                "operation": "personalized_assessment_generation",
+                "paragraph_count": len(paragraphs),
+                "prompt_id": "personalized_reading.assess",
+                "prompt_version": rendered.prompt_version,
+            },
+        )
         return PersonalizedAssessmentOutput.model_validate(response.payload)
 
 
@@ -565,7 +659,26 @@ class RemoteAnnotationAnalysisAdapter(_RemoteModelAdapterBase):
             max_tokens=max_tokens,
             longcat_thinking="disabled",
         )
-        response = await self._generate_payload(payload)
+        trace_selected = (
+            request.analysis_mode == "intensive_reading"
+            or request.selection_scope == "sentence_or_paragraph"
+        )
+        trace_metadata = {
+            "operation": "intensive_reading_grammar_analysis",
+            "workflow_run_id": request.workflow_run_id,
+            "task_id": request.task_id,
+            "analysis_mode": request.analysis_mode,
+            "selection_scope": request.selection_scope,
+            "has_follow_up": request.follow_up_question is not None,
+            "prompt_id": "reading.selection_analysis",
+            "prompt_version": rendered.prompt_version,
+            "repair_attempt": 0,
+        }
+        response = await self._generate_payload(
+            payload,
+            trace_name=("learning.reading.intensive_grammar.provider" if trace_selected else None),
+            trace_metadata=trace_metadata if trace_selected else None,
+        )
         try:
             AnnotationAnalysisOutput.model_validate(response.payload)
         except ValidationError:
@@ -591,7 +704,11 @@ class RemoteAnnotationAnalysisAdapter(_RemoteModelAdapterBase):
                     temperature=0.0,
                     max_tokens=max_tokens,
                     longcat_thinking="disabled",
-                )
+                ),
+                trace_name=(
+                    "learning.reading.intensive_grammar.provider" if trace_selected else None
+                ),
+                trace_metadata={**trace_metadata, "repair_attempt": 1} if trace_selected else None,
             )
             response = ModelAdapterResponse(
                 payload=repaired.payload,
@@ -681,7 +798,16 @@ class RemoteExpressionAssistAdapter(_RemoteModelAdapterBase):
                 temperature=temperature,
                 max_tokens=max_tokens,
                 longcat_thinking="disabled",
-            )
+            ),
+            trace_name="learning.expression.chinese_assist.provider",
+            trace_metadata={
+                "operation": "expression_chinese_assist",
+                "workflow_run_id": request.workflow_run_id,
+                "task_id": request.task_id,
+                "generation_index": request.generation_index,
+                "prompt_id": "expression.generate_from_chinese",
+                "prompt_version": rendered.prompt_version,
+            },
         )
         return ModelAdapterResponse(
             payload=response.payload,

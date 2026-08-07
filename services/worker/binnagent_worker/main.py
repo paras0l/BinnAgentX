@@ -16,7 +16,10 @@ from binnagent_agent.workflows.content_generation import (
     ContentGenerationProgress,
     ContentGeneratorError,
 )
-from binnagent_api.content_generation_service import build_content_generation_workflow
+from binnagent_api.content_generation_service import (
+    build_content_generation_workflow,
+    configure_langfuse_from_settings,
+)
 from binnagent_api.database import dispose_engine, get_engine
 from binnagent_api.knowledge_organization_service import (
     process_next_knowledge_organization,
@@ -266,6 +269,7 @@ def _cancelled_update(reason: str) -> dict[str, Any]:
 
 async def run_worker(*, stop_event: asyncio.Event | None = None, once: bool = False) -> None:
     settings = get_settings()
+    configure_langfuse_from_settings(settings)
     event = stop_event or asyncio.Event()
     requeued = await requeue_interrupted_jobs()
     requeued += await requeue_interrupted_personalized_materials()

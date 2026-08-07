@@ -38,6 +38,7 @@ async def _release_database_pool() -> AsyncIterator[None]:
 async def test_tool_catalog_policy_and_versioned_prompt_governance() -> None:
     async with get_engine().begin() as connection:
         await connection.execute(sa.delete(tables.agent_memory_events))
+        await connection.execute(sa.delete(tables.tool_usage_ledger))
         await connection.execute(sa.delete(tables.obsidian_learning_context))
         await connection.execute(sa.delete(tables.obsidian_sync_connections))
         await connection.execute(sa.delete(tables.outbox_messages))
@@ -57,6 +58,20 @@ async def test_tool_catalog_policy_and_versioned_prompt_governance() -> None:
         write_tool = by_name["obsidian.write_learning_note.v1"]
         assert read_tool["project_key"] == "binnagentx"
         assert read_tool["source"] == "agent_memory"
+        assert read_tool["expected_version_scope"] == "none"
+        assert by_name["workflow.advance.v1"]["expected_version_scope"] == "run"
+        assert by_name["reading.analyze_selection.v1"]["expected_version_scope"] == "task"
+        assert by_name["reading.analyze_selection.v1"]["requires_call_accounting"] is True
+        assert by_name["workflow.advance.v1"]["requires_audit"] is True
+        assert by_name["workflow.advance.v1"]["audit_strategy"] == "executor"
+        assert by_name["workflow.advance.v1"]["max_calls_per_run"] == 8
+        assert by_name["workflow.advance.v1"]["timeout_seconds"] == 20
+        assert by_name["workflow.advance.v1"]["fallback_policy"] == "reject"
+        assert read_tool["audit_strategy"] == "domain"
+        assert (
+            read_tool["input_schema"]
+            == runtime_registry.get("obsidian.read_learning_context.v1").input_schema
+        )
         assert write_tool["requires_idempotency_key"] is True
 
         agents = await client.get("/control/v1/agents", headers=HEADERS)

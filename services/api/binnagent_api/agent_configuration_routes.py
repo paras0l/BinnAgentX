@@ -28,49 +28,29 @@ _PROMPT_ID = r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+$"
 _PROMPT_VERSION = r"^v[1-9][0-9]*$"
 
 _TOOL_METADATA: dict[str, dict[str, Any]] = {
-    "runtime.get_context.v1": {
-        "display_name": "读取训练上下文",
-        "description": "读取当前运行阶段、任务类型和允许动作，不暴露作答正文。",
-        "input_schema": {"type": "object", "properties": {}},
-        "output_schema": {"type": "object"},
-        "source": "binnagentx_runtime",
-    },
     "reading.analyze_selection.v1": {
         "display_name": "分析阅读选区",
         "description": "对学习者明确选择的阅读片段提供受约束诊断。",
-        "input_schema": {"type": "object", "required": ["selected_span"]},
-        "output_schema": {"type": "object"},
         "source": "binnagentx_runtime",
     },
     "expression.deliver_priority_feedback.v1": {
         "display_name": "表达单项反馈",
         "description": "只返回一项最高优先级表达反馈。",
-        "input_schema": {"type": "object", "required": ["attempt_version_id"]},
-        "output_schema": {"type": "object"},
         "source": "binnagentx_runtime",
     },
     "expression.review_draft.v1": {
         "display_name": "表达风格复盘",
         "description": "生成逻辑镜像、学术和新闻风格的受约束对照。",
-        "input_schema": {"type": "object", "required": ["draft"]},
-        "output_schema": {"type": "object"},
         "source": "binnagentx_runtime",
     },
     "expression.generate_from_chinese.v1": {
         "display_name": "根据中文意图推荐表达",
         "description": "结合当前表达任务与已保存草稿生成局部英文表达建议，不扩写整篇答案。",
-        "input_schema": {
-            "type": "object",
-            "required": ["expected_version", "chinese_intent"],
-        },
-        "output_schema": {"type": "object"},
         "source": "binnagentx_runtime",
     },
     "workflow.advance.v1": {
         "display_name": "推进训练运行",
         "description": "按领域状态机推进现有运行，要求版本和幂等键。",
-        "input_schema": {"type": "object", "required": ["expected_version"]},
-        "output_schema": {"type": "object"},
         "source": "binnagentx_runtime",
     },
     "obsidian.read_learning_context.v1": {
@@ -78,35 +58,21 @@ _TOOL_METADATA: dict[str, dict[str, Any]] = {
         "description": (
             "为 BinnAgentX Agent 检索当前学习者已授权的有限记忆；不读取任意 Vault 文件。"
         ),
-        "input_schema": {
-            "type": "object",
-            "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}},
-        },
-        "output_schema": {"type": "object", "required": ["entries"]},
         "source": "agent_memory",
     },
     "obsidian.write_learning_note.v1": {
         "display_name": "写入学习者记忆（Obsidian）",
         "description": "把 Agent 学习产物写入账号隔离的记忆与插件导出队列，不接受任意文件路径。",
-        "input_schema": {
-            "type": "object",
-            "required": ["kind", "title", "content"],
-        },
-        "output_schema": {"type": "object", "required": ["asset_id", "sync_status"]},
         "source": "agent_memory",
     },
     "content_ops.generate_candidate.v1": {
         "display_name": "生成内容候选",
         "description": "由开发审核角色启动受约束的材料生成。",
-        "input_schema": {"type": "object"},
-        "output_schema": {"type": "object"},
         "source": "content_operations",
     },
     "content_ops.publish_version.v1": {
         "display_name": "发布内容版本",
         "description": "通过人工审批门禁后发布材料包。",
-        "input_schema": {"type": "object", "required": ["job_id"]},
-        "output_schema": {"type": "object"},
         "source": "content_operations",
     },
 }
@@ -254,8 +220,15 @@ class ToolView(BaseModel):
     enabled: bool
     allowed_actor_types: list[str]
     required_permission_scopes: list[str]
+    expected_version_scope: str
+    requires_call_accounting: bool
+    requires_audit: bool
+    audit_strategy: str
     requires_human_approval: bool
     requires_idempotency_key: bool
+    timeout_seconds: int
+    max_calls_per_run: int
+    fallback_policy: str
     input_schema: dict[str, Any]
     output_schema: dict[str, Any]
     policy_version: int
@@ -447,10 +420,17 @@ async def list_tools(
                 enabled=enabled,
                 allowed_actor_types=sorted(item.value for item in spec.allowed_actor_types),
                 required_permission_scopes=sorted(spec.required_permission_scopes),
+                expected_version_scope=spec.expected_version_scope.value,
+                requires_call_accounting=spec.requires_call_accounting,
+                requires_audit=spec.requires_audit,
+                audit_strategy=spec.audit_strategy.value,
                 requires_human_approval=spec.requires_human_approval,
                 requires_idempotency_key=spec.requires_idempotency_key,
-                input_schema=dict(metadata["input_schema"]),
-                output_schema=dict(metadata["output_schema"]),
+                timeout_seconds=spec.timeout_seconds,
+                max_calls_per_run=spec.max_calls_per_run,
+                fallback_policy=spec.fallback_policy,
+                input_schema=spec.input_schema,
+                output_schema=spec.output_schema,
                 policy_version=int(policy["version"]) if policy else 1,
                 updated_at=policy["updated_at"] if policy else None,
             )

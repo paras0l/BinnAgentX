@@ -7,6 +7,7 @@ from hashlib import sha256
 from time import perf_counter
 from typing import Annotated, Literal, Protocol
 
+from binnagent_domain.model_errors import ModelBalanceError
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 
 from binnagent_agent.policies.budget import BudgetDecision, ModelBudget, evaluate_model_budget
@@ -631,6 +632,8 @@ class PriorityFeedbackGateway:
                 latency_ms=self._latency_ms(started),
                 remote_attempted=self._adapter.is_remote,
             )
+        except ModelBalanceError:
+            raise
         except Exception:
             return self._fallback(
                 request,
@@ -842,6 +845,8 @@ class AnnotationAnalysisGateway:
                 latency_ms=self._latency_ms(started),
                 remote_attempted=self._adapter.is_remote,
             )
+        except ModelBalanceError:
+            raise
         except Exception:
             return self._fallback(
                 request,
@@ -1273,6 +1278,8 @@ class ExpressionAssistGateway:
                 latency_ms=self._latency_ms(started),
                 remote_attempted=self._adapter.is_remote,
             )
+        except ModelBalanceError:
+            raise
         except Exception:
             return self._fallback(
                 "model_adapter_error",
@@ -1419,6 +1426,8 @@ class ExpressionReviewGateway:
                 latency_ms=self._latency_ms(started),
                 remote_attempted=self._adapter.is_remote,
             )
+        except ModelBalanceError:
+            raise
         except Exception:
             return self._fallback(
                 request,

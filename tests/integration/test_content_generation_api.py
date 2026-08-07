@@ -24,11 +24,22 @@ CONTROL_HEADERS = {"X-BinnAgent-Control-Role": "developer_reviewer"}
 async def clean_content_generation_jobs() -> AsyncIterator[None]:
     async with get_engine().begin() as connection:
         await connection.execute(
+            sa.delete(tables.audit_events).where(
+                tables.audit_events.c.action.like("tool.content_ops.%")
+            )
+        )
+        await connection.execute(
+            sa.delete(tables.idempotency_records).where(
+                tables.idempotency_records.c.command_name.like("content_ops.%")
+            )
+        )
+        await connection.execute(
             sa.delete(tables.obsidian_learning_context).where(
                 tables.obsidian_learning_context.c.connection_id == "connection_control_test"
             )
         )
         await connection.execute(sa.delete(tables.model_invocation_ledger))
+        await connection.execute(sa.delete(tables.tool_usage_ledger))
         await connection.execute(sa.delete(tables.content_worker_runtime))
         await connection.execute(sa.delete(tables.content_generation_jobs))
         await connection.execute(sa.delete(tables.personalized_material_events))
@@ -36,11 +47,22 @@ async def clean_content_generation_jobs() -> AsyncIterator[None]:
     yield
     async with get_engine().begin() as connection:
         await connection.execute(
+            sa.delete(tables.audit_events).where(
+                tables.audit_events.c.action.like("tool.content_ops.%")
+            )
+        )
+        await connection.execute(
+            sa.delete(tables.idempotency_records).where(
+                tables.idempotency_records.c.command_name.like("content_ops.%")
+            )
+        )
+        await connection.execute(
             sa.delete(tables.obsidian_learning_context).where(
                 tables.obsidian_learning_context.c.connection_id == "connection_control_test"
             )
         )
         await connection.execute(sa.delete(tables.model_invocation_ledger))
+        await connection.execute(sa.delete(tables.tool_usage_ledger))
         await connection.execute(sa.delete(tables.content_worker_runtime))
         await connection.execute(sa.delete(tables.content_generation_jobs))
         await connection.execute(sa.delete(tables.personalized_material_events))
@@ -62,7 +84,12 @@ async def test_content_generation_api_queues_and_lists_persistent_job() -> None:
     async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
         created = await client.post(
             "/control/v1/content-generation/jobs",
-            headers=CONTROL_HEADERS,
+            headers={**CONTROL_HEADERS, "Idempotency-Key": "content-create-20260719"},
+            json={"seed": 20260719},
+        )
+        replayed = await client.post(
+            "/control/v1/content-generation/jobs",
+            headers={**CONTROL_HEADERS, "Idempotency-Key": "content-create-20260719"},
             json={"seed": 20260719},
         )
         listed = await client.get(
@@ -71,16 +98,28 @@ async def test_content_generation_api_queues_and_lists_persistent_job() -> None:
         )
         duplicate = await client.post(
             "/control/v1/content-generation/jobs",
-            headers=CONTROL_HEADERS,
+            headers={**CONTROL_HEADERS, "Idempotency-Key": "content-create-20260720"},
             json={"seed": 20260720},
         )
 
     assert created.status_code == 202, created.text
+    assert replayed.status_code == 202, replayed.text
+    assert replayed.json()["job_id"] == created.json()["job_id"]
     assert created.json()["status"] == "queued"
     assert created.json()["seed"] == 20260719
     assert listed.status_code == 200, listed.text
     assert listed.json()[0]["job_id"] == created.json()["job_id"]
     assert duplicate.status_code == 409
+    async with get_engine().connect() as connection:
+        audit_count = await connection.scalar(
+            sa.select(sa.func.count())
+            .select_from(tables.audit_events)
+            .where(
+                tables.audit_events.c.workflow_run_id == created.json()["job_id"],
+                tables.audit_events.c.action == "tool.content_ops.generate_candidate.v1",
+            )
+        )
+    assert audit_count == 1
 
 
 @pytest.mark.asyncio
@@ -89,7 +128,7 @@ async def test_content_job_detail_exposes_timeline_cancel_and_auditable_retry() 
     async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
         created = await client.post(
             "/control/v1/content-generation/jobs",
-            headers=CONTROL_HEADERS,
+            headers={**CONTROL_HEADERS, "Idempotency-Key": "content-create-detail-73"},
             json={"seed": 73},
         )
         job_id = created.json()["job_id"]
@@ -103,7 +142,7 @@ async def test_content_job_detail_exposes_timeline_cancel_and_auditable_retry() 
         )
         retried = await client.post(
             f"/control/v1/content-generation/jobs/{job_id}/retry",
-            headers=CONTROL_HEADERS,
+            headers={**CONTROL_HEADERS, "Idempotency-Key": "content-retry-detail-73"},
         )
 
     assert detail.status_code == 200, detail.text
@@ -608,9 +647,25 @@ async def test_content_generation_api_publishes_only_reviewed_generated_job(
     async with httpx2.AsyncClient(transport=transport, base_url="http://test") as client:
         response = await client.post(
             f"/control/v1/content-generation/jobs/{job_id}/publish",
-            headers=CONTROL_HEADERS,
+            headers={**CONTROL_HEADERS, "Idempotency-Key": "content-publish-test-0001"},
+        )
+        replayed = await client.post(
+            f"/control/v1/content-generation/jobs/{job_id}/publish",
+            headers={**CONTROL_HEADERS, "Idempotency-Key": "content-publish-test-0001"},
         )
 
     assert response.status_code == 200, response.text
+    assert replayed.status_code == 200, replayed.text
+    assert replayed.json()["published_at"] == response.json()["published_at"]
     assert response.json()["is_active"] is True
     assert response.json()["published_at"] is not None
+    async with get_engine().connect() as connection:
+        audit_count = await connection.scalar(
+            sa.select(sa.func.count())
+            .select_from(tables.audit_events)
+            .where(
+                tables.audit_events.c.workflow_run_id == job_id,
+                tables.audit_events.c.action == "tool.content_ops.publish_version.v1",
+            )
+        )
+    assert audit_count == 1

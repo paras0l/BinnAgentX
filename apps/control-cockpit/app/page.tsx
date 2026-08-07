@@ -20,10 +20,12 @@ import {
   listManagedPrompts,
   listManagedTools,
   publishContentGenerationJob,
+  renderManagedPrompt,
   retryContentGenerationJob,
   resumePersonalizedMaterialJob,
   revokeExperienceCode,
   revokeManagedLearnerSessions,
+  resetManagedLearnerUsage,
   updateManagedPrompt,
   updateManagedTool,
   type ContentControlStatus,
@@ -44,8 +46,9 @@ import {
   type PersonalizedMaterialJobDetail,
 } from "../lib/control-api";
 import { AgentsConsole, PromptsConsole, ToolsConsole } from "./agent-configuration-console";
+import { OperationsConsole } from "./operations-console";
 
-type View = "content" | "agents" | "tools" | "prompts" | "access" | "users";
+type View = "content" | "operations" | "agents" | "tools" | "prompts" | "access" | "users";
 type AgentDependencyTarget = { kind: "prompt"; id: string } | { kind: "tool"; id: string } | null;
 
 const JOB_STATUS_LABELS: Record<ContentGenerationJobStatus, string> = {
@@ -131,6 +134,7 @@ export default function ControlHomePage() {
   const [copied, setCopied] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [usageResetNotice, setUsageResetNotice] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
   const loadContent = useCallback(
@@ -378,6 +382,15 @@ export default function ControlHomePage() {
             }}
           >
             内容与 Agent
+          </button>
+          <button
+            className={view === "operations" ? "active" : ""}
+            onClick={() => {
+              setAgentDependencyTarget(null);
+              setView("operations");
+            }}
+          >
+            运行与复核
           </button>
           <button
             className={view === "agents" ? "active" : ""}
@@ -775,6 +788,8 @@ export default function ControlHomePage() {
             </aside>
           </section>
         </>
+      ) : view === "operations" ? (
+        <OperationsConsole />
       ) : view === "agents" ? (
         <AgentsConsole
           agents={agents}
@@ -884,6 +899,7 @@ export default function ControlHomePage() {
               }
             });
           }}
+          onRender={renderManagedPrompt}
         />
       ) : view === "access" ? (
         <AccessConsole
@@ -939,6 +955,7 @@ export default function ControlHomePage() {
           users={users}
           pending={isPending}
           error={error}
+          usageResetNotice={usageResetNotice}
           onRefresh={() => {
             setError(null);
             startTransition(async () => {
@@ -962,6 +979,22 @@ export default function ControlHomePage() {
               }
             });
           }}
+          onResetUsage={(scope, learnerIds) => {
+            setError(null);
+            setUsageResetNotice(null);
+            startTransition(async () => {
+              try {
+                const result = await resetManagedLearnerUsage({
+                  scope,
+                  learner_ids: learnerIds,
+                });
+                setUsers(await listManagedLearners());
+                setUsageResetNotice(`已为 ${result.reset_count} 个用户开启新的用量周期。`);
+              } catch (reason) {
+                setError(controlErrorMessage(reason));
+              }
+            });
+          }}
         />
       )}
     </main>
@@ -972,16 +1005,21 @@ function UsersConsole({
   users,
   pending,
   error,
+  usageResetNotice,
   onRefresh,
   onRevokeSessions,
+  onResetUsage,
 }: {
   users: ManagedLearner[];
   pending: boolean;
   error: string | null;
+  usageResetNotice: string | null;
   onRefresh: () => void;
   onRevokeSessions: (learnerId: string) => void;
+  onResetUsage: (scope: "selected" | "all", learnerIds: string[]) => void;
 }) {
   const [query, setQuery] = useState("");
+  const [selectedUsageUsers, setSelectedUsageUsers] = useState<Set<string>>(new Set());
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const filteredUsers = useMemo(
     () =>
@@ -1008,6 +1046,25 @@ function UsersConsole({
           <p>查看账号、登录状态、训练与资产概况；敏感凭据不会出现在控制舱。</p>
         </div>
         <div className="intro-actions">
+          <button
+            type="button"
+            disabled={pending || selectedUsageUsers.size === 0}
+            onClick={() => onResetUsage("selected", Array.from(selectedUsageUsers))}
+          >
+            重置所选用量（{selectedUsageUsers.size}）
+          </button>
+          <button
+            type="button"
+            className="danger-button"
+            disabled={pending || users.length === 0}
+            onClick={() => {
+              if (window.confirm(`确认重置全部 ${users.length} 个用户的词元用量周期？`)) {
+                onResetUsage("all", []);
+              }
+            }}
+          >
+            重置全部用量
+          </button>
           <button type="button" disabled={pending} onClick={onRefresh}>
             刷新用户
           </button>
@@ -1019,6 +1076,7 @@ function UsersConsole({
           {error}
         </div>
       ) : null}
+      {usageResetNotice ? <div className="success-banner">{usageResetNotice}</div> : null}
 
       <section className="status-grid user-status-grid" aria-label="用户概况">
         <StatusCard
@@ -1066,15 +1124,31 @@ function UsersConsole({
 
         <div className="users-table">
           <div className="users-table-head">
-            <span>账号</span>
+            <span>选择 / 账号</span>
             <span>最近登录</span>
             <span>学习数据</span>
+            <span>词元用量</span>
             <span>集成</span>
             <span>操作</span>
           </div>
           {filteredUsers.map((user) => (
             <article className="user-row" key={user.learner_id}>
               <span className="user-identity">
+                <label className="usage-user-selector">
+                  <input
+                    type="checkbox"
+                    checked={selectedUsageUsers.has(user.learner_id)}
+                    onChange={(event) => {
+                      setSelectedUsageUsers((current) => {
+                        const next = new Set(current);
+                        if (event.target.checked) next.add(user.learner_id);
+                        else next.delete(user.learner_id);
+                        return next;
+                      });
+                    }}
+                  />
+                  <span>纳入用量重置范围</span>
+                </label>
                 <strong>{user.nickname}</strong>
                 <small>{user.email || "体验账号（无邮箱）"}</small>
                 <code>{shortId(user.learner_id)}</code>
@@ -1090,6 +1164,14 @@ function UsersConsole({
               <span>
                 <strong>{user.completed_run_count} 次完整训练</strong>
                 <small>{user.asset_count} 条资产</small>
+              </span>
+              <span>
+                <strong>Usage Remaining {user.remaining_percent.toFixed(1)}%</strong>
+                <small>
+                  已用 {user.used_tokens.toLocaleString("zh-CN")} /{" "}
+                  {user.token_limit.toLocaleString("zh-CN")} 词元
+                </small>
+                <small>费用 ¥{Number(user.usage_cost_cny).toFixed(4)}</small>
               </span>
               <span>
                 <strong>{user.account_type === "registered" ? "正式注册" : "体验访问"}</strong>

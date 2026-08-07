@@ -7,6 +7,7 @@ import os
 import socket
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from hashlib import sha256
 from typing import Any
 from uuid import uuid4
@@ -14,6 +15,7 @@ from uuid import uuid4
 import httpx2
 import sqlalchemy as sa
 from binnagent_agent.agents.content_reviewer import ContentReviewRequest, ContentReviewResult
+from binnagent_agent.observability import observe, stable_trace_id
 from binnagent_agent.workflows import (
     GRAPH_VERSION,
     build_personalized_content_graph,
@@ -36,6 +38,11 @@ from binnagent_domain.learning.content_quality import (
     TransferContract,
     stable_content_hash,
 )
+from binnagent_domain.model_errors import (
+    LearnerBalanceInsufficientError,
+    ProviderBalanceInsufficientError,
+    provider_balance_error_from,
+)
 from binnagent_evaluation.trajectory import evaluate_trajectory
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
@@ -49,6 +56,12 @@ from binnagent_api.learner_level_service import (
     generation_level_context,
     latest_level_assessment,
     recent_material_feedback_context,
+)
+from binnagent_api.learner_usage import (
+    ensure_model_usage_available,
+    learner_usage_scope,
+    provider_token_usage,
+    record_model_usage,
 )
 from binnagent_api.model_adapters import (
     PersonalizedAssessmentOutput,
@@ -79,6 +92,20 @@ MAX_GENERATION_ATTEMPTS = 3
 GENERATION_LEASE = timedelta(minutes=3)
 
 
+def _model_balance_failure(exc: Exception) -> tuple[str, str] | None:
+    if isinstance(exc, ProviderBalanceInsufficientError):
+        return (
+            "MODEL_PROVIDER_BALANCE_INSUFFICIENT",
+            "当前模型供应商余额不足, 请在控制舱切换模型后重试。",
+        )
+    if isinstance(exc, LearnerBalanceInsufficientError):
+        return (
+            "LEARNER_MODEL_BALANCE_INSUFFICIENT",
+            "你的模型词元额度已用完, 请等待额度重置或联系管理员。",
+        )
+    return None
+
+
 def _worker_identity() -> str:
     return f"personalized:{socket.gethostname()}:{os.getpid()}"
 
@@ -89,7 +116,8 @@ async def process_next_personalized_material() -> bool:
         return False
     await _set_worker_activity(state="running", material_id=str(claimed["material_id"]))
     try:
-        await _generate_claimed_personalized_material(claimed)
+        with learner_usage_scope(str(claimed["learner_id"])):
+            await _generate_claimed_personalized_material(claimed)
     finally:
         await _set_worker_activity(state="idle", material_id=None)
     return True
@@ -360,7 +388,34 @@ async def _generate_claimed_personalized_material(row: dict[str, Any]) -> str:
         )
     )
     try:
-        return await _generate_with_claim(row)
+        settings = get_settings()
+        with observe(
+            "personalized.material.pipeline",
+            as_type="agent",
+            input={
+                "material_id": str(row["material_id"]),
+                "source_context_count": len(list(row["source_context_ids"])),
+                "requested_goal": str(row["requested_goal"]),
+            },
+            metadata={
+                "project_key": "binnagentx",
+                "operation": "personalized_material_pipeline",
+                "material_id": str(row["material_id"]),
+                "source_kind": str(row.get("source_kind") or "obsidian"),
+                "runtime_kind": str(row.get("runtime_kind") or "legacy"),
+                "generation_attempt": int(row["generation_attempt_count"]),
+                "provider": settings.model_adapter,
+            },
+            trace_id=stable_trace_id(
+                "personalized_material",
+                f"{row['material_id']}:{row['generation_attempt_count']}",
+            ),
+            version=str(row.get("graph_version") or "legacy"),
+        ) as observation:
+            result = await _generate_with_claim(row)
+            if observation is not None:
+                observation.update(output={"status": result})
+            return result
     finally:
         heartbeat.cancel()
         with suppress(asyncio.CancelledError):
@@ -495,8 +550,14 @@ async def _generate_with_claim(row: dict[str, Any]) -> str:
     except Exception as exc:
         now = datetime.now(UTC)
         attempts = int(row["generation_attempt_count"])
-        terminal = attempts >= MAX_GENERATION_ATTEMPTS
+        balance_failure = _model_balance_failure(exc)
+        terminal = balance_failure is not None or attempts >= MAX_GENERATION_ATTEMPTS
         delay = timedelta(seconds=30 * 2 ** max(0, attempts - 1))
+        error_code = (
+            balance_failure[0]
+            if balance_failure is not None
+            else f"{type(exc).__name__}:{str(exc)[:80]}"
+        )
         async with get_engine().begin() as connection:
             result = await connection.execute(
                 tables.personalized_training_materials.update()
@@ -506,7 +567,7 @@ async def _generate_with_claim(row: dict[str, Any]) -> str:
                 )
                 .values(
                     status="generation_failed" if terminal else "requested",
-                    generation_error_code=f"{type(exc).__name__}:{str(exc)[:80]}",
+                    generation_error_code=error_code,
                     next_generation_attempt_at=None if terminal else now + delay,
                     claimed_by=None,
                     lease_expires_at=None,
@@ -522,12 +583,14 @@ async def _generate_with_claim(row: dict[str, Any]) -> str:
                 stage="generation_failed" if terminal else "requested",
                 attempt=attempts,
                 message=(
-                    "个性化材料生成失败, 已达到最大尝试次数"
+                    balance_failure[1]
+                    if balance_failure is not None
+                    else "个性化材料生成失败, 已达到最大尝试次数"
                     if terminal
                     else "本次生成失败, 已安排自动重试"
                 ),
                 detail={
-                    "error_code": f"{type(exc).__name__}:{str(exc)[:80]}",
+                    "error_code": error_code,
                     "terminal": terminal,
                     "next_attempt_at": None if terminal else (now + delay).isoformat(),
                 },
@@ -831,17 +894,51 @@ def _build_personalized_material_graph(
             "transfer_contract": state["transfer_contract"],
             "expression_task": state["expression_task"],
         }
-        result = await asyncio.to_thread(
-            reviewer.review,
-            ContentReviewRequest(
-                content_type="matched_reading",
-                source_item={
-                    "title": "learner-authorized private context",
-                    "paragraphs": [],
-                    "difficulty": adaptation_profile,
-                },
-                candidate_item=candidate,
+        await ensure_model_usage_available()
+        try:
+            result = await asyncio.to_thread(
+                reviewer.review,
+                ContentReviewRequest(
+                    content_type="matched_reading",
+                    source_item={
+                        "title": "learner-authorized private context",
+                        "paragraphs": [],
+                        "difficulty": adaptation_profile,
+                    },
+                    candidate_item=candidate,
+                ),
+            )
+        except Exception as exc:
+            balance_error = provider_balance_error_from(
+                exc,
+                provider=str(getattr(reviewer, "name", get_settings().model_adapter)),
+            )
+            if balance_error is not None:
+                raise balance_error from exc
+            raise
+        input_tokens, output_tokens, counting_method = provider_token_usage(
+            {},
+            request_payload=candidate,
+            output=result.model_dump_json(),
+        )
+        settings = get_settings()
+        reviewer_provider = str(getattr(reviewer, "name", settings.model_adapter))
+        await record_model_usage(
+            provider=reviewer_provider,
+            model=(
+                settings.ollama_chat_model
+                if reviewer_provider == "ollama"
+                else settings.deepseek_chat_model
+                if reviewer_provider == "deepseek"
+                else settings.longcat_chat_model
             ),
+            operation="personalized_content_review",
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cost_usd=Decimal(
+                str(getattr(reviewer, "estimated_cost_usd", settings.model_estimated_cost_usd))
+            ),
+            counting_method=counting_method,
         )
         revision = int(state.get("repair_attempts", 0))
         review_results[revision] = result
@@ -1931,9 +2028,15 @@ async def _handle_langgraph_generation_failure(
 ) -> str:
     now = datetime.now(UTC)
     attempts = int(row["generation_attempt_count"])
-    terminal = attempts >= MAX_GENERATION_ATTEMPTS
+    balance_failure = _model_balance_failure(exc)
+    terminal = balance_failure is not None or attempts >= MAX_GENERATION_ATTEMPTS
     delay = timedelta(seconds=30 * 2 ** max(0, attempts - 1))
     status = "generation_failed" if terminal else "requested"
+    error_code = (
+        balance_failure[0]
+        if balance_failure is not None
+        else f"{type(exc).__name__}:{str(exc)[:80]}"
+    )
     async with get_engine().begin() as connection:
         result = await connection.execute(
             tables.personalized_training_materials.update()
@@ -1943,7 +2046,7 @@ async def _handle_langgraph_generation_failure(
             )
             .values(
                 status=status,
-                generation_error_code=f"{type(exc).__name__}:{str(exc)[:80]}",
+                generation_error_code=error_code,
                 next_generation_attempt_at=None if terminal else now + delay,
                 claimed_by=None,
                 lease_expires_at=None,
@@ -1959,12 +2062,14 @@ async def _handle_langgraph_generation_failure(
             stage=status,
             attempt=attempts,
             message=(
-                "失败节点已保留检查点, 等待人工修复后继续"
+                balance_failure[1]
+                if balance_failure is not None
+                else "失败节点已保留检查点, 等待人工修复后继续"
                 if terminal
                 else "失败节点已保留检查点, 已安排从该节点自动恢复"
             ),
             detail={
-                "error_code": f"{type(exc).__name__}:{str(exc)[:80]}",
+                "error_code": error_code,
                 "diagnostic": str(exc)[:1000],
                 "runtime_kind": "langgraph",
                 "failed_node": failed_node,

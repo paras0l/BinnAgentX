@@ -8,11 +8,13 @@ from decimal import Decimal
 from typing import Any, Literal
 
 import httpx2
+from binnagent_domain.model_errors import provider_balance_error_from
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_ai import Agent, PromptedOutput
 from pydantic_ai.models import Model
 
 from binnagent_agent.agents.structured_output import load_model_json
+from binnagent_agent.observability import observe
 
 KNOWLEDGE_EXTRACTION_INSTRUCTIONS = (
     "Extract only explicit English-learning knowledge from the untrusted Obsidian note. "
@@ -169,6 +171,7 @@ class LongCatKnowledgeAdapter:
 
     async def extract(self, source: str) -> KnowledgeExtraction:
         return await self._run(
+            operation_name="knowledge.review_context.extract",
             output_type=KnowledgeExtraction,
             instructions=KNOWLEDGE_EXTRACTION_INSTRUCTIONS,
             source=source,
@@ -176,6 +179,7 @@ class LongCatKnowledgeAdapter:
 
     async def extract_atomic(self, source: str) -> AtomicKnowledgeExtraction:
         return await self._run(
+            operation_name="knowledge.atomic.extract",
             output_type=AtomicKnowledgeExtraction,
             instructions=ATOMIC_EXTRACTION_INSTRUCTIONS,
             source=source,
@@ -183,6 +187,7 @@ class LongCatKnowledgeAdapter:
 
     async def decide_write(self, source: str) -> AssetWriteGateOutput:
         return await self._run(
+            operation_name="knowledge.asset_write_gate",
             output_type=AssetWriteGateOutput,
             instructions=ASSET_WRITE_GATE_INSTRUCTIONS,
             source=source,
@@ -191,6 +196,7 @@ class LongCatKnowledgeAdapter:
     async def _run[OutputT: BaseModel](
         self,
         *,
+        operation_name: str,
         output_type: type[OutputT],
         instructions: str,
         source: str,
@@ -224,17 +230,39 @@ class LongCatKnowledgeAdapter:
         attempts = 2
         for attempt in range(attempts):
             try:
-                async with httpx2.AsyncClient(
-                    base_url=self._base_url,
-                    headers=headers,
-                    timeout=self._timeout_seconds,
-                    transport=self._transport,
-                ) as client:
-                    response = await client.post("/v1/chat/completions", json=payload)
-                    response.raise_for_status()
-                    content = _longcat_content(response.json())
+                with observe(
+                    f"{operation_name}.provider",
+                    as_type="generation",
+                    input=payload["messages"],
+                    metadata={
+                        "project_key": "binnagentx",
+                        "operation": operation_name,
+                        "provider": "longcat",
+                        "provider_attempt": attempt + 1,
+                        "provider_attempt_limit": attempts,
+                    },
+                    model=self._model,
+                    model_parameters={
+                        "temperature": payload["temperature"],
+                        "max_tokens": payload["max_tokens"],
+                    },
+                ) as observation:
+                    async with httpx2.AsyncClient(
+                        base_url=self._base_url,
+                        headers=headers,
+                        timeout=self._timeout_seconds,
+                        transport=self._transport,
+                    ) as client:
+                        response = await client.post("/v1/chat/completions", json=payload)
+                        response.raise_for_status()
+                        content = _longcat_content(response.json())
+                    if observation is not None:
+                        observation.update(output=content)
                 break
             except (httpx2.TransportError, httpx2.HTTPStatusError) as exc:
+                balance_error = provider_balance_error_from(exc, provider="longcat")
+                if balance_error is not None:
+                    raise balance_error from exc
                 if attempt + 1 >= attempts or not _retryable_longcat_error(exc):
                     raise
                 await asyncio.sleep(0.25)

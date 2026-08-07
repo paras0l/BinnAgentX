@@ -2,19 +2,16 @@
 
 from __future__ import annotations
 
-from binnagent_agent.tools.contracts import ToolActorType, ToolKind, ToolRiskLevel, ToolSpec
+from binnagent_agent.tools.contracts import (
+    ExpectedVersionScope,
+    ToolActorType,
+    ToolAuditStrategy,
+    ToolKind,
+    ToolRiskLevel,
+    ToolSpec,
+)
 
 _RUNTIME_SPECS = (
-    ToolSpec(
-        name="runtime.get_context.v1",
-        version="1.0.0",
-        kind=ToolKind.QUERY,
-        risk_level=ToolRiskLevel.LOW,
-        allowed_actor_types=frozenset({ToolActorType.ORCHESTRATOR, ToolActorType.SYSTEM}),
-        timeout_seconds=5,
-        max_calls_per_run=20,
-        fallback_policy="reject",
-    ),
     ToolSpec(
         name="reading.analyze_selection.v1",
         version="1.0.0",
@@ -22,10 +19,15 @@ _RUNTIME_SPECS = (
         risk_level=ToolRiskLevel.MODERATE,
         allowed_actor_types=frozenset({ToolActorType.LEARNER, ToolActorType.ORCHESTRATOR}),
         allowed_task_types=frozenset({"calibration_reading", "matched_reading"}),
-        requires_expected_version=True,
+        expected_version_scope=ExpectedVersionScope.TASK,
+        requires_call_accounting=True,
+        requires_audit=True,
+        audit_strategy=ToolAuditStrategy.EXECUTOR,
         timeout_seconds=30,
         max_calls_per_run=8,
         fallback_policy="deterministic_selection_explanation",
+        input_schema={"type": "object", "required": ["span", "learner_question"]},
+        output_schema={"type": "object", "required": ["analysis_id", "analysis_status"]},
     ),
     ToolSpec(
         name="expression.deliver_priority_feedback.v1",
@@ -34,11 +36,16 @@ _RUNTIME_SPECS = (
         risk_level=ToolRiskLevel.MODERATE,
         allowed_actor_types=frozenset({ToolActorType.LEARNER, ToolActorType.ORCHESTRATOR}),
         allowed_task_types=frozenset({"micro_expression"}),
-        requires_expected_version=True,
+        expected_version_scope=ExpectedVersionScope.TASK,
         requires_idempotency_key=True,
+        requires_call_accounting=True,
+        requires_audit=True,
+        audit_strategy=ToolAuditStrategy.EXECUTOR,
         timeout_seconds=30,
         max_calls_per_run=3,
         fallback_policy="deterministic_priority_feedback",
+        input_schema={"type": "object", "required": ["input_attempt_version_id"]},
+        output_schema={"type": "object", "required": ["task_id", "version"]},
     ),
     ToolSpec(
         name="expression.review_draft.v1",
@@ -47,10 +54,15 @@ _RUNTIME_SPECS = (
         risk_level=ToolRiskLevel.MODERATE,
         allowed_actor_types=frozenset({ToolActorType.LEARNER, ToolActorType.ORCHESTRATOR}),
         allowed_task_types=frozenset({"micro_expression"}),
-        requires_expected_version=True,
+        expected_version_scope=ExpectedVersionScope.TASK,
+        requires_call_accounting=True,
+        requires_audit=True,
+        audit_strategy=ToolAuditStrategy.EXECUTOR,
         timeout_seconds=30,
         max_calls_per_run=3,
         fallback_policy="deterministic_style_review",
+        input_schema={"type": "object", "required": ["draft"]},
+        output_schema={"type": "object", "required": ["review_id", "versions"]},
     ),
     ToolSpec(
         name="expression.generate_from_chinese.v1",
@@ -59,11 +71,19 @@ _RUNTIME_SPECS = (
         risk_level=ToolRiskLevel.MODERATE,
         allowed_actor_types=frozenset({ToolActorType.LEARNER, ToolActorType.ORCHESTRATOR}),
         allowed_task_types=frozenset({"micro_expression"}),
-        requires_expected_version=True,
+        expected_version_scope=ExpectedVersionScope.TASK,
         requires_idempotency_key=True,
+        requires_call_accounting=True,
+        requires_audit=True,
+        audit_strategy=ToolAuditStrategy.EXECUTOR,
         timeout_seconds=30,
         max_calls_per_run=5,
         fallback_policy="explicit_unavailable",
+        input_schema={
+            "type": "object",
+            "required": ["expected_version", "chinese_intent"],
+        },
+        output_schema={"type": "object", "required": ["generation_id", "status", "task"]},
     ),
     ToolSpec(
         name="workflow.advance.v1",
@@ -71,11 +91,16 @@ _RUNTIME_SPECS = (
         kind=ToolKind.COMMAND,
         risk_level=ToolRiskLevel.HIGH,
         allowed_actor_types=frozenset({ToolActorType.ORCHESTRATOR, ToolActorType.SYSTEM}),
-        requires_expected_version=True,
+        expected_version_scope=ExpectedVersionScope.RUN,
         requires_idempotency_key=True,
+        requires_call_accounting=True,
+        requires_audit=True,
+        audit_strategy=ToolAuditStrategy.EXECUTOR,
         timeout_seconds=20,
         max_calls_per_run=8,
         fallback_policy="reject",
+        input_schema={"type": "object", "required": ["expected_version"]},
+        output_schema={"type": "object", "required": ["workflow_run_id", "version"]},
     ),
     ToolSpec(
         name="obsidian.read_learning_context.v1",
@@ -84,9 +109,16 @@ _RUNTIME_SPECS = (
         risk_level=ToolRiskLevel.MODERATE,
         allowed_actor_types=frozenset({ToolActorType.ORCHESTRATOR, ToolActorType.SYSTEM}),
         required_permission_scopes=frozenset({"obsidian:read"}),
+        requires_call_accounting=True,
+        audit_strategy=ToolAuditStrategy.DOMAIN,
         timeout_seconds=10,
         max_calls_per_run=12,
         fallback_policy="reject",
+        input_schema={
+            "type": "object",
+            "properties": {"query": {"type": "string"}, "limit": {"type": "integer"}},
+        },
+        output_schema={"type": "object", "required": ["entries"]},
     ),
     ToolSpec(
         name="obsidian.write_learning_note.v1",
@@ -96,9 +128,13 @@ _RUNTIME_SPECS = (
         allowed_actor_types=frozenset({ToolActorType.ORCHESTRATOR, ToolActorType.SYSTEM}),
         required_permission_scopes=frozenset({"obsidian:write"}),
         requires_idempotency_key=True,
+        requires_call_accounting=True,
+        audit_strategy=ToolAuditStrategy.DOMAIN,
         timeout_seconds=30,
         max_calls_per_run=8,
         fallback_policy="queue_for_plugin_sync",
+        input_schema={"type": "object", "required": ["kind", "title", "content"]},
+        output_schema={"type": "object", "required": ["asset_id", "sync_status"]},
     ),
 )
 
@@ -106,13 +142,19 @@ _CONTENT_OPS_SPECS = (
     ToolSpec(
         name="content_ops.generate_candidate.v1",
         version="1.0.0",
-        kind=ToolKind.MODEL,
+        kind=ToolKind.COMMAND,
         risk_level=ToolRiskLevel.HIGH,
         allowed_actor_types=frozenset({ToolActorType.DEVELOPER_REVIEWER}),
         required_permission_scopes=frozenset({"content:generate"}),
+        requires_idempotency_key=True,
+        requires_call_accounting=True,
+        requires_audit=True,
+        audit_strategy=ToolAuditStrategy.EXECUTOR,
         timeout_seconds=300,
         max_calls_per_run=10,
         fallback_policy="reject",
+        input_schema={"type": "object"},
+        output_schema={"type": "object", "required": ["job_id", "status"]},
     ),
     ToolSpec(
         name="content_ops.publish_version.v1",
@@ -123,15 +165,23 @@ _CONTENT_OPS_SPECS = (
         required_permission_scopes=frozenset({"content:publish"}),
         requires_human_approval=True,
         requires_idempotency_key=True,
+        requires_call_accounting=True,
+        requires_audit=True,
+        audit_strategy=ToolAuditStrategy.EXECUTOR,
         timeout_seconds=30,
         max_calls_per_run=10,
         fallback_policy="reject",
+        input_schema={"type": "object", "required": ["job_id"]},
+        output_schema={"type": "object", "required": ["job_id", "published_at"]},
     ),
 )
 
 
 class ToolRegistry:
     def __init__(self, specs: tuple[ToolSpec, ...]) -> None:
+        names = [spec.name for spec in specs]
+        if len(names) != len(set(names)):
+            raise ValueError("duplicate_tool_name")
         self._specs = {spec.name: spec for spec in specs}
         self._disabled: set[str] = set()
 

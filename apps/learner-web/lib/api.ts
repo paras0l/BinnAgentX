@@ -29,6 +29,8 @@ interface ApiErrorBody {
   code?: string;
   reason?: string;
   current_version?: number | null;
+  provider?: string;
+  can_switch_model?: boolean;
 }
 
 export interface CurrentLevel {
@@ -67,6 +69,32 @@ export interface LearnerPreferencesRecord {
   version: number;
   persisted: boolean;
   updatedAt: string | null;
+}
+
+export interface LearnerUsage {
+  learner_id: string;
+  token_limit: number;
+  input_tokens: number;
+  output_tokens: number;
+  used_tokens: number;
+  remaining_tokens: number;
+  remaining_percent: number;
+  cost_cny: string;
+  reset_at: string | null;
+}
+
+export async function getLearnerUsage(): Promise<LearnerUsage> {
+  const usage = await request<LearnerUsage>("/v1/usage");
+  if (
+    !Number.isFinite(usage.token_limit) ||
+    !Number.isFinite(usage.used_tokens) ||
+    !Number.isFinite(usage.remaining_tokens) ||
+    !Number.isFinite(usage.remaining_percent) ||
+    typeof usage.cost_cny !== "string"
+  ) {
+    throw new Error("learner_usage_response_invalid");
+  }
+  return usage;
 }
 
 interface LearnerPreferencesApi {
@@ -159,6 +187,8 @@ interface TrainingHistoryPageApi {
 export class LearnerApiError extends Error {
   readonly code: PublicErrorCode | "UNKNOWN";
   readonly currentVersion: number | null;
+  readonly provider: string | null;
+  readonly canSwitchModel: boolean;
 
   constructor(body: ApiErrorBody, status: number) {
     const knownCode = body.code && body.code in PUBLIC_ERROR_MESSAGES;
@@ -171,6 +201,8 @@ export class LearnerApiError extends Error {
     this.name = "LearnerApiError";
     this.code = code;
     this.currentVersion = body.current_version ?? null;
+    this.provider = body.provider ?? null;
+    this.canSwitchModel = body.can_switch_model ?? false;
   }
 }
 

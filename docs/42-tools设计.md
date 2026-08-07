@@ -1,10 +1,51 @@
-## 核心判断
+# Agent Tool 设计与实施基线
+
+> 状态：已完成当前注册 Tool 的基础治理闭环 v1
+>
+> 更新日期：2026-08-07
+>
+> 适用范围：学习者运行时、内容生产控制面、学习者记忆和后续测量能力。
+
+## 1. 结论
 
 这个项目不需要给 LLM 配一组通用的“搜索、数据库、HTTP、代码执行”工具，而应该建立一层**面向教学业务、类型明确、权限受限、能够回放的应用级 tools**。
 
 关键点：单一职责、明确 schema、可观测、可失败
 
-仓库已经把 `binnagent_agent/tools` 定义成“Agent 可调用的显式、可审计工具”边界，但目前目录里还只有说明，没有实际实现。 Agent runtime 的边界也已经写得很清楚：工作流负责长流程，tools 负责外部动作，gateways 隔离模型提供方，policies 负责预算与安全，且 Agent 包不能反向依赖 Web 路由。
+仓库已经把 `binnagent_agent/tools` 定义成“Agent 可调用的显式、可审计工具”边界。当前已经实现统一 Contract、Runtime/Content Ops Registry、Executor，以及阅读分析、表达反馈、表达复盘、中文意图表达推荐、流程推进、Obsidian 记忆读写和内容生成/发布等受治理调用链。Agent runtime 的边界保持为：工作流负责长流程，tools 负责完整业务动作，gateways 隔离模型提供方，policies 负责预算与安全，且 Agent 包不能反向依赖 Web 路由。
+
+当前九个已注册 Tool 的治理要求已经闭环。候选能力只有在进入真实用户旅程后才注册；例如 `runtime.get_context.v1` 虽有可复用的上下文装配函数，但没有独立调用旅程，因此暂不进入公开 Registry。应用 handler 目前仍有部分物理上位于 API 纵向切片模块中，这是代码组织的后续重构点，不构成绕过 Executor 的第二条执行路径。
+
+## 2. 什么是 Tool
+
+> **Tool 不是底层函数，也不是模型供应商调用；Tool 是一个完整、可审计的业务用例。**
+
+一个能力适合成为 Tool，应同时满足多数条件：
+
+1. Agent 需要在运行时决定是否调用；
+2. 它表达稳定、可复用的业务意图；
+3. 它跨越权限、费用、外部系统、模型调用或业务副作用边界；
+4. 它需要统一的超时、预算、幂等、审计、降级或人工审批；
+5. 输入输出可以定义为严格、版本化 Schema；
+6. 一次调用可以到达明确且可验证的业务结果；
+7. 可以隐藏数据库、文件路径、供应商和密钥等实现细节。
+
+反之：单一路径内的纯函数留在领域服务或 Tool 内部；供应商调用属于 Gateway；数据库和文件实现属于 Adapter；跨越多个等待点、循环和人工暂停的长流程属于 Workflow；学习者本人必须产生的事实继续由用户 API Command 创建。
+
+## 3. 设计原则
+
+1. **业务意图优先。** 命名描述“完成什么业务用例”，不描述 SQL、HTTP、文件或模型技术动作。
+2. **一次稳定结果。** 粒度大于 CRUD，小于长流程；相关领域写入作为一次原子提交完成。
+3. **可信上下文注入。** `learner_id`、真实版本、权限、连接和密钥由运行时注入，不作为模型参数。
+4. **最小权限和动态可见性。** Registry 根据 Actor、运行阶段、任务类型和 Scope 生成 allowlist。
+5. **Schema 是代码事实。** ToolSpec 直接持有输入输出 Schema；权限和审批不能只写在自然语言描述或 Prompt 中。
+6. **副作用可重放。** Command 使用预期版本、幂等键、稳定 invocation key、事务、审计和 Outbox。
+7. **模型建议、代码准入。** 模型可以生成候选，确定性代码负责范围、证据、状态转换、发布和测量门槛。
+8. **失败是一等结果。** 拒绝、需复核、可重试错误和终止错误使用稳定 reason code，不伪装成功。
+9. **按信任域拆分。** Learner Runtime、Content Ops 和未来 Measurement 使用不同 Registry。
+10. **证据可追溯但不保存思维链。** 保存结构化输入摘要、证据引用、动作和结果，不保存模型隐藏推理。
+
+## 4. 运行结构
 
 因此建议采用：
 
@@ -27,10 +68,6 @@ Application Tool：完成一个完整业务能力
                      ▼
                   Adapter
 ```
-
-关键原则是：
-
-> **Tool 不是底层函数，也不是模型供应商调用；Tool 是一个完整、可审计的业务用例。**
 
 例如 `ExpressionReviewGateway` 只是模型网关；真正给 Agent 调用的工具应该是 `expression.review_draft`，它内部完成任务读取、权限判断、预算判断、模型调用、Schema 校验、证据校验、成本登记和审计记录。
 
@@ -293,9 +330,12 @@ allowed_actor_types
 allowed_run_stages
 allowed_task_types
 required_permission_scopes
-requires_expected_version
+expected_version_scope: none / run / task
 requires_idempotency_key
 requires_human_approval
+requires_call_accounting
+requires_audit
+audit_strategy: none / executor / domain
 timeout_seconds
 max_calls_per_run
 fallback_policy
@@ -325,9 +365,9 @@ output_schema
 11. 返回 ToolResult
 ```
 
-现有模型预算策略已经支持调用次数、费用上限和确定性降级，可以直接成为 executor middleware。
+现有模型预算策略负责费用上限和确定性降级，Executor 的持久化 Usage Port 负责每个 run 的调用次数准入。
 
-还应增加一个 `model_invocation_key`：
+当前采用稳定的 `model_invocation_key`，其组成原则是：
 
 ```text
 hash(
@@ -341,7 +381,7 @@ hash(
 )
 ```
 
-这样用户重试、Worker 重启或网络超时不会重复产生远程费用。当前模型分析和表达复盘相关逻辑仍散落在路由中；抽入统一 executor 后，才能一致处理预算、重复调用、成本和审计。
+当前实现使用稳定 invocation key、持久化 reservation 和已完成响应重放：已经完成或已经落为确定性 fallback 的调用，用户重试和 Worker 重启只重放保存结果，不再次调用供应商；同一 key 的未完成调用明确返回冲突，不并发重入。Gateway 仍必须把供应商超时转换为受控失败或 fallback，不能在结果未知时自行无限重试。模型调用、业务写入、账本完成和最终审计已经包含在同一个 Application Tool handler/数据库事务边界中。
 
 ---
 
@@ -457,52 +497,34 @@ task.create_arbitrary
 
 ---
 
-# 九、最合理的落地顺序
+# 九、当前实现状态与后续路线
 
-第一批先建立：
+截至 2026-08-07，代码中共有九个 `ToolSpec`：七个 learner runtime Tool 和两个 content ops Tool。九个 Tool 都从真实 API 或应用入口进入统一 Executor，不存在仅注册、未接线的占位 Tool。
+
+当前闭环包括：
+
+1. `ToolSpec` 是名称、版本、类型、风险、Actor、Scope、预期版本、幂等、审批、计数、审计策略、超时、降级和输入输出 Schema 的代码单一事实源；控制面直接投影这些元数据。
+2. Registry 拒绝重复名称；Executor 对未知、禁用和策略存储不可用分别返回稳定 reason code。生产调用使用数据库策略作为权威来源，多进程启停不依赖进程内缓存。
+3. Executor 在调用前校验 Actor、阶段、任务类型、权限、`none/run/task` 版本范围、幂等键、人工审批、输入 Schema、持久化次数限制和 deadline；调用后校验结果信封、输出 Schema、fallback 与审计。
+4. 所有已注册 Tool 都接入 PostgreSQL 持久化调用计数。模型 Tool 额外使用 `model_invocation_ledger` 和事务级 advisory lock 完成预留、并发上限、请求冲突检测、费用记录和已完成结果重放。
+5. 阅读与三项表达 Tool 的 handler 已覆盖“读取状态—模型调用—Schema/领域校验—业务写入—调用账本完成”，Executor 随后在同一数据库事务记录最终 Tool 结果；不会在业务写入之前记录假成功。
+6. `workflow.advance.v1` 复用既有流程推进、任务创建、仓储、幂等和异常链路；`content_ops.generate_candidate.v1` 与 `content_ops.publish_version.v1` 复用既有内容生产入口，发布仍要求控制端身份和人工审批。
+7. 审计策略显式分为 `executor` 与 `domain`。模型、流程和内容 Tool 使用事务型 Executor 审计；Obsidian 读写复用既有 `agent_memory_events` 领域审计，控制面不会再把它误报为“无审计”。
+8. `ToolResult` 强制成功必须有 data，失败必须无 data 且带 reason code，只有 `retryable_error` 可以声明重试；Policy、Usage、Audit 或 handler 异常都被转换为稳定失败信封。
+9. `fallback_policy=reject` 由 Executor 强制执行；其他命名降级策略由相应 Gateway/Application Tool 实现，并通过 `used_fallback` 明示，不能冒充正常路径。
+
+这里的“闭环”指当前已注册且进入生产调用路径的九个 Tool。它不表示把路线图中的所有业务能力提前实现为 Tool。以下能力只有在现有用户旅程出现真实调用点、权限和状态机后才应按需注册：
 
 ```text
-contracts.py
-ports.py
-registry.py
-executor.py
-runtime.get_context
-reading.analyze_selection
-expression.deliver_priority_feedback
-expression.review_draft
-```
-
-第二批把路由中的编排逻辑抽出：
-
-```text
+evidence.get_window
 content.search_candidates
 matching.select_material
 reading.deliver_hint
 revision.evaluate_and_record
-workflow.advance
-workflow.replace_material
-workflow.reserve_next_task
-workflow.complete
+workflow.replace_material / reserve_next_task / complete
+workflow.pause_for_review / review.resolve_case
+learner_state / error_hypothesis / review_schedule
+external_vocabulary / stage_readiness / shadow measurement
 ```
 
-第三批补齐：
-
-```text
-model invocation 幂等账本
-pause_for_review / resolve_case
-独立的 learner-runtime 与 content-ops registry
-故障注入和轨迹测试
-```
-
-最后再进入：
-
-```text
-learner_state
-error_hypothesis
-review_schedule
-external_vocabulary
-stage_readiness
-shadow measurement
-```
-
-其中最优先的架构改动不是增加更多模型 Prompt，而是把当前路由中分散的“读取状态—校验—调用模型—记账—写审计—推进流程”收敛为统一 Tool Executor 和少量高层业务工具。这样 Agent 才能在不绕开领域规则的前提下真正参与编排。
+`runtime.get_context` 同样保留为内部装配能力；在出现需要独立调用它的 Orchestrator 旅程前，不应为了补齐清单而公开成 Tool。未来新增 Tool 必须复用最接近的既有进入、执行、暂停、恢复、完成、证据和异常链路，并同时补齐 Spec、生产接线、持久化计数、适用的幂等/版本/审批、审计策略和测试，才算完成注册。

@@ -16,6 +16,26 @@ from binnagent_evaluation.content_integrity import validate_content_pack
 from binnagent_api.settings import Settings
 
 
+def configure_langfuse_from_settings(settings: Settings) -> None:
+    configure_langfuse(
+        LangfuseConfiguration(
+            enabled=settings.langfuse_enabled,
+            public_key=(
+                settings.langfuse_public_key.get_secret_value()
+                if settings.langfuse_public_key
+                else None
+            ),
+            secret_key=(
+                settings.langfuse_secret_key.get_secret_value()
+                if settings.langfuse_secret_key
+                else None
+            ),
+            base_url=settings.langfuse_base_url,
+            environment=settings.langfuse_environment,
+        )
+    )
+
+
 def build_content_reviewer_adapter(settings: Settings) -> RemoteContentReviewerAdapter | None:
     if not settings.enable_remote_model_calls or settings.model_adapter == "deterministic_fixture":
         return None
@@ -64,23 +84,7 @@ def build_content_generation_workflow(
     pack_version: str,
     progress_callback: ProgressCallback | None = None,
 ) -> ContentGenerationWorkflow:
-    configure_langfuse(
-        LangfuseConfiguration(
-            enabled=settings.langfuse_enabled,
-            public_key=(
-                settings.langfuse_public_key.get_secret_value()
-                if settings.langfuse_public_key
-                else None
-            ),
-            secret_key=(
-                settings.langfuse_secret_key.get_secret_value()
-                if settings.langfuse_secret_key
-                else None
-            ),
-            base_url=settings.langfuse_base_url,
-            environment=settings.langfuse_environment,
-        )
-    )
+    configure_langfuse_from_settings(settings)
     generator: RemoteContentGenerationAdapter | None = None
     if settings.model_adapter == "ollama":
         generator = RemoteContentGenerationAdapter(

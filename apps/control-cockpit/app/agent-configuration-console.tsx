@@ -7,6 +7,7 @@ import type {
   ManagedPrompt,
   ManagedTool,
   PromptDraftInput,
+  PromptRenderResult,
 } from "../lib/control-api";
 
 const RISK_LABELS: Record<ManagedTool["risk_level"], string> = {
@@ -289,6 +290,22 @@ export function ToolsConsole({
                 <dt>策略版本</dt>
                 <dd>v{tool.policy_version}</dd>
               </div>
+              <div>
+                <dt>版本门</dt>
+                <dd>{tool.expected_version_scope}</dd>
+              </div>
+              <div>
+                <dt>调用上限</dt>
+                <dd>{tool.max_calls_per_run} / run</dd>
+              </div>
+              <div>
+                <dt>超时</dt>
+                <dd>{tool.timeout_seconds}s</dd>
+              </div>
+              <div>
+                <dt>审计</dt>
+                <dd>{tool.audit_strategy}</dd>
+              </div>
             </dl>
             <details>
               <summary>查看 Schema 与调用边界</summary>
@@ -299,6 +316,8 @@ export function ToolsConsole({
                 Actor: {tool.allowed_actor_types.join(", ")}
                 {tool.requires_idempotency_key ? " · 需要幂等键" : ""}
                 {tool.requires_human_approval ? " · 需要人工审批" : ""}
+                {tool.requires_call_accounting ? " · 持久化调用计数" : ""}
+                {` · fallback: ${tool.fallback_policy}`}
               </small>
             </details>
           </article>
@@ -317,6 +336,7 @@ export function PromptsConsole({
   onCreate,
   onUpdate,
   onActivate,
+  onRender,
 }: {
   prompts: ManagedPrompt[];
   focusPromptId?: string | null;
@@ -329,6 +349,10 @@ export function PromptsConsole({
     input: Omit<PromptDraftInput, "prompt_id" | "prompt_version">,
   ) => void;
   onActivate: (prompt: ManagedPrompt) => void;
+  onRender: (
+    prompt: ManagedPrompt,
+    variables: Record<string, unknown>,
+  ) => Promise<PromptRenderResult>;
 }) {
   const [selectedKey, setSelectedKey] = useState("");
   const [creating, setCreating] = useState(false);
@@ -342,6 +366,9 @@ export function PromptsConsole({
     prompts[0] ??
     null;
   const [draft, setDraft] = useState<PromptDraftInput | null>(null);
+  const [renderVariables, setRenderVariables] = useState("");
+  const [renderedPreview, setRenderedPreview] = useState<PromptRenderResult | null>(null);
+  const [renderError, setRenderError] = useState<string | null>(null);
   const editorDraft = draft ?? promptInput(selected);
   const updateDraft = (patch: Partial<PromptDraftInput>) => setDraft({ ...editorDraft, ...patch });
 
@@ -371,6 +398,9 @@ export function PromptsConsole({
     });
     setDraft(null);
   };
+  const defaultRenderVariables = Object.fromEntries(
+    editorDraft.variables.map((name) => [name, `<${name}>`]),
+  );
 
   return (
     <section className="configuration-console">
@@ -506,6 +536,51 @@ export function PromptsConsole({
               }}
             />
           </label>
+          {!creating && selected ? (
+            <section className="prompt-preview">
+              <div className="section-heading">
+                <div>
+                  <p className="eyebrow">SAFE RENDER</p>
+                  <h3>变量试填与渲染预览</h3>
+                </div>
+                <button
+                  disabled={pending}
+                  onClick={() => {
+                    setRenderError(null);
+                    let variables: Record<string, unknown>;
+                    try {
+                      variables = JSON.parse(
+                        renderVariables || JSON.stringify(defaultRenderVariables),
+                      ) as Record<string, unknown>;
+                    } catch {
+                      setRenderError("变量必须是有效 JSON 对象");
+                      return;
+                    }
+                    void onRender(selected, variables)
+                      .then(setRenderedPreview)
+                      .catch((reason: unknown) =>
+                        setRenderError(reason instanceof Error ? reason.message : "render_failed"),
+                      );
+                  }}
+                  type="button"
+                >
+                  渲染预览
+                </button>
+              </div>
+              <label>
+                测试变量 JSON
+                <textarea
+                  aria-label="Prompt 测试变量 JSON"
+                  onChange={(event) => setRenderVariables(event.target.value)}
+                  value={renderVariables || JSON.stringify(defaultRenderVariables, null, 2)}
+                />
+              </label>
+              {renderError ? <div className="error-banner">{renderError}</div> : null}
+              {renderedPreview ? (
+                <pre aria-label="Prompt 渲染结果">{renderedPreview.rendered}</pre>
+              ) : null}
+            </section>
+          ) : null}
           <footer>
             <span>
               {selected

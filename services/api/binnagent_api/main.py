@@ -2,18 +2,25 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import uvicorn
+from binnagent_agent.observability import shutdown_observability
 from fastapi import FastAPI, status
 from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from binnagent_api.apps import create_control_app, create_learner_app
+from binnagent_api.content_generation_service import configure_langfuse_from_settings
 from binnagent_api.database import dispose_engine, get_engine
+from binnagent_api.settings import get_settings
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-    yield
-    await dispose_engine()
+    configure_langfuse_from_settings(get_settings())
+    try:
+        yield
+    finally:
+        shutdown_observability()
+        await dispose_engine()
 
 
 def create_app() -> FastAPI:

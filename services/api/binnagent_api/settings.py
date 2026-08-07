@@ -158,6 +158,8 @@ class Settings(BaseSettings):
     langfuse_environment: str = compatible_field(
         "LANGFUSE_ENVIRONMENT", "LANGFUSE_ENVIRONMENT", default="development"
     )
+    learner_usage_token_limit: int = Field(default=1_000_000, ge=1)
+    learner_usage_usd_to_cny_rate: Decimal = Field(default=Decimal("6.7928"), gt=0)
     content_manifest: str = "fixtures/content/v1/manifest.json"
     content_generation_output_directory: str = "fixtures/content/v1/generated"
     content_generation_manifest: str = "fixtures/content/v1/generated/manifest.json"

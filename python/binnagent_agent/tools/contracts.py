@@ -9,9 +9,10 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from jsonschema import Draft202012Validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class ToolKind(StrEnum):
@@ -28,6 +29,18 @@ class ToolRiskLevel(StrEnum):
     CONTROL = "control"
 
 
+class ToolAuditStrategy(StrEnum):
+    NONE = "none"
+    EXECUTOR = "executor"
+    DOMAIN = "domain"
+
+
+class ExpectedVersionScope(StrEnum):
+    NONE = "none"
+    RUN = "run"
+    TASK = "task"
+
+
 class ToolActorType(StrEnum):
     ORCHESTRATOR = "orchestrator"
     LEARNER = "learner"
@@ -41,6 +54,12 @@ class ToolStatus(StrEnum):
     REVIEW_REQUIRED = "review_required"
     RETRYABLE_ERROR = "retryable_error"
     TERMINAL_ERROR = "terminal_error"
+
+
+ReasonCode = Annotated[
+    str,
+    Field(min_length=1, max_length=64, pattern=r"^[a-z0-9][a-z0-9_.:-]*$"),
+]
 
 
 class EvidenceRef(BaseModel):
@@ -76,7 +95,7 @@ class ToolResult[T](BaseModel):
     schema_version: Literal["1.0.0"] = "1.0.0"
     status: ToolStatus
     data: T | None = None
-    reason_codes: list[str] = Field(default_factory=list)
+    reason_codes: list[ReasonCode] = Field(default_factory=list)
     evidence_refs: list[EvidenceRef] = Field(default_factory=list)
     version_before: int | None = None
     version_after: int | None = None
@@ -88,13 +107,29 @@ class ToolResult[T](BaseModel):
     audit_event_id: str | None = None
     retryable: bool = False
 
+    @model_validator(mode="after")
+    def validate_result_envelope(self) -> ToolResult[T]:
+        if self.status is ToolStatus.SUCCEEDED and self.data is None:
+            raise ValueError("tool_success_data_required")
+        if self.status is not ToolStatus.SUCCEEDED:
+            if self.data is not None:
+                raise ValueError("tool_failure_data_forbidden")
+            if not self.reason_codes:
+                raise ValueError("tool_failure_reason_required")
+        if self.retryable and self.status is not ToolStatus.RETRYABLE_ERROR:
+            raise ValueError("tool_retryable_status_mismatch")
+        return self
+
 
 class ToolSpec(BaseModel):
     """Code-owned metadata used by the executor and the allowlist registry."""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    name: str = Field(pattern=r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+\.v[0-9]+$")
+    name: str = Field(
+        max_length=59,
+        pattern=r"^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)+\.v[0-9]+$",
+    )
     version: str = Field(pattern=r"^[0-9]+\.[0-9]+\.[0-9]+$")
     kind: ToolKind
     risk_level: ToolRiskLevel
@@ -102,12 +137,35 @@ class ToolSpec(BaseModel):
     allowed_run_stages: frozenset[str] = Field(default_factory=frozenset)
     allowed_task_types: frozenset[str] = Field(default_factory=frozenset)
     required_permission_scopes: frozenset[str] = Field(default_factory=frozenset)
-    requires_expected_version: bool = False
+    expected_version_scope: ExpectedVersionScope = ExpectedVersionScope.NONE
     requires_idempotency_key: bool = False
     requires_human_approval: bool = False
+    requires_call_accounting: bool = False
+    requires_audit: bool = False
+    audit_strategy: ToolAuditStrategy = ToolAuditStrategy.NONE
     timeout_seconds: int = Field(ge=1, le=300)
     max_calls_per_run: int = Field(ge=1, le=100)
     fallback_policy: str = Field(min_length=1, max_length=80)
+    input_schema: dict[str, Any]
+    output_schema: dict[str, Any]
+
+    @property
+    def requires_expected_version(self) -> bool:
+        return self.expected_version_scope is not ExpectedVersionScope.NONE
+
+    @model_validator(mode="after")
+    def validate_definition(self) -> ToolSpec:
+        if not self.allowed_actor_types:
+            raise ValueError("tool_allowed_actor_types_required")
+        if self.input_schema.get("type") != "object":
+            raise ValueError("tool_input_schema_must_be_object")
+        if self.output_schema.get("type") != "object":
+            raise ValueError("tool_output_schema_must_be_object")
+        Draft202012Validator.check_schema(self.input_schema)
+        Draft202012Validator.check_schema(self.output_schema)
+        if self.requires_audit != (self.audit_strategy is ToolAuditStrategy.EXECUTOR):
+            raise ValueError("tool_executor_audit_strategy_mismatch")
+        return self
 
 
 ToolPayload = dict[str, Any]

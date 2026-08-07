@@ -118,6 +118,110 @@ button:disabled {
 .configuration-console {
   padding-bottom: 48px;
 }
+
+.operations-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(320px, 0.8fr);
+  gap: 20px;
+  margin-top: 20px;
+}
+
+.operations-column {
+  min-width: 0;
+}
+
+.operations-grid .job-row {
+  grid-template-columns: minmax(210px, 1.5fr) minmax(110px, 0.8fr) minmax(130px, 0.9fr) minmax(
+      130px,
+      1fr
+    );
+}
+
+.operations-grid .job-row > span:not(.job-identity) {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.operations-grid .job-row small,
+.operations-grid .job-row strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.review-heading {
+  margin-top: 32px;
+}
+
+.invocation-row {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.invocation-row > div:first-child {
+  display: grid;
+  grid-template-columns: auto minmax(180px, 1fr);
+  align-items: center;
+  gap: 8px 12px;
+}
+
+.invocation-row > div:first-child code {
+  grid-column: 2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.invocation-row dl {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.invocation-row dl div {
+  min-width: 0;
+}
+
+.invocation-row dt,
+.invocation-row dd {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.invocation-row dt {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.invocation-row dd {
+  margin: 4px 0 0;
+}
+
+.prompt-preview {
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel) 88%, black);
+}
+
+.prompt-preview pre {
+  max-height: 320px;
+  margin: 12px 0 0;
+  padding: 14px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+
+@media (max-width: 980px) {
+  .operations-grid {
+    grid-template-columns: 1fr;
+  }
+}
 .configuration-summary,
 .configuration-filters {
   display: flex;
@@ -1330,8 +1434,8 @@ button:disabled {
 .user-row {
   display: grid;
   grid-template-columns:
-    minmax(220px, 1.3fr) minmax(170px, 1fr) minmax(150px, 0.8fr) minmax(160px, 0.9fr)
-    auto;
+    minmax(220px, 1.3fr) minmax(170px, 1fr) minmax(150px, 0.8fr)
+    minmax(210px, 1fr) minmax(160px, 0.9fr) auto;
   align-items: center;
   gap: 18px;
   padding: 13px 18px;
@@ -1367,6 +1471,30 @@ button:disabled {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.usage-user-selector {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 9px;
+}
+.usage-user-selector input {
+  accent-color: var(--accent);
+}
+.success-banner {
+  margin-bottom: 18px;
+  border: 1px solid #315f49;
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: #b9f0d3;
+  background: #13291f;
+  font-size: 11px;
+}
+.intro-actions .danger-button {
+  border-color: #704036;
+  color: #ffc0b4;
+  background: #2c1917;
+}
 .user-row code {
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
 }
@@ -1385,7 +1513,7 @@ button:disabled {
   }
   .users-table-head,
   .user-row {
-    min-width: 940px;
+    min-width: 1180px;
   }
   .workbench {
     grid-template-columns: 1fr;

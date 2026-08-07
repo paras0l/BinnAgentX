@@ -66,8 +66,15 @@ const TOOL = {
   enabled: true,
   allowed_actor_types: ["orchestrator"],
   required_permission_scopes: ["obsidian:read"],
+  expected_version_scope: "none",
+  requires_call_accounting: true,
+  requires_audit: false,
+  audit_strategy: "domain",
   requires_human_approval: false,
   requires_idempotency_key: false,
+  timeout_seconds: 10,
+  max_calls_per_run: 12,
+  fallback_policy: "reject",
   input_schema: { type: "object" },
   output_schema: { type: "object" },
   policy_version: 1,
@@ -107,6 +114,79 @@ const PROMPT = {
   activated_at: "2026-07-21T12:00:00Z",
   created_at: "2026-07-21T12:00:00Z",
   updated_at: "2026-07-21T12:00:00Z",
+};
+
+const CONTROL_RUN = {
+  workflow_run_id: "workflow_run_control_0001",
+  learner_id: "learner_isolated_0001",
+  run_kind: "practice",
+  lifecycle: "active",
+  stage: "matched_reading",
+  version: 3,
+  checkpoint_id: "checkpoint_control_0001",
+  task_count: 2,
+  model_call_count: 1,
+  cost_usd: "0.0200",
+  created_at: "2026-07-21T10:00:00Z",
+  updated_at: "2026-07-21T12:00:00Z",
+};
+
+const KNOWLEDGE_PROPOSAL = {
+  proposal_id: "proposal_control_0001",
+  run_id: "organizer_run_control_0001",
+  learner_id: "learner_isolated_0001",
+  candidate_id: "candidate_control_0001",
+  action: "create",
+  confidence: "0.8600",
+  status: "awaiting_review",
+  destination: "grammar",
+  requires_human_review: true,
+  knowledge_kind: "grammar",
+  canonical_key: "grammar.concession.alternative",
+  title: "让步关系替代表达",
+  claim: "Even though 可以在当前证据范围内表达让步关系。",
+  conflicts: [],
+  created_at: "2026-07-21T12:00:00Z",
+};
+
+const OPERATIONAL_INVOCATION = {
+  source: "model_tool",
+  invocation_key: "invocation_control_0001",
+  tool_name: "reading.analyze_selection.v1",
+  workflow_run_id: CONTROL_RUN.workflow_run_id,
+  task_id: "task_control_0001",
+  status: "succeeded",
+  audit_event_id: "audit_control_0001",
+  purpose: "selection_analysis",
+  adapter: "longcat",
+  prompt_version: "reading.selection_analysis@v1",
+  outcome: "timeout_fallback",
+  is_remote: true,
+  estimated_cost_usd: "0.0200",
+  actual_cost_usd: "0.0200",
+  latency_ms: 125,
+  used_fallback: true,
+  reason_code: "succeeded",
+  created_at: CONTROL_RUN.updated_at,
+  updated_at: CONTROL_RUN.updated_at,
+};
+
+const OPERATIONAL_TRACE = {
+  trace_id: "5219b0783b8834384940c3bd9cf9eeb0",
+  name: "learning.reading.intensive_grammar.provider",
+  environment: "development",
+  metadata: {
+    project_key: "binnagentx",
+    operation: "intensive_reading_grammar_analysis",
+    provider: "longcat",
+    workflow_run_id: CONTROL_RUN.workflow_run_id,
+  },
+  observation_count: 2,
+  latency_ms: 340,
+  total_cost_usd: "0.0200",
+  timestamp: CONTROL_RUN.updated_at,
+  updated_at: CONTROL_RUN.updated_at,
+  evidence_url: "http://localhost:3100/trace/5219b0783b8834384940c3bd9cf9eeb0",
 };
 
 describe("control cockpit home", () => {
@@ -225,6 +305,98 @@ describe("control cockpit home", () => {
           return Response.json({ ...TOOL, enabled: false, policy_version: 2 });
         }
         if (url.endsWith("/prompts")) return Response.json([PROMPT]);
+        if (url.includes("/prompts/") && url.endsWith("/render") && init?.method === "POST") {
+          return Response.json({
+            prompt_id: PROMPT.prompt_id,
+            prompt_version: PROMPT.prompt_version,
+            rendered: "围绕 <contexts> 生成新阅读，只输出 <output_schema>。",
+            content_hash: PROMPT.content_hash,
+          });
+        }
+        if (url.includes("/runs?") && init?.method !== "POST") {
+          return Response.json({
+            items: [CONTROL_RUN],
+            page: 1,
+            page_size: 20,
+            total_items: 1,
+            total_pages: 1,
+          });
+        }
+        if (url.endsWith(`/runs/${CONTROL_RUN.workflow_run_id}/replay`)) {
+          return Response.json({
+            ...CONTROL_RUN,
+            predecessor_run_id: null,
+            current_task_id: "task_control_0001",
+            task_refs: [],
+            match_decisions: [],
+            completion_gaps: [],
+            event_chain: [
+              {
+                event_id: "event_control_0001",
+                event_type: "vertical_slice_run_created",
+                aggregate_version: 1,
+                occurred_at: CONTROL_RUN.created_at,
+              },
+            ],
+          });
+        }
+        if (url.includes("knowledge-organization/proposals?")) {
+          return Response.json([KNOWLEDGE_PROPOSAL]);
+        }
+        if (url.includes("knowledge-organization/proposals/") && init?.method === "POST") {
+          return Response.json({ ...KNOWLEDGE_PROPOSAL, status: "approved" });
+        }
+        if (url.includes("operations/invocations?")) {
+          return Response.json({
+            items: [OPERATIONAL_INVOCATION],
+            metrics: {
+              total_invocations: 1,
+              model_invocations: 1,
+              tool_invocations: 0,
+              fallback_count: 1,
+              actual_cost_usd: "0.0200",
+              average_latency_ms: 125,
+            },
+            page: 1,
+            page_size: 20,
+            total_items: 1,
+            total_pages: 1,
+          });
+        }
+        if (url.includes("operations/traces?")) {
+          return Response.json({
+            items: [OPERATIONAL_TRACE],
+            page: 1,
+            page_size: 20,
+            total_items: 1,
+            total_pages: 1,
+          });
+        }
+        if (url.includes("operations/timeline?")) {
+          return Response.json({
+            workflow_run_id: CONTROL_RUN.workflow_run_id,
+            items: [
+              {
+                kind: "audit",
+                record_id: "audit_control_0001",
+                name: "tool.reading.analyze_selection.v1",
+                status: "succeeded",
+                aggregate_id: CONTROL_RUN.workflow_run_id,
+                invocation_key: OPERATIONAL_INVOCATION.invocation_key,
+                version: 3,
+                occurred_at: CONTROL_RUN.updated_at,
+              },
+            ],
+          });
+        }
+        if (url.endsWith("/users/usage/reset") && init?.method === "POST") {
+          return Response.json({
+            scope: "selected",
+            reset_count: 1,
+            learner_ids: ["learner_managed_0001"],
+            reset_at: "2026-08-07T18:00:00Z",
+          });
+        }
         if (url.endsWith("/users")) {
           return Response.json([
             {
@@ -239,6 +411,12 @@ describe("control cockpit home", () => {
               completed_run_count: 2,
               asset_count: 5,
               obsidian_paired: true,
+              token_limit: 1_000_000,
+              used_tokens: 12_500,
+              remaining_tokens: 987_500,
+              remaining_percent: 98.8,
+              usage_cost_cny: "0.285298",
+              usage_reset_at: null,
             },
           ]);
         }
@@ -357,7 +535,17 @@ describe("control cockpit home", () => {
     expect(screen.getByText("2 次完整训练")).toBeVisible();
     expect(screen.getByText("5 条资产")).toBeVisible();
     expect(screen.getAllByText("Obsidian 已配对")).toHaveLength(2);
+    expect(screen.getByText("Usage Remaining 98.8%")).toBeVisible();
+    expect(screen.getByText("费用 ¥0.2853")).toBeVisible();
     expect(screen.getByRole("button", { name: "退出所有设备" })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "纳入用量重置范围" }));
+    fireEvent.click(screen.getByRole("button", { name: "重置所选用量（1）" }));
+    expect(await screen.findByText("已为 1 个用户开启新的用量周期。")).toBeVisible();
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining("users/usage/reset"),
+      expect.objectContaining({ method: "POST" }),
+    );
   });
 
   it("manages the isolated Obsidian tool catalog", async () => {
@@ -367,8 +555,38 @@ describe("control cockpit home", () => {
     expect(await screen.findByRole("heading", { name: "Tools 管理" })).toBeVisible();
     expect(screen.getByText("检索学习者记忆（Obsidian）")).toBeVisible();
     expect(screen.getByText("obsidian:read")).toBeVisible();
+    expect(screen.getByText("12 / run")).toBeVisible();
+    expect(screen.getByText("domain")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "停用" }));
     expect(await screen.findByRole("button", { name: "启用" })).toBeVisible();
+  });
+
+  it("shows workflow replay and handles the existing knowledge review queue", async () => {
+    render(<ControlHomePage />);
+    fireEvent.click(screen.getByRole("button", { name: "运行与复核" }));
+
+    expect(await screen.findByRole("heading", { name: "运行与复核中心" })).toBeVisible();
+    expect(await screen.findByRole("heading", { name: CONTROL_RUN.workflow_run_id })).toBeVisible();
+    expect(screen.getByText("vertical_slice_run_created")).toBeVisible();
+    expect(screen.getByRole("heading", { name: "调用与审计" })).toBeVisible();
+    expect(screen.getByRole("heading", { name: "模型追踪" })).toBeVisible();
+    expect(screen.getByText(OPERATIONAL_TRACE.name)).toBeVisible();
+    expect(screen.getByRole("link", { name: "在 Langfuse 查看具体证据" })).toHaveAttribute(
+      "href",
+      OPERATIONAL_TRACE.evidence_url,
+    );
+    expect(screen.getByText("reading.analyze_selection.v1")).toBeVisible();
+    expect(screen.getAllByText("fallback").length).toBeGreaterThan(0);
+    expect(screen.getByText("tool.reading.analyze_selection.v1")).toBeVisible();
+    expect(screen.getAllByText("$0.0200").length).toBeGreaterThan(0);
+    expect(screen.getByRole("heading", { name: KNOWLEDGE_PROPOSAL.title })).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "批准" }));
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("heading", { name: KNOWLEDGE_PROPOSAL.title }),
+      ).not.toBeInTheDocument(),
+    );
   });
 
   it("shows available agents and their runtime dependencies", async () => {
@@ -403,5 +621,9 @@ describe("control cockpit home", () => {
     expect(screen.getByText("project: binnagentx")).toBeVisible();
     expect(screen.getAllByText("personalized_reading.generate").length).toBeGreaterThan(0);
     await waitFor(() => expect(screen.getByDisplayValue(/围绕 \{\{contexts\}\}/)).toBeDisabled());
+    fireEvent.click(screen.getByRole("button", { name: "渲染预览" }));
+    expect(await screen.findByLabelText("Prompt 渲染结果")).toHaveTextContent(
+      "围绕 <contexts> 生成新阅读",
+    );
   });
 });

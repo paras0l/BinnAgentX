@@ -20,6 +20,31 @@ learners = sa.Table(
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
 )
+learner_model_usage_events = sa.Table(
+    "learner_model_usage_events",
+    metadata,
+    sa.Column("event_id", sa.String(128), primary_key=True),
+    sa.Column("learner_id", sa.String(128), nullable=False),
+    sa.Column("provider", sa.String(64), nullable=False),
+    sa.Column("model", sa.String(160), nullable=False),
+    sa.Column("operation", sa.String(160), nullable=False),
+    sa.Column("input_tokens", sa.BigInteger(), nullable=False),
+    sa.Column("output_tokens", sa.BigInteger(), nullable=False),
+    sa.Column("total_tokens", sa.BigInteger(), nullable=False),
+    sa.Column("cost_usd", sa.Numeric(12, 6), nullable=False),
+    sa.Column("usd_to_cny_rate", sa.Numeric(10, 6), nullable=False),
+    sa.Column("cost_cny", sa.Numeric(12, 6), nullable=False),
+    sa.Column("counting_method", sa.String(32), nullable=False),
+    sa.Column("occurred_at", sa.DateTime(timezone=True), nullable=False),
+)
+learner_usage_resets = sa.Table(
+    "learner_usage_resets",
+    metadata,
+    sa.Column("reset_id", sa.String(128), primary_key=True),
+    sa.Column("learner_id", sa.String(128), nullable=False),
+    sa.Column("reset_by_role", sa.String(64), nullable=False),
+    sa.Column("reset_at", sa.DateTime(timezone=True), nullable=False),
+)
 experience_codes = sa.Table(
     "experience_codes",
     metadata,
@@ -292,6 +317,7 @@ model_invocations = sa.Table(
     "model_invocations",
     metadata,
     sa.Column("invocation_id", sa.String(128), primary_key=True),
+    sa.Column("invocation_key", sa.String(128), nullable=True),
     sa.Column("workflow_run_id", sa.String(128), nullable=False),
     sa.Column("task_id", sa.String(128), nullable=False),
     sa.Column("input_attempt_version_id", sa.String(128), nullable=False),
@@ -325,6 +351,15 @@ model_invocation_ledger = sa.Table(
     sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
     sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
 )
+tool_usage_ledger = sa.Table(
+    "tool_usage_ledger",
+    metadata,
+    sa.Column("invocation_key", sa.String(128), primary_key=True),
+    sa.Column("tool_name", sa.String(160), nullable=False),
+    sa.Column("workflow_run_id", sa.String(128), nullable=False),
+    sa.Column("task_id", sa.String(128), nullable=True),
+    sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+)
 revision_events = sa.Table(
     "revision_events",
     metadata,
@@ -351,6 +386,7 @@ audit_events = sa.Table(
     metadata,
     sa.Column("audit_event_id", sa.String(128), primary_key=True),
     sa.Column("workflow_run_id", sa.String(128), nullable=False),
+    sa.Column("invocation_key", sa.String(128), nullable=True),
     sa.Column("actor_type", sa.String(32), nullable=False),
     sa.Column("action", sa.String(64), nullable=False),
     sa.Column("reason_code", sa.String(64), nullable=False),

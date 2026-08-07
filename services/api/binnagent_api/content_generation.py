@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -9,8 +9,18 @@ from urllib.request import urlopen
 from uuid import uuid4
 
 import sqlalchemy as sa
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from binnagent_agent.tools import (
+    ToolActorType,
+    ToolContext,
+    ToolExecutor,
+    ToolResult,
+    ToolStatus,
+    content_ops_registry,
+)
+from binnagent_agent.tools.errors import ToolExecutionError
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
 from pydantic import BaseModel, Field
+from sqlalchemy.ext.asyncio import AsyncConnection
 
 from binnagent_api.auth import ControlIdentity, require_control_identity
 from binnagent_api.content_generation_service import (
@@ -21,9 +31,17 @@ from binnagent_api.database import get_engine
 from binnagent_api.learner_auth import utc_now
 from binnagent_api.personalized_material_service import resume_failed_personalized_material
 from binnagent_api.settings import PROJECT_ROOT, get_settings
+from binnagent_api.tool_audit import SqlAlchemyToolAuditPort
+from binnagent_api.tool_policy import SqlAlchemyToolPolicyPort
+from binnagent_api.tool_usage import SqlAlchemyToolUsagePort
 from binnagent_api.vertical_slice import tables
 
 content_generation_router = APIRouter(prefix="/v1/content-generation", tags=["content-generation"])
+content_tool_executor = ToolExecutor(content_ops_registry)
+ContentIdempotencyKey = Annotated[
+    str,
+    Header(alias="Idempotency-Key", min_length=8, max_length=128, pattern=r"^[A-Za-z0-9_.:-]+$"),
+]
 
 JobStatus = Literal[
     "queued",
@@ -163,6 +181,101 @@ class ContentControlStatusView(BaseModel):
     personalized_running_count: int
     personalized_failed_count: int
     active_pack_job_id: str | None
+
+
+def _content_tool_context(
+    *,
+    tool_name: str,
+    job_id: str,
+    identity: ControlIdentity,
+    idempotency_key: str,
+    request_hash: str,
+) -> ToolContext:
+    return ToolContext(
+        trace_id=f"tool_trace_{uuid4().hex}",
+        workflow_run_id=job_id,
+        task_id=None,
+        learner_id="control:binnagentx",
+        actor_type=ToolActorType.DEVELOPER_REVIEWER,
+        permission_scopes=frozenset(
+            {"content:generate", "content:publish"}
+            if identity.role == "developer_reviewer"
+            else set()
+        ),
+        idempotency_key=idempotency_key,
+        invocation_key=sha256(
+            f"{tool_name}:{job_id}:{idempotency_key}:{request_hash}".encode()
+        ).hexdigest(),
+        deadline_at=datetime.now(UTC) + timedelta(seconds=300),
+    )
+
+
+async def _content_job_replay(
+    connection: AsyncConnection,
+    *,
+    idempotency_key: str,
+    command_name: str,
+    request_hash: str,
+) -> sa.RowMapping | None:
+    record = (
+        (
+            await connection.execute(
+                sa.select(tables.idempotency_records).where(
+                    tables.idempotency_records.c.idempotency_key == idempotency_key
+                )
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
+    if record is None:
+        return None
+    if record["command_name"] != command_name or record["request_hash"] != request_hash:
+        raise HTTPException(status_code=409, detail="content_tool_idempotency_conflict")
+    job_id = record["response_reference"]
+    if not job_id:
+        raise HTTPException(status_code=409, detail="content_tool_idempotency_in_progress")
+    return (
+        (
+            await connection.execute(
+                sa.select(tables.content_generation_jobs).where(
+                    tables.content_generation_jobs.c.job_id == job_id
+                )
+            )
+        )
+        .mappings()
+        .one()
+    )
+
+
+async def _record_content_job_idempotency(
+    connection: AsyncConnection,
+    *,
+    idempotency_key: str,
+    command_name: str,
+    request_hash: str,
+    job_id: str,
+    created_at: datetime,
+) -> None:
+    await connection.execute(
+        tables.idempotency_records.insert().values(
+            idempotency_key=idempotency_key,
+            command_name=command_name,
+            request_hash=request_hash,
+            response_reference=job_id,
+            created_at=created_at,
+        )
+    )
+
+
+def _require_content_tool_success(
+    result: ToolResult[ContentGenerationJobView],
+) -> ContentGenerationJobView:
+    if result.status is ToolStatus.SUCCEEDED and result.data is not None:
+        return result.data
+    reason = result.reason_codes[0] if result.reason_codes else "content_tool_failed"
+    http_status = 422 if reason.startswith("generated_") else 409
+    raise HTTPException(status_code=http_status, detail=reason)
 
 
 @content_generation_router.get("/jobs", response_model=list[ContentGenerationJobView])
@@ -468,10 +581,20 @@ async def get_content_generation_job(
 async def create_content_generation_job(
     body: CreateContentGenerationJobRequest,
     identity: Annotated[ControlIdentity, Depends(require_control_identity)],
+    idempotency_key: ContentIdempotencyKey,
+) -> ContentGenerationJobView:
+    return await _create_content_generation_job(body, identity, idempotency_key)
+
+
+async def _create_content_generation_job(
+    body: CreateContentGenerationJobRequest,
+    identity: ControlIdentity,
+    idempotency_key: str,
 ) -> ContentGenerationJobView:
     settings = get_settings()
     now = utc_now()
-    job_id = f"content_job_{uuid4().hex}"
+    request_hash = sha256(body.model_dump_json().encode()).hexdigest()
+    job_id = f"content_job_{sha256(idempotency_key.encode()).hexdigest()[:32]}"
     pack_id = f"agent_content_{settings.env}_{job_id}"
     output_directory = Path(settings.content_generation_output_directory) / "packs" / job_id
     values: dict[str, Any] = {
@@ -505,34 +628,71 @@ async def create_content_generation_job(
         "lease_expires_at": None,
     }
     async with get_engine().begin() as connection:
-        await connection.execute(sa.text("SELECT pg_advisory_xact_lock(124908417)"))
-        pending_job_id = await connection.scalar(
-            sa.select(tables.content_generation_jobs.c.job_id)
-            .where(tables.content_generation_jobs.c.status.in_(("queued", "running")))
-            .order_by(tables.content_generation_jobs.c.created_at)
-            .limit(1)
-            .with_for_update(skip_locked=True)
+        replay = await _content_job_replay(
+            connection,
+            idempotency_key=idempotency_key,
+            command_name="content_ops.generate_candidate.v1",
+            request_hash=request_hash,
         )
-        if pending_job_id is not None:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="content_generation_job_already_in_progress",
+        if replay is not None:
+            return _view(replay, _publisher().active_job_id())
+        context = _content_tool_context(
+            tool_name="content_ops.generate_candidate.v1",
+            job_id=job_id,
+            identity=identity,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
+        )
+
+        async def queue_candidate(_: ToolContext) -> ToolResult[ContentGenerationJobView]:
+            await connection.execute(sa.text("SELECT pg_advisory_xact_lock(124908417)"))
+            pending_job_id = await connection.scalar(
+                sa.select(tables.content_generation_jobs.c.job_id)
+                .where(tables.content_generation_jobs.c.status.in_(("queued", "running")))
+                .order_by(tables.content_generation_jobs.c.created_at)
+                .limit(1)
+                .with_for_update(skip_locked=True)
             )
-        await connection.execute(tables.content_generation_jobs.insert().values(**values))
-        await connection.execute(
-            tables.content_generation_events.insert().values(
+            if pending_job_id is not None:
+                raise ToolExecutionError("content_generation_job_already_in_progress")
+            await connection.execute(tables.content_generation_jobs.insert().values(**values))
+            await connection.execute(
+                tables.content_generation_events.insert().values(
+                    job_id=job_id,
+                    event_type="job_queued",
+                    stage="queued",
+                    agent_role=None,
+                    item_id=None,
+                    attempt=None,
+                    message="任务已进入内容 Worker 队列",
+                    detail={"seed": body.seed},
+                    occurred_at=now,
+                )
+            )
+            await _record_content_job_idempotency(
+                connection,
+                idempotency_key=idempotency_key,
+                command_name="content_ops.generate_candidate.v1",
+                request_hash=request_hash,
                 job_id=job_id,
-                event_type="job_queued",
-                stage="queued",
-                agent_role=None,
-                item_id=None,
-                attempt=None,
-                message="任务已进入内容 Worker 队列",
-                detail={"seed": body.seed},
-                occurred_at=now,
+                created_at=now,
             )
+            return ToolResult(
+                status=ToolStatus.SUCCEEDED,
+                data=_view(values, _publisher().active_job_id()),
+                side_effect_ids=[job_id],
+            )
+
+        tool_result = await content_tool_executor.execute(
+            "content_ops.generate_candidate.v1",
+            context,
+            queue_candidate,
+            payload=body.model_dump(mode="json"),
+            usage_port=SqlAlchemyToolUsagePort(connection),
+            audit_port=SqlAlchemyToolAuditPort(connection),
+            policy_port=SqlAlchemyToolPolicyPort(connection),
         )
-    return _view(values, _publisher().active_job_id())
+        return _require_content_tool_success(tool_result)
 
 
 @content_generation_router.post(
@@ -593,6 +753,7 @@ async def cancel_content_generation_job(
 async def retry_content_generation_job(
     job_id: str,
     identity: Annotated[ControlIdentity, Depends(require_control_identity)],
+    idempotency_key: ContentIdempotencyKey,
 ) -> ContentGenerationJobView:
     async with get_engine().connect() as connection:
         row = (
@@ -610,9 +771,10 @@ async def retry_content_generation_job(
         raise HTTPException(status_code=404, detail="content_generation_job_not_found")
     if row["status"] not in {"generation_failed", "validation_failed", "cancelled"}:
         raise HTTPException(status_code=409, detail="content_generation_job_not_retryable")
-    return await create_content_generation_job(
+    return await _create_content_generation_job(
         CreateContentGenerationJobRequest(seed=row["seed"]),
         identity,
+        idempotency_key,
     )
 
 
@@ -623,9 +785,19 @@ async def retry_content_generation_job(
 async def publish_content_generation_job(
     job_id: str,
     identity: Annotated[ControlIdentity, Depends(require_control_identity)],
+    idempotency_key: ContentIdempotencyKey,
 ) -> ContentGenerationJobView:
     publisher = _publisher()
+    request_hash = sha256(job_id.encode()).hexdigest()
     async with get_engine().begin() as connection:
+        replay = await _content_job_replay(
+            connection,
+            idempotency_key=idempotency_key,
+            command_name="content_ops.publish_version.v1",
+            request_hash=request_hash,
+        )
+        if replay is not None:
+            return _view(replay, publisher.active_job_id())
         row = (
             (
                 await connection.execute(
@@ -639,49 +811,76 @@ async def publish_content_generation_job(
         )
         if row is None:
             raise HTTPException(status_code=404, detail="content_generation_job_not_found")
-        if (
-            row["status"] != "generated"
-            or int(row["item_count"]) <= 0
-            or int(row["agent_reviewed_count"]) != int(row["item_count"])
-            or not row["manifest_path"]
-        ):
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail="content_generation_job_not_publishable",
-            )
-        try:
-            await asyncio.to_thread(
-                publisher.publish,
-                Path(str(row["manifest_path"])),
-                job_id=job_id,
-            )
-        except ContentPackPublishError as exc:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                detail=str(exc),
-            ) from exc
-        published_at = utc_now()
-        await connection.execute(
-            tables.content_generation_jobs.update()
-            .where(tables.content_generation_jobs.c.job_id == job_id)
-            .values(published_at=published_at, published_by_role=identity.role)
+        context = _content_tool_context(
+            tool_name="content_ops.publish_version.v1",
+            job_id=job_id,
+            identity=identity,
+            idempotency_key=idempotency_key,
+            request_hash=request_hash,
         )
-        await connection.execute(
-            tables.content_generation_events.insert().values(
-                job_id=job_id,
-                event_type="pack_published",
-                stage="published",
-                agent_role=None,
-                item_id=None,
-                attempt=None,
-                message="材料包已发布, 将用于之后创建的新训练",
-                detail={"published_by_role": identity.role},
-                occurred_at=published_at,
+
+        async def publish_version(_: ToolContext) -> ToolResult[ContentGenerationJobView]:
+            if (
+                row["status"] != "generated"
+                or int(row["item_count"]) <= 0
+                or int(row["agent_reviewed_count"]) != int(row["item_count"])
+                or not row["manifest_path"]
+            ):
+                raise ToolExecutionError("content_generation_job_not_publishable")
+            try:
+                await asyncio.to_thread(
+                    publisher.publish,
+                    Path(str(row["manifest_path"])),
+                    job_id=job_id,
+                )
+            except ContentPackPublishError as exc:
+                raise ToolExecutionError(str(exc)) from exc
+            published_at = utc_now()
+            await connection.execute(
+                tables.content_generation_jobs.update()
+                .where(tables.content_generation_jobs.c.job_id == job_id)
+                .values(published_at=published_at, published_by_role=identity.role)
             )
+            await connection.execute(
+                tables.content_generation_events.insert().values(
+                    job_id=job_id,
+                    event_type="pack_published",
+                    stage="published",
+                    agent_role=None,
+                    item_id=None,
+                    attempt=None,
+                    message="材料包已发布, 将用于之后创建的新训练",
+                    detail={"published_by_role": identity.role},
+                    occurred_at=published_at,
+                )
+            )
+            await _record_content_job_idempotency(
+                connection,
+                idempotency_key=idempotency_key,
+                command_name="content_ops.publish_version.v1",
+                request_hash=request_hash,
+                job_id=job_id,
+                created_at=published_at,
+            )
+            updated = dict(row)
+            updated.update(published_at=published_at, published_by_role=identity.role)
+            return ToolResult(
+                status=ToolStatus.SUCCEEDED,
+                data=_view(updated, job_id),
+                side_effect_ids=[job_id],
+            )
+
+        tool_result = await content_tool_executor.execute(
+            "content_ops.publish_version.v1",
+            context,
+            publish_version,
+            payload={"job_id": job_id},
+            human_approved=True,
+            usage_port=SqlAlchemyToolUsagePort(connection),
+            audit_port=SqlAlchemyToolAuditPort(connection),
+            policy_port=SqlAlchemyToolPolicyPort(connection),
         )
-        updated = dict(row)
-        updated.update(published_at=published_at, published_by_role=identity.role)
-    return _view(updated, job_id)
+        return _require_content_tool_success(tool_result)
 
 
 def _publisher() -> ContentPackPublisher:
